@@ -1,0 +1,77 @@
+# ===================== 通用编译产物 =====================
+# 构建目录（Qt Creator 默认生成的 build 文件夹）
+build*/
+# Debug/Release 目录（手动编译的产物）
+Debug/
+Release/
+# 可执行文件
+*.exe
+# 动态链接库
+*.dll
+# 静态链接库
+*.lib
+*.a
+# 目标文件/中间文件
+*.obj
+*.o
+*.lo
+*.la
+# 预编译头文件
+*.pch
+*.gch
+# 编译日志/临时文件
+*.log
+*.tmp
+*.temp
+
+# ===================== Qt 专属文件 =====================
+# Qt 生成的 Makefile/CMake 产物
+#Makefile
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+# Qt MOC/RCC/UIC 生成的文件
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+*.moc
+# Qt 资源文件编译产物
+*.rcc
+# Qt Creator 项目配置（用户特定，不需要共享）
+*.user
+*.user.debug
+*.user.release
+*.autosave
+# Qt 翻译文件编译产物
+*.qm
+
+# ===================== 系统/编辑器临时文件 =====================
+# Windows 临时文件
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# macOS 系统文件
+.DS_Store
+.AppleDouble
+.LSOverride
+# 编辑器临时文件（VSCode/Vim/Sublime 等）
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+.svn/
+.git/
+# 压缩包
+*.zip
+*.rar
+*.7z
+
+# ===================== 你的项目专属过滤（可选） =====================
+# 如果你有自定义的打包目录/测试数据，可在这里添加
+# deploy/          # 打包后的发布目录
+# test_data/       # 测试用的临时数据
+nul
