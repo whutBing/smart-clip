@@ -6,6 +6,9 @@ on:
       - 'v*'  # 当推送标签（如 v1.0.0）时触发
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: write  # 允许创建 Release
+
 jobs:
   build:
     runs-on: windows-latest
