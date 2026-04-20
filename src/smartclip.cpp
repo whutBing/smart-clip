@@ -22,10 +22,12 @@
 #include "text_utils.h"
 #include "graphics_utils.h"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
+#endif
 
 // 定义 TTTOOLINFOW_V1_SIZE（如果未定义）
 #ifndef TTTOOLINFOW_V1_SIZE
@@ -257,6 +259,7 @@ private:
     LONG m_refCount;
 public:
     CDropSource() : m_refCount(1) {}
+    virtual ~CDropSource() = default;
 
     // IUnknown
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
@@ -281,7 +284,7 @@ public:
         if (!(grfKeyState & MK_LBUTTON)) return DRAGDROP_S_DROP;
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD dwEffect) override {
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD /*dwEffect*/) override {
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }
 };
@@ -297,7 +300,7 @@ public:
         CoCreateInstance(CLSID_DragDropHelper, NULL, CLSCTX_INPROC_SERVER,
                         IID_IDropTargetHelper, (void**)&m_pDropTargetHelper);
     }
-    ~CDropTarget() {
+    virtual ~CDropTarget() {
         if (m_pDropTargetHelper) m_pDropTargetHelper->Release();
     }
 
@@ -319,7 +322,7 @@ public:
     }
 
     // IDropTarget
-    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* pDataObj, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) override {
+    HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* pDataObj, DWORD /*grfKeyState*/, POINTL pt, DWORD* pdwEffect) override {
         // 先设置效果为 COPY，再通知 helper
         *pdwEffect = DROPEFFECT_COPY;
         if (m_pDropTargetHelper) {
@@ -328,7 +331,7 @@ public:
         }
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE DragOver(DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) override {
+    HRESULT STDMETHODCALLTYPE DragOver(DWORD /*grfKeyState*/, POINTL pt, DWORD* pdwEffect) override {
         // 先设置效果为 COPY，再通知 helper
         *pdwEffect = DROPEFFECT_COPY;
         if (m_pDropTargetHelper) {
@@ -343,7 +346,7 @@ public:
         }
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE Drop(IDataObject* pDataObj, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) override {
+    HRESULT STDMETHODCALLTYPE Drop(IDataObject* pDataObj, DWORD /*grfKeyState*/, POINTL pt, DWORD* pdwEffect) override {
         if (m_pDropTargetHelper) {
             POINT point = {pt.x, pt.y};
             m_pDropTargetHelper->Drop(pDataObj, &point, *pdwEffect);
@@ -383,7 +386,7 @@ IDataObject* CreateFileDataObject(const std::wstring& filePath) {
 }
 
 // 为拖放设置图像（显示文件图标和文件名）
-void SetDragImage(IDataObject* pDataObject, const std::wstring& filePath, POINT ptStart) {
+void SetDragImage(IDataObject* pDataObject, const std::wstring& filePath, POINT /*ptStart*/) {
     IDragSourceHelper* pDragSourceHelper = NULL;
     if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, NULL, CLSCTX_INPROC_SERVER,
                                    IID_IDragSourceHelper, (void**)&pDragSourceHelper))) {
@@ -396,7 +399,7 @@ void SetDragImage(IDataObject* pDataObject, const std::wstring& filePath, POINT 
         }
 
         // 获取文件图标
-        SHFILEINFOW sfi = {0};
+        SHFILEINFOW sfi = {};
         SHGetFileInfoW(filePath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON);
 
         if (sfi.hIcon) {
@@ -458,7 +461,7 @@ void SetDragImage(IDataObject* pDataObject, const std::wstring& filePath, POINT 
             ReleaseDC(NULL, hdcScreen);
 
             // 设置拖放图像
-            SHDRAGIMAGE shdi = {0};
+            SHDRAGIMAGE shdi = {};
             shdi.sizeDragImage.cx = bmpWidth;
             shdi.sizeDragImage.cy = bmpHeight;
             shdi.ptOffset.x = bmpWidth / 2;
@@ -681,7 +684,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
 
     // 处理鼠标滚轮 - 在边界时阻止消息传递以避免闪烁
     if (message == WM_MOUSEWHEEL) {
-        SCROLLINFO si = {sizeof(SCROLLINFO)};
+        SCROLLINFO si = {};
+        si.cbSize = sizeof(SCROLLINFO);
         si.fMask = SIF_ALL;
         GetScrollInfo(hwnd, SB_VERT, &si);
 
@@ -771,7 +775,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
 
     // 处理垂直滚动
     if (message == WM_VSCROLL) {
-        SCROLLINFO si = {sizeof(SCROLLINFO)};
+        SCROLLINFO si = {};
+        si.cbSize = sizeof(SCROLLINFO);
         si.fMask = SIF_ALL;
         GetScrollInfo(hwnd, SB_VERT, &si);
 
@@ -813,8 +818,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
     // 自绘滚动条 - 用白色覆盖原生滚动条，只画滑块
     if (message == WM_NCPAINT) {
         // 先检查是否需要滚动
-        SCROLLINFO si = {sizeof(SCROLLINFO)};
-        si.fMask = SIF_ALL;
+        SCROLLINFO si = {};
+        si.cbSize = sizeof(SCROLLINFO);        si.fMask = SIF_ALL;
         GetScrollInfo(hwnd, SB_VERT, &si);
 
         // 如果不需要滚动（内容不足以滚动），直接返回，避免闪烁
@@ -877,8 +882,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         pt.y = HIWORD(lParam);
 
         // 启用鼠标追踪以接收 WM_MOUSELEAVE
-        TRACKMOUSEEVENT tme = {sizeof(TRACKMOUSEEVENT)};
-        tme.dwFlags = TME_LEAVE;
+        TRACKMOUSEEVENT tme = {};
+        tme.cbSize = sizeof(TRACKMOUSEEVENT);        tme.dwFlags = TME_LEAVE;
         tme.hwndTrack = hwnd;
         TrackMouseEvent(&tme);
 
@@ -888,8 +893,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         int oldHoverIndex = g_hoverIconIndex;
         bool wasHoveringFolder = g_isHoveringFolder;
         int oldFolderHoverIndex = g_hoverFolderIndex;
-        bool wasHoveringImage = g_isHoveringImage;
-        int oldImageHoverIndex = g_hoverImageIndex;
         bool wasHoveringLink = g_isHoveringLink;
         int oldLinkHoverIndex = g_hoverLinkIndex;
 
@@ -948,7 +951,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
                         // 显示 Tooltip（显示应用名）
                         if (g_hwndListBoxTooltip != NULL && !item.sourceApp.empty()) {
                             // 先更新文本以获取 tooltip 大小
-                            TOOLINFOW ti = {0};
+                            TOOLINFOW ti = {};
                             ti.cbSize = TTTOOLINFOW_V1_SIZE;
                             ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
                             ti.hwnd = g_hwndListBox;
@@ -1114,7 +1117,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
                                         static std::wstring s_tooltipImagePath;
                                         s_tooltipImagePath = imagePath;
 
-                                        TOOLINFOW ti = {0};
+                                        TOOLINFOW ti = {};
                                         ti.cbSize = TTTOOLINFOW_V1_SIZE;
                                         ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
                                         ti.hwnd = g_hwndListBox;
@@ -1146,7 +1149,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
                 g_hoverIconIndex = -1;
 
                 if (g_hwndListBoxTooltip != NULL) {
-                    TOOLINFOW ti = {0};
+                    TOOLINFOW ti = {};
                     ti.cbSize = TTTOOLINFOW_V1_SIZE;
                     ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
                     ti.hwnd = g_hwndListBox;
@@ -1160,7 +1163,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
 
             // 隐藏 tooltip
             if (g_hwndListBoxTooltip != NULL) {
-                TOOLINFOW ti = {0};
+                TOOLINFOW ti = {};
                 ti.cbSize = TTTOOLINFOW_V1_SIZE;
                 ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
                 ti.hwnd = g_hwndListBox;
@@ -1306,7 +1309,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         }
 
         if (g_hwndListBoxTooltip != NULL) {
-            TOOLINFOW ti = {0};
+            TOOLINFOW ti = {};
             ti.cbSize = TTTOOLINFOW_V1_SIZE;
             ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
             ti.hwnd = g_hwndListBox;
@@ -1609,7 +1612,7 @@ LRESULT CALLBACK TopmostBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
     switch (message) {
         case WM_MOUSEMOVE: {
             // 设置鼠标追踪以接收 WM_MOUSELEAVE
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1636,7 +1639,7 @@ LRESULT CALLBACK TopmostBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
 LRESULT CALLBACK BatchEditBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1663,7 +1666,7 @@ LRESULT CALLBACK BatchEditBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
 LRESULT CALLBACK PageUpBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1690,7 +1693,7 @@ LRESULT CALLBACK PageUpBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 LRESULT CALLBACK PageDownBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1717,7 +1720,7 @@ LRESULT CALLBACK PageDownBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM 
 LRESULT CALLBACK TitleTopmostBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1744,7 +1747,7 @@ LRESULT CALLBACK TitleTopmostBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPA
 LRESULT CALLBACK TitleMinimizeBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1771,7 +1774,7 @@ LRESULT CALLBACK TitleMinimizeBtnProc(HWND hwnd, UINT message, WPARAM wParam, LP
 LRESULT CALLBACK TitleMaximizeBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -1798,7 +1801,7 @@ LRESULT CALLBACK TitleMaximizeBtnProc(HWND hwnd, UINT message, WPARAM wParam, LP
 LRESULT CALLBACK TitleCloseBtnProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT tme = {0};
+            TRACKMOUSEEVENT tme = {};
             tme.cbSize = sizeof(TRACKMOUSEEVENT);
             tme.dwFlags = TME_LEAVE;
             tme.hwndTrack = hwnd;
@@ -2434,7 +2437,7 @@ LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
                 InvalidateRect(hwnd, NULL, FALSE);
 
                 // 更新tooltip
-                TOOLINFOW ti = {0};
+                TOOLINFOW ti = {};
                 ti.cbSize = TTTOOLINFOW_V1_SIZE;
                 ti.uFlags = TTF_SUBCLASS;
                 ti.hwnd = hwnd;
@@ -2987,7 +2990,7 @@ void ShowTagPopup(HWND hwndParent, int x, int y, int btnWidth) {
     // 注册窗口类
     static bool registered = false;
     if (!registered) {
-        WNDCLASSEXW wc = {0};
+        WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(WNDCLASSEXW);
         wc.lpfnWndProc = TagPopupProc;
         wc.hInstance = GetModuleHandle(NULL);
@@ -3164,7 +3167,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SendMessageW(g_hwndListBoxTooltip, TTM_SETTIPTEXTCOLOR, (WPARAM)RGB(255, 255, 255), 0);
 
             // 为列表框添加 Tooltip 工具（使用 TTF_TRACK 实现手动控制显示）
-            TOOLINFOW tiListBox = {0};
+            TOOLINFOW tiListBox = {};
             tiListBox.cbSize = TTTOOLINFOW_V1_SIZE;
             tiListBox.uFlags = TTF_TRACK | TTF_ABSOLUTE;
             tiListBox.hwnd = g_hwndListBox;
@@ -3223,7 +3226,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SendMessageW(hwndTooltip, TTM_SETTIPTEXTCOLOR, (WPARAM)RGB(255, 255, 255), 0);
 
             // 为每个按钮添加Tooltip
-            TOOLINFOW ti = {0};
+            TOOLINFOW ti = {};
             ti.cbSize = TTTOOLINFOW_V1_SIZE;
             ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
             ti.hwnd = hwnd;
@@ -3361,12 +3364,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             const int searchHeight = 33;
             // 标签页高度
             const int tabHeight = 30;
-            // 按钮高度
-            const int buttonHeight = 30;
-            // 按钮宽度
-            const int buttonWidth = 100;
-            // 按钮水平间距
-            const int buttonSpacing = 110;
 
             // 调整搜索栏（留出边框空间）
             const int borderPadding = 5;
@@ -5183,7 +5180,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     HBITMAP hStationIcon = CreateMenuIconBitmap(L"\uE710");  // Add to station
                     HBITMAP hTagIcon = CreateMenuIconBitmap(L"\uE719");  // Tag
 
-                    MENUITEMINFOW mii = {0};
+                    MENUITEMINFOW mii = {};
                     mii.cbSize = sizeof(MENUITEMINFOW);
                     mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
 
@@ -5238,7 +5235,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     HBITMAP hDeleteIcon = CreateMenuIconBitmap(L"\uE74D", RGB(200, 60, 60));  // Delete (红色)
                     HBITMAP hOpenLocationIcon = CreateMenuIconBitmap(L"\uE838");  // OpenFolderHorizontal
 
-                    MENUITEMINFOW mii = {0};
+                    MENUITEMINFOW mii = {};
                     mii.cbSize = sizeof(MENUITEMINFOW);
                     mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
 
@@ -5663,7 +5660,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 HBITMAP hExitIcon = CreateMenuIconBitmap(L"\uE7E8", RGB(200, 60, 60));  // Power (红色)
 
                 // 添加设置和退出到托盘菜单（带图标）
-                MENUITEMINFOW mii = {0};
+                MENUITEMINFOW mii = {};
                 mii.cbSize = sizeof(MENUITEMINFOW);
                 mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
 
@@ -6049,7 +6046,7 @@ bool InputBox(HWND hwnd, const wchar_t* title, const wchar_t* prompt, wchar_t* r
 }
 
 // 入口函数
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPWSTR lpCmdLine, int nCmdShow) {
     UNREFERENCED_PARAMETER(lpCmdLine);
     // 创建命名互斥量，检测是否已有实例在运行
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\SmartClipMutex");

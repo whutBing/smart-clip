@@ -6,7 +6,7 @@ HBITMAP CreateMenuIconBitmap(const wchar_t* iconChar, COLORREF color) {
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
 
-    BITMAPINFO bmi = {0};
+    BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = size;
     bmi.bmiHeader.biHeight = -size;

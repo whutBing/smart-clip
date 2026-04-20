@@ -5,8 +5,10 @@
 #include <shlwapi.h>
 #include <vector>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "gdiplus.lib")
+#endif
 
 using namespace Gdiplus;
 
@@ -45,7 +47,7 @@ bool LoadImageFile(const wchar_t* filePath, std::vector<BYTE>& imageData, int& w
     }
 
     // 创建24位DIB
-    BITMAPINFO bmi = {0};
+    BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = width;
     bmi.bmiHeader.biHeight = -height; // 负值表示自顶向下

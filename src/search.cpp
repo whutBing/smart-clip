@@ -7,7 +7,7 @@ HWND g_hwndSearchButton;
 HWND g_hwndTabControl;
 
 // 处理搜索操作
-void PerformSearch(HWND hwnd) {
+void PerformSearch(HWND /*hwnd*/) {
     // 获取搜索框内容
     int textLength = GetWindowTextLengthW(g_hwndSearchBox) + 1;
     std::vector<wchar_t> buffer(textLength);

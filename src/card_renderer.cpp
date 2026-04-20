@@ -99,7 +99,7 @@ void DrawCardImage(Graphics& graphics, const RECT& contentRect, const ClipboardI
 }
 
 // 绘制中转站卡片
-void DrawTransferStationCard(HDC hdc, const RECT& rect, const ClipboardItem& item, bool isHovered, bool isCollapsing, int animFrame, bool isTopmost, bool isExpanding, bool isWaving, int waveFrame) {
+void DrawTransferStationCard(HDC hdc, const RECT& rect, const ClipboardItem& item, bool isHovered, bool isCollapsing, int animFrame, bool /*isTopmost*/, bool /*isExpanding*/, bool isWaving, int waveFrame) {
     Graphics graphics(hdc);
     graphics.SetSmoothingMode(SmoothingModeAntiAlias);
     graphics.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
@@ -250,7 +250,6 @@ void DrawTransferStationCard(HDC hdc, const RECT& rect, const ClipboardItem& ite
 
             int arrowMargin = 4;
             int centerY = closeY + CARD_CLOSE_BUTTON_SIZE / 2;
-            int centerX = closeX + CARD_CLOSE_BUTTON_SIZE / 2;
 
             // 箭头主体（水平线）
             graphics.DrawLine(&closePen,

@@ -456,7 +456,7 @@ HICON GetAppIcon(const std::wstring& exePath) {
     }
 
     // 从文件获取图标
-    SHFILEINFOW sfi = {0};
+    SHFILEINFOW sfi = {};
     if (SHGetFileInfoW(exePath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
         g_iconCache[exePath] = sfi.hIcon;
         return sfi.hIcon;

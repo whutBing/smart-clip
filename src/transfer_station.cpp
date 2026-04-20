@@ -391,7 +391,6 @@ void AddToTransferStation(int historyIndex) {
         RECT workArea;
         SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
         int screenHeight = workArea.bottom;
-        int totalItems = g_transferStation.size();
 
         // 计算旗杆高度（始终使用正常状态的高度，不随卡片收起而变化）
         int flagpoleHeight = g_transferStation.size() * (CARD_HEIGHT + CARD_MARGIN) + 20;
@@ -784,7 +783,6 @@ LRESULT CALLBACK TransferStationCardProc(HWND hwnd, UINT message, WPARAM wParam,
                 InvalidateRect(hwnd, NULL, FALSE);
             } else if (wParam >= 4000) {
                 // 展开动画结束定时器
-                int historyIndex = wParam - 4000;
                 KillTimer(hwnd, wParam);
                 KillTimer(hwnd, wParam - 1000);  // 停止展开动画定时器
 
@@ -832,7 +830,6 @@ LRESULT CALLBACK TransferStationCardProc(HWND hwnd, UINT message, WPARAM wParam,
                 }
             } else if (wParam >= 1000) {
                 // 结束定时器：动画播放完毕，调整窗口到窄条状态
-                int historyIndex = wParam - 1000;
                 KillTimer(hwnd, wParam);
                 KillTimer(hwnd, wParam + 1000);  // 停止动画定时器
 

@@ -5,7 +5,7 @@
 NOTIFYICONDATAW g_nid;
 
 // 显示托盘气泡提示
-void ShowTrayBalloon(HWND hwnd, const wchar_t* title, const wchar_t* text, DWORD iconType, DWORD uTimeout) {
+void ShowTrayBalloon(HWND /*hwnd*/, const wchar_t* title, const wchar_t* text, DWORD iconType, DWORD uTimeout) {
     NOTIFYICONDATAW nid = g_nid;
 
     // 先清除当前显示的通知（如果有）
