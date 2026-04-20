@@ -1,0 +1,40 @@
+name: Build and Release SmartClip
+
+on:
+  push:
+    tags:
+      - 'v*'  # 当推送标签（如 v1.0.0）时触发
+  workflow_dispatch:  # 允许手动触发
+
+permissions:
+  contents: write  # 允许创建 Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up MinGW
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+    
+    - name: Build SmartClip
+      shell: msys2 {0}
+      run: |
+        mingw32-make
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: SmartClip_Native.exe
+        body: |
+          ## SmartClip 发布说明
+          - 自动构建的 Release 版本
+          - 包含所有最新功能
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
