@@ -286,8 +286,7 @@ void SwitchSettingsTab(int tabIndex) {
     if (g_hwndStartupLabel) ShowWindow(g_hwndStartupLabel, showGeneral);
     if (g_hwndNotificationBtn) ShowWindow(g_hwndNotificationBtn, showGeneral);
     if (g_hwndNotificationLabel) ShowWindow(g_hwndNotificationLabel, showGeneral);
-    if (g_hwndFontButton) ShowWindow(g_hwndFontButton, showGeneral);
-    if (g_hwndFontLabel) ShowWindow(g_hwndFontLabel, showGeneral);
+
     if (g_hwndOpenLogButton) ShowWindow(g_hwndOpenLogButton, showGeneral);
     if (g_hwndThemeLabel) ShowWindow(g_hwndThemeLabel, showGeneral);
     if (g_hwndThemeLightBtn) ShowWindow(g_hwndThemeLightBtn, showGeneral);
@@ -639,105 +638,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPAR
                 return TRUE;
             }
 
-            // 处理字体选择按钮（只允许选择字体名和字形，不允许选择大小）
-            if (wID == IDC_FONT_BUTTON && wNotifyCode == BN_CLICKED) {
-                CHOOSEFONTW cf;
-                LOGFONTW lf;
-                ZeroMemory(&cf, sizeof(cf));
-                ZeroMemory(&lf, sizeof(lf));
-
-                cf.lStructSize = sizeof(cf);
-                cf.hwndOwner = hwndDlg;
-                cf.lpLogFont = &lf;
-                // CF_NOSIZESEL: 隐藏字体大小选择，只允许选择字体名和字形
-                cf.Flags = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_NOSIZESEL;
-                cf.nFontType = SCREEN_FONTTYPE;
-
-                // 设置当前字体
-                wcscpy_s(lf.lfFaceName, g_fontName.c_str());
-                lf.lfHeight = -MulDiv(g_fontSize, GetDeviceCaps(GetDC(hwndDlg), LOGPIXELSY), 72);
-                lf.lfWeight = g_fontWeight;
-                lf.lfItalic = g_fontItalic;
-
-                if (ChooseFontW(&cf)) {
-                    // 保存新字体（只保存字体名和字形，不保存大小）
-                    g_fontName = lf.lfFaceName;
-                    g_fontWeight = lf.lfWeight;
-                    g_fontItalic = lf.lfItalic;
-
-                    // 更新显示标签（显示字体名和字形）
-                    std::wstring styleText = L"";
-                    if (lf.lfWeight >= FW_BOLD) styleText += L"粗体";
-                    if (lf.lfItalic) {
-                        if (!styleText.empty()) styleText += L" ";
-                        styleText += L"斜体";
-                    }
-                    if (styleText.empty()) styleText = L"常规";
-                    std::wstring fontInfo = L"当前字体: " + g_fontName + L" (" + styleText + L")";
-                    SetWindowTextW(g_hwndFontLabel, fontInfo.c_str());
-
-                    // 保存字体设置
-                    std::wstring filePath = GetDataFilePath();
-                    size_t lastSlash = filePath.find_last_of(L"\\");
-                    if (lastSlash != std::wstring::npos) {
-                        std::wstring fontFilePath = filePath.substr(0, lastSlash) + L"\\font.txt";
-                        HANDLE hFile = CreateFileW(fontFilePath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-                        if (hFile != INVALID_HANDLE_VALUE) {
-                            // 保存格式：字体名\n字号\n字重\n斜体
-                            std::wstring fontData = g_fontName + L"\n" + std::to_wstring(g_fontSize) + L"\n" + std::to_wstring(g_fontWeight) + L"\n" + std::to_wstring(g_fontItalic ? 1 : 0);
-                            int utf8Length = WideCharToMultiByte(CP_UTF8, 0, fontData.c_str(), -1, NULL, 0, NULL, NULL);
-                            if (utf8Length > 0) {
-                                std::vector<char> utf8Content(utf8Length);
-                                WideCharToMultiByte(CP_UTF8, 0, fontData.c_str(), -1, &utf8Content[0], utf8Length, NULL, NULL);
-                                DWORD dwBytesWritten = 0;
-                                WriteFile(hFile, &utf8Content[0], utf8Length - 1, &dwBytesWritten, NULL);
-                            }
-                            CloseHandle(hFile);
-                        }
-                    }
-
-                    // 刷新主窗口UI控件字体
-                    HWND hwndMain = GetParent(hwndDlg);
-                    if (hwndMain != NULL) {
-                        // 创建新字体
-                        HFONT hNewFont = CreateFontW(g_fontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
-
-                        // 更新搜索框字体
-                        HWND hwndSearchBox = GetDlgItem(hwndMain, ID_SEARCH_BOX);
-                        if (hwndSearchBox) SendMessageW(hwndSearchBox, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        // 更新标签页字体
-                        HWND hwndTabControl = GetDlgItem(hwndMain, ID_TAB_CONTROL);
-                        if (hwndTabControl) SendMessageW(hwndTabControl, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        // 更新按钮字体
-                        HWND hwndClearButton = GetDlgItem(hwndMain, ID_CLEAR_BUTTON);
-                        if (hwndClearButton) SendMessageW(hwndClearButton, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        HWND hwndRefreshButton = GetDlgItem(hwndMain, ID_REFRESH_BUTTON);
-                        if (hwndRefreshButton) SendMessageW(hwndRefreshButton, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        HWND hwndTopmostButton = GetDlgItem(hwndMain, ID_TOPMOST_BUTTON);
-                        if (hwndTopmostButton) SendMessageW(hwndTopmostButton, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        HWND hwndDarkmodeButton = GetDlgItem(hwndMain, ID_DARKMODE_BUTTON);
-                        if (hwndDarkmodeButton) SendMessageW(hwndDarkmodeButton, WM_SETFONT, (WPARAM)hNewFont, TRUE);
-
-                        // 刷新主窗口
-                        InvalidateRect(hwndMain, NULL, TRUE);
-                    }
-
-                    // 刷新主窗口显示
-                    if (g_hwndListBox != NULL) {
-                        InvalidateRect(g_hwndListBox, NULL, TRUE);
-                    }
-
-                    ShowTrayBalloon(GetParent(hwndDlg), L"设置已更新", L"字体设置已保存");
-                }
-                return TRUE;
-            }
 
             // 处理快捷键编辑框焦点
             if (wID == IDC_HOTKEY_EDIT) {
@@ -1016,28 +916,8 @@ void ShowSettingsDialog(HWND hwndParent) {
         col2X + (labelWidth - btnSize) / 2, contentY, btnSize, btnSize,
         hwndDlg, (HMENU)IDC_NOTIFICATION_CHECK, NULL, NULL);
 
-    // 字体选择（通用分类第二行）
-    int generalRow2Y = contentY + btnSize + 30;
-    g_hwndFontButton = CreateWindowExW(0, L"BUTTON", L"选择字体",
-        WS_CHILD | BS_PUSHBUTTON,
-        20, generalRow2Y, 80, 25, hwndDlg, (HMENU)IDC_FONT_BUTTON, NULL, NULL);
-    SendMessageW(g_hwndFontButton, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-    std::wstring styleText = L"";
-    if (g_fontWeight >= FW_BOLD) styleText += L"粗体";
-    if (g_fontItalic) {
-        if (!styleText.empty()) styleText += L" ";
-        styleText += L"斜体";
-    }
-    if (styleText.empty()) styleText = L"常规";
-    std::wstring fontInfo = L"当前: " + g_fontName + L" (" + styleText + L")";
-    g_hwndFontLabel = CreateWindowExW(0, L"STATIC", fontInfo.c_str(),
-        WS_CHILD | SS_LEFT,
-        110, generalRow2Y + 4, 220, 20, hwndDlg, NULL, NULL, NULL);
-    SendMessageW(g_hwndFontLabel, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-    // 打开日志文件位置（通用分类第三行）
-    int generalRow3Y = generalRow2Y + 35;
+    // 打开日志文件位置（通用分类第二行）
+    int generalRow3Y = contentY + btnSize + 30;
     g_hwndOpenLogButton = CreateWindowExW(0, L"BUTTON", L"打开日志文件位置",
         WS_CHILD | BS_PUSHBUTTON,
         20, generalRow3Y, 130, 25, hwndDlg, (HMENU)IDC_OPEN_DATA_FOLDER, NULL, NULL);
