@@ -1130,7 +1130,12 @@ static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
 // ==================== 显示设置对话框 ====================
 
 void ShowSettingsDialog(HWND hwndParent) {
-    if (g_isSettingsDialogOpen) return;
+    // 如果标记为打开但窗口已不存在，重置状态
+    if (g_isSettingsDialogOpen) {
+        if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) return;
+        g_isSettingsDialogOpen = false;
+        g_hwndSettingsDlg = NULL;
+    }
 
     LoadFontSettings();
     g_isSettingsDialogOpen = true;
