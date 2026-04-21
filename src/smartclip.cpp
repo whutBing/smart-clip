@@ -2221,27 +2221,39 @@ LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
                     FillRect(hdc, &rcEditColor, hEditColorBrush);
                     DeleteObject(hEditColorBrush);
 
-                    // 绘制确认按钮（绿色对勾）和取消按钮（红色❌）
+                    // 绘制确认按钮（绿色对勾）、取消按钮（红色❌）和删除按钮
                     int btnSize = 20;
                     int btnY = y + (itemHeight - btnSize) / 2;
+                    int deleteX = rcClient.right - padding - btnSize * 3 - 8;
                     int confirmX = rcClient.right - padding - btnSize * 2 - 8;
                     int cancelX = rcClient.right - padding - btnSize;
 
+                    HFONT hBtnFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
+                    SelectObject(hdc, hBtnFont);
+
+                    // 删除按钮（灰色垃圾桶图标）
+                    SetTextColor(hdc, RGB(158, 158, 158));
+                    RECT rcDelete = {deleteX, btnY, deleteX + btnSize, btnY + btnSize};
+                    DrawTextW(hdc, L"\uE74D", -1, &rcDelete, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
                     // 绿色对勾
-                    HFONT hBtnFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                    HFONT hSymFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-                    SelectObject(hdc, hBtnFont);
-                    SetTextColor(hdc, RGB(76, 175, 80));  // 绿色
+                    SelectObject(hdc, hSymFont);
+                    SetTextColor(hdc, RGB(76, 175, 80));
                     RECT rcConfirm = {confirmX, btnY, confirmX + btnSize, btnY + btnSize};
                     DrawTextW(hdc, L"✓", -1, &rcConfirm, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                     // 红色❌
-                    SetTextColor(hdc, RGB(244, 67, 54));  // 红色
+                    SetTextColor(hdc, RGB(244, 67, 54));
                     RECT rcCancel = {cancelX, btnY, cancelX + btnSize, btnY + btnSize};
                     DrawTextW(hdc, L"✕", -1, &rcCancel, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                     SelectObject(hdc, hFont);
+                    DeleteObject(hSymFont);
                     DeleteObject(hBtnFont);
 
                     y += itemHeight;
@@ -2672,6 +2684,7 @@ LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
 
                 int btnSize = 20;
                 int btnY = editY + (itemHeight - btnSize) / 2;
+                int deleteX = rcClient.right - padding - btnSize * 3 - 8;
                 int confirmX = rcClient.right - padding - btnSize * 2 - 8;
                 int cancelX = rcClient.right - padding - btnSize;
 
@@ -2707,6 +2720,41 @@ LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
                                     SWP_NOMOVE | SWP_NOZORDER);
                     }
                     InvalidateRect(hwnd, NULL, TRUE);
+                    return 0;
+                }
+
+                // 检查删除按钮（仅编辑现有标签时有效）
+                if (g_tagPopupEditIndex < (int)g_tags.size() &&
+                    x >= deleteX && x < deleteX + btnSize &&
+                    y >= btnY && y < btnY + btnSize) {
+                    int tagId = g_tags[g_tagPopupEditIndex].id;
+                    std::wstring tagName = g_tags[g_tagPopupEditIndex].name;
+
+                    int result = MessageBoxW(hwnd,
+                        (L"确定要删除分类「" + tagName + L"」吗？\n该分类下的记录不会被删除。").c_str(),
+                        L"确认删除", MB_YESNO | MB_ICONQUESTION);
+                    if (result == IDYES) {
+                        DestroyWindow(g_hwndTagPopupEdit);
+                        g_hwndTagPopupEdit = NULL;
+                        g_tagPopupEditIndex = -1;
+                        g_tagPopupColorPickerIndex = -1;
+
+                        RemoveTag(tagId);
+                        SaveTags();
+                        SaveHistory();
+
+                        int newHeight = arrowHeight + padding + itemHeight + g_tags.size() * itemHeight + padding;
+                        RECT rcWindow;
+                        GetWindowRect(hwnd, &rcWindow);
+                        SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
+                                    SWP_NOMOVE | SWP_NOZORDER);
+                        InvalidateRect(hwnd, NULL, TRUE);
+
+                        if (g_currentFilterTagId == tagId) {
+                            g_currentFilterTagId = 0;
+                            UpdateListBox();
+                        }
+                    }
                     return 0;
                 }
 
