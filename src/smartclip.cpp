@@ -395,89 +395,114 @@ void SetDragImage(IDataObject* pDataObject, const std::wstring& filePath, POINT 
     IDragSourceHelper* pDragSourceHelper = NULL;
     if (SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, NULL, CLSCTX_INPROC_SERVER,
                                    IID_IDragSourceHelper, (void**)&pDragSourceHelper))) {
-        // 尝试获取 IDragSourceHelper2 以设置标志，使拖拽图像立即显示
         IDragSourceHelper2* pDragSourceHelper2 = NULL;
         if (SUCCEEDED(pDragSourceHelper->QueryInterface(IID_PPV_ARGS(&pDragSourceHelper2)))) {
-            // DSH_ALLOWDROPDESCRIPTIONTEXT = 0x0001 - 允许在应用内显示拖拽图像
             pDragSourceHelper2->SetFlags(0x0001);
             pDragSourceHelper2->Release();
         }
 
-        // 获取文件图标
         SHFILEINFOW sfi = {};
         SHGetFileInfoW(filePath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON);
 
         if (sfi.hIcon) {
-            // 获取文件名
             std::wstring fileName = filePath;
             size_t pos = fileName.find_last_of(L"\\/");
-            if (pos != std::wstring::npos) {
-                fileName = fileName.substr(pos + 1);
-            }
+            if (pos != std::wstring::npos) fileName = fileName.substr(pos + 1);
 
-            // 创建拖放图像位图
             int iconSize = 32;
             int textHeight = 20;
-            int bmpWidth = 150;
+            int hPadding = 16;
+
+            // 测量文件名宽度，动态计算位图宽度
+            HDC hdcScreen = GetDC(NULL);
+            HDC hdcMeasure = CreateCompatibleDC(hdcScreen);
+            Gdiplus::Graphics gMeasure(hdcMeasure);
+            Gdiplus::Font font(L"Microsoft YaHei", 9.0f);
+            Gdiplus::RectF bounds;
+            gMeasure.MeasureString(fileName.c_str(), -1, &font, Gdiplus::PointF(0, 0), &bounds);
+            DeleteDC(hdcMeasure);
+
+            int textWidth = (int)(bounds.Width + 0.5f) + hPadding * 2;
+            int minWidth = iconSize + hPadding * 2;
+            int maxWidth = 320;
+            int bmpWidth = textWidth;
+            if (bmpWidth < minWidth) bmpWidth = minWidth;
+            if (bmpWidth > maxWidth) bmpWidth = maxWidth;
             int bmpHeight = iconSize + textHeight + 4;
 
-            HDC hdcScreen = GetDC(NULL);
+            // 使用 32 位 ARGB 位图实现真正的 alpha 透明
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = bmpWidth;
+            bmi.bmiHeader.biHeight = -bmpHeight;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+
+            void* pBits = NULL;
+            HBITMAP hBitmap = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
             HDC hdcMem = CreateCompatibleDC(hdcScreen);
-            HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, bmpWidth, bmpHeight);
             HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
 
-            // 填充背景（使用品红色作为透明色，避免文字抗锯齿变虚）
-            RECT rcBmp = {0, 0, bmpWidth, bmpHeight};
-            HBRUSH hBrush = CreateSolidBrush(RGB(255, 0, 255));
-            FillRect(hdcMem, &rcBmp, hBrush);
-            DeleteObject(hBrush);
+            // 清零（全透明）
+            memset(pBits, 0, bmpWidth * bmpHeight * 4);
 
-            // 绘制白色圆角背景
-            HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
-            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcMem, hWhiteBrush);
-            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hPen);
-            RoundRect(hdcMem, 0, 0, bmpWidth, bmpHeight, 8, 8);
-            SelectObject(hdcMem, hOldBrush);
-            SelectObject(hdcMem, hOldPen);
-            DeleteObject(hWhiteBrush);
-            DeleteObject(hPen);
+            // 用 GDI+ 绘制带 alpha 的内容
+            Gdiplus::Graphics g(hdcMem);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 
-            // 绘制图标（居中）
+            // 白色圆角背景
+            Gdiplus::GraphicsPath bgPath;
+            CreateRoundRectPath(&bgPath, 0, 0, bmpWidth, bmpHeight, 8);
+            Gdiplus::SolidBrush bgBrush(Gdiplus::Color(240, 255, 255, 255));
+            g.FillPath(&bgBrush, &bgPath);
+
+            // 边框
+            Gdiplus::Pen borderPen(Gdiplus::Color(60, 0, 0, 0), 1.0f);
+            g.DrawPath(&borderPen, &bgPath);
+
+            // 图标
             int iconX = (bmpWidth - iconSize) / 2;
             DrawIconEx(hdcMem, iconX, 2, sfi.hIcon, iconSize, iconSize, 0, NULL, DI_NORMAL);
 
-            // 绘制文件名（居中，截断显示）
-            HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                     GB2312_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                     CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-            HFONT hOldFont = (HFONT)SelectObject(hdcMem, hFont);
-            SetBkMode(hdcMem, TRANSPARENT);
-            SetTextColor(hdcMem, RGB(0, 0, 0));
+            // 文件名
+            Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 50, 50, 50));
+            Gdiplus::StringFormat sf;
+            sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+            sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            sf.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+            Gdiplus::RectF textRect(2.0f, (float)(iconSize + 2), (float)(bmpWidth - 4), (float)textHeight);
+            g.DrawString(fileName.c_str(), -1, &font, textRect, &sf, &textBrush);
 
-            RECT rcText = {2, iconSize + 4, bmpWidth - 2, bmpHeight};
-            DrawTextW(hdcMem, fileName.c_str(), -1, &rcText, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            g.Flush();
 
-            SelectObject(hdcMem, hOldFont);
-            DeleteObject(hFont);
+            // 修正预乘 alpha（GDI 绘制的像素需要预乘）
+            BYTE* pixels = (BYTE*)pBits;
+            for (int i = 0; i < bmpWidth * bmpHeight; i++) {
+                BYTE b = pixels[0], gr = pixels[1], r = pixels[2], a = pixels[3];
+                if (a > 0 && a < 255) {
+                    pixels[0] = (BYTE)((b * a) / 255);
+                    pixels[1] = (BYTE)((gr * a) / 255);
+                    pixels[2] = (BYTE)((r * a) / 255);
+                }
+                pixels += 4;
+            }
 
             SelectObject(hdcMem, hOldBitmap);
             DeleteDC(hdcMem);
             ReleaseDC(NULL, hdcScreen);
 
-            // 设置拖放图像
             SHDRAGIMAGE shdi = {};
             shdi.sizeDragImage.cx = bmpWidth;
             shdi.sizeDragImage.cy = bmpHeight;
             shdi.ptOffset.x = bmpWidth / 2;
             shdi.ptOffset.y = iconSize / 2;
             shdi.hbmpDragImage = hBitmap;
-            shdi.crColorKey = RGB(255, 0, 255);  // 品红色作为透明色
+            shdi.crColorKey = CLR_NONE;
 
             pDragSourceHelper->InitializeFromBitmap(&shdi, pDataObject);
-
             DestroyIcon(sfi.hIcon);
-            // 注意：hBitmap 由 IDragSourceHelper 接管，不需要手动删除
         }
 
         pDragSourceHelper->Release();
