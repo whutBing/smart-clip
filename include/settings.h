@@ -3,42 +3,41 @@
 #include <windows.h>
 #include <string>
 
-// 设置对话框相关常量
-#define IDC_TAB_CONTROL 100
+// 设置对话框控件ID
 #define IDC_STARTUP_CHECK 101
 #define IDC_HOTKEY_EDIT 102
-#define IDC_OPEN_DATA_FOLDER 103  // 打开数据文件夹按钮
-#define IDC_FONT_BUTTON 104  // 字体选择按钮
-#define IDC_NOTIFICATION_CHECK 106  // 消息通知复选框
+#define IDC_OPEN_DATA_FOLDER 103
+#define IDC_SEARCH_HOTKEY_EDIT 105
+#define IDC_NOTIFICATION_CHECK 106
+#define IDC_COLLAPSE_AFTER_PASTE_CHECK 107
+#define IDC_QUICK_PASTE_COMBO 108
+#define IDC_QUICK_PASTE_CHECK 109
+#define IDC_HISTORY_LIMIT_EDIT 113
+#define IDC_SMOOTH_SCROLL_CHECK 118
+#define IDC_IMAGE_PREVIEW_COMBO 119
+#define IDC_THEME_COMBO 120
+#define IDC_SETTINGS_CLOSE 121
 
 // 图片预览质量枚举
 enum ImagePreviewQuality {
-    PREVIEW_OFF = 0,      // 关闭预览
-    PREVIEW_BLUR = 1,     // 模糊（64px）
-    PREVIEW_SD = 2,       // 标清（128px）
-    PREVIEW_HD = 3        // 高清（256px）
+    PREVIEW_OFF = 0,
+    PREVIEW_BLUR = 1,
+    PREVIEW_SD = 2,
+    PREVIEW_HD = 3
 };
 
-// 开机自启相关全局变量
+// 全局变量
 extern bool g_isStartupEnabled;
-
-// 消息通知相关全局变量
 extern bool g_isNotificationEnabled;
-
-// 用完收起相关全局变量
 extern bool g_isCollapseAfterPaste;
-
-// 平滑滚动相关全局变量
 extern bool g_isSmoothScrollEnabled;
-
-// 图片预览质量全局变量
 extern ImagePreviewQuality g_imagePreviewQuality;
-
-// 字体设置相关全局变量
 extern std::wstring g_fontName;
 extern int g_fontSize;
+extern bool g_isSettingsDialogOpen;
+extern HWND g_hwndSettingsDlg;
 
-// 设置对话框功能
+// 函数声明
 extern void ToggleStartup();
 extern bool CheckStartup();
 extern void ShowSettingsDialog(HWND hwndParent);

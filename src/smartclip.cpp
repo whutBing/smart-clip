@@ -199,6 +199,11 @@ void ApplyTheme() {
             InvalidateRect(g_hwndMain, NULL, TRUE);
             UpdateWindow(g_hwndMain);
         }
+
+        // 刷新设置对话框
+        if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
+            InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
+        }
     }
 }
 
@@ -3073,15 +3078,52 @@ void ShowTagPopup(HWND hwndParent, int x, int y, int btnWidth) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_NCACTIVATE: {
-            // 阻止系统绘制非客户区（避免拖动时闪现XP风格按钮）
             return TRUE;
         }
+        case WM_NCPAINT: {
+            // 自绘非客户区边框，用窗口背景色替代系统灰色边框
+            HDC hdc = GetWindowDC(hwnd);
+            if (hdc) {
+                RECT rcWin;
+                GetWindowRect(hwnd, &rcWin);
+                OffsetRect(&rcWin, -rcWin.left, -rcWin.top);
+
+                RECT rcClient;
+                GetClientRect(hwnd, &rcClient);
+                // 将客户区坐标映射到窗口坐标
+                POINT ptClient = {0, 0};
+                ClientToScreen(hwnd, &ptClient);
+                RECT rcWinScreen;
+                GetWindowRect(hwnd, &rcWinScreen);
+                int borderLeft = ptClient.x - rcWinScreen.left;
+                int borderTop = ptClient.y - rcWinScreen.top;
+                int borderRight = rcWin.right - rcClient.right - borderLeft;
+                int borderBottom = rcWin.bottom - rcClient.bottom - borderTop;
+
+                // 用背景色填充非客户区边框
+                HBRUSH hBrush = CreateSolidBrush(GetBgColor());
+                // 上
+                RECT rcTop = { 0, 0, rcWin.right, borderTop };
+                FillRect(hdc, &rcTop, hBrush);
+                // 左
+                RECT rcLeft = { 0, borderTop, borderLeft, rcWin.bottom };
+                FillRect(hdc, &rcLeft, hBrush);
+                // 右
+                RECT rcRight = { rcWin.right - borderRight, borderTop, rcWin.right, rcWin.bottom };
+                FillRect(hdc, &rcRight, hBrush);
+                // 下
+                RECT rcBottom = { borderLeft, rcWin.bottom - borderBottom, rcWin.right - borderRight, rcWin.bottom };
+                FillRect(hdc, &rcBottom, hBrush);
+
+                DeleteObject(hBrush);
+                ReleaseDC(hwnd, hdc);
+            }
+            return 0;
+        }
         case WM_NCCALCSIZE: {
-            // 扩展客户区到标题栏
             if (wParam == TRUE) {
                 NCCALCSIZE_PARAMS* pParams = (NCCALCSIZE_PARAMS*)lParam;
-                // 保留边框但移除标题栏
-                pParams->rgrc[0].top += 1;  // 保留1像素顶部边框
+                pParams->rgrc[0].top += 1;
                 return 0;
             }
             return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -3880,10 +3922,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 // 图标颜色
                 COLORREF iconColor = GetTextColor();
                 if (lpDIS->CtlID == ID_TITLEBAR_CLOSE && isHover) {
-                    iconColor = RGB(255, 255, 255);  // 关闭按钮悬浮时白色图标
+                    iconColor = RGB(255, 255, 255);
                 }
                 if (lpDIS->CtlID == ID_TITLEBAR_TOPMOST && g_isTopmost) {
-                    iconColor = RGB(0, 120, 215);  // 置顶时蓝色图标
+                    iconColor = RGB(0, 120, 215);
+                }
+                if (lpDIS->CtlID == ID_TITLEBAR_MINIMIZE && g_isTopmost) {
+                    iconColor = RGB(180, 180, 180);
+                    isHover = false;
                 }
                 SetTextColor(hdc, iconColor);
 
@@ -4773,8 +4819,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
                 InvalidateRect(g_hwndTitleTopmost, NULL, TRUE);
             } else if (wID == ID_TITLEBAR_MINIMIZE && wNotifyCode == BN_CLICKED) {
-                // 标题栏最小化按钮
-                ShowWindow(hwnd, SW_MINIMIZE);
+                if (!g_isTopmost) {
+                    ShowWindow(hwnd, SW_MINIMIZE);
+                }
             } else if (wID == ID_TITLEBAR_MAXIMIZE && wNotifyCode == BN_CLICKED) {
                 // 标题栏最大化/还原按钮
                 if (IsZoomed(hwnd)) {
@@ -5785,7 +5832,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             // 处理快捷键按下事件
             if (wParam == ID_HOTKEY_TOGGLE) {
                 // 切换窗口可见性
-                if (IsWindowVisible(hwnd)) {
+                if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
                     if (g_hwndTagPopup) {
                         DestroyWindow(g_hwndTagPopup);
                         g_hwndTagPopup = NULL;
@@ -5794,8 +5841,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 } else {
                     // 记录当前活动窗口（呼出剪贴板前的窗口）
                     g_previousActiveWindow = GetForegroundWindow();
+                    ShowWindow(hwnd, SW_RESTORE);
                     ShowWindow(hwnd, SW_SHOW);
+                    // 强制置顶显示，避免被其他窗口遮挡
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
                     SetForegroundWindow(hwnd);
+                    if (!g_isTopmost) {
+                        // 非置顶模式下，短暂置顶后恢复
+                        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                    }
                 }
             }
             // 处理快捷粘贴快捷键（修饰键+1~9）
