@@ -3024,6 +3024,10 @@ void ShowTagPopup(HWND hwndParent, int x, int y, int btnWidth) {
 // 窗口过程
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+        case WM_NCACTIVATE: {
+            // 阻止系统绘制非客户区（避免拖动时闪现XP风格按钮）
+            return TRUE;
+        }
         case WM_NCCALCSIZE: {
             // 扩展客户区到标题栏
             if (wParam == TRUE) {
@@ -5912,7 +5916,7 @@ BOOL InitApplication(HINSTANCE hInstance, int nCmdShow) {
 
     // 修改窗口样式：移除系统标题栏但保留边框
     LONG_PTR style = GetWindowLongPtrW(g_hwndMain, GWL_STYLE);
-    style &= ~(WS_CAPTION | WS_THICKFRAME);  // 移除标题栏和边框
+    style &= ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
     style |= WS_THICKFRAME;  // 重新添加可调整大小的边框
     SetWindowLongPtrW(g_hwndMain, GWL_STYLE, style);
 
