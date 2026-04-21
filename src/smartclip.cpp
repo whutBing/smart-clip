@@ -4527,12 +4527,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     const ClipboardItem& item = g_history[actualIndex];
 
                     if (item.type == TYPE_TEXT) {
-                        // 文本类型：复制到剪贴板
-                        std::wstring preview = item.content.substr(0, 10);
-                        if (item.content.length() > 10) {
-                            preview += L"...";
-                        }
-
+                        // 文本类型：双击直接粘贴
                         if (OpenClipboard(NULL)) {
                             EmptyClipboard();
 
@@ -4543,16 +4538,36 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                                     wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
                                     GlobalUnlock(hGlobal);
                                     SetClipboardData(CF_UNICODETEXT, hGlobal);
-
-                                    g_isRestoringClipboard = true;
-                                    if (g_isNotificationEnabled) {
-                                        ShowTrayBalloon(hwnd, L"提示", (preview + L" 已复制").c_str());
-                                    }
                                 }
                             }
 
+                            g_isRestoringClipboard = true;
                             CloseClipboard();
                             SetTimer(hwnd, 1, 100, NULL);
+                        }
+
+                        if (!g_isTopmost) {
+                            if (g_hwndTagPopup) {
+                                DestroyWindow(g_hwndTagPopup);
+                                g_hwndTagPopup = NULL;
+                            }
+                            ShowWindow(hwnd, SW_HIDE);
+                        }
+
+                        Sleep(100);
+
+                        if (g_previousActiveWindow != NULL && IsWindow(g_previousActiveWindow)) {
+                            SetForegroundWindow(g_previousActiveWindow);
+                            Sleep(100);
+                        }
+
+                        keybd_event(VK_CONTROL, 0, 0, 0);
+                        keybd_event('V', 0, 0, 0);
+                        keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
+                        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+
+                        if (g_isNotificationEnabled) {
+                            ShowTrayBalloon(hwnd, L"提示", L"已粘贴");
                         }
                     } else if (item.type == TYPE_FILE) {
                         // 文件类型：复制文件路径到剪贴板
