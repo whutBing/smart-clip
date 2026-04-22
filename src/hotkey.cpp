@@ -224,7 +224,7 @@ void LoadHotkeySettings() {
 
     // 如果没有加载到设置，使用默认值
     if (!settingsLoaded) {
-        g_isHotkeyEnabled = false; // 默认禁用，避免冲突
+        g_isHotkeyEnabled = true; // 默认启用
         g_hotkeyModifiers = MOD_CONTROL | MOD_ALT;
         g_hotkeyVirtualKey = VK_SPACE;
     }

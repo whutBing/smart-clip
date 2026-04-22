@@ -17,6 +17,10 @@
 #define IDC_IMAGE_PREVIEW_COMBO 119
 #define IDC_THEME_COMBO 120
 #define IDC_SETTINGS_CLOSE 121
+#define IDC_SET_DATA_DIR 122
+#define IDC_CLEAR_NON_FAV 123
+#define IDC_HOTKEY_BTN 124
+#define IDC_SEARCH_HOTKEY_BTN 125
 
 // 图片预览质量枚举
 enum ImagePreviewQuality {

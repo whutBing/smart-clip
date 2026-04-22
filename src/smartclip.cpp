@@ -3419,6 +3419,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SendMessageW(hwndDarkmodeButton, WM_SETFONT, (WPARAM)hUIFont, TRUE);
 
             g_isStartupEnabled = CheckStartup();
+            LoadCustomDataDir();  // 加载自定义数据目录配置
             LoadTags();    // 加载标签列表
             LoadHistory();
             UpdateListBox();
@@ -5815,27 +5816,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 mii.fState = g_isNotificationEnabled ? MFS_CHECKED : MFS_UNCHECKED;
                 InsertMenuItemW(hTrayMenu, 1, TRUE, &mii);
 
-                // 日间模式
-                mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP | MIIM_STATE;
-                mii.wID = IDM_THEME_LIGHT;
-                mii.dwTypeData = (LPWSTR)L"日间模式";
-                mii.hbmpItem = hLightModeIcon;
-                mii.fState = (g_themeMode == THEME_LIGHT || (g_themeMode == THEME_SYSTEM && !g_isDarkMode)) ? MFS_CHECKED : MFS_UNCHECKED;
+                // 主题切换：只显示对立模式
+                mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
+                if (g_isDarkMode) {
+                    mii.wID = IDM_THEME_LIGHT;
+                    mii.dwTypeData = (LPWSTR)L"日间模式";
+                    mii.hbmpItem = hLightModeIcon;
+                } else {
+                    mii.wID = IDM_THEME_DARK;
+                    mii.dwTypeData = (LPWSTR)L"夜间模式";
+                    mii.hbmpItem = hDarkModeIcon;
+                }
                 InsertMenuItemW(hTrayMenu, 2, TRUE, &mii);
-
-                // 夜间模式
-                mii.wID = IDM_THEME_DARK;
-                mii.dwTypeData = (LPWSTR)L"夜间模式";
-                mii.hbmpItem = hDarkModeIcon;
-                mii.fState = (g_themeMode == THEME_DARK || (g_themeMode == THEME_SYSTEM && g_isDarkMode)) ? MFS_CHECKED : MFS_UNCHECKED;
-                InsertMenuItemW(hTrayMenu, 3, TRUE, &mii);
 
                 mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
                 mii.fState = 0;
                 mii.wID = IDM_EXIT;
                 mii.dwTypeData = (LPWSTR)L"退出";
                 mii.hbmpItem = hExitIcon;
-                InsertMenuItemW(hTrayMenu, 4, TRUE, &mii);
+                InsertMenuItemW(hTrayMenu, 3, TRUE, &mii);
 
                 // 显示托盘菜单
                 POINT pt;

@@ -21,20 +21,79 @@ std::vector<Tag> g_tags;              // 全局标签列表
 int g_currentFilterTagId = 0;         // 当前筛选的标签ID（-1=全部收藏，0=未筛选）
 static int g_nextTagId = 1;           // 下一个标签ID
 
-// 获取数据文件路径
-std::wstring GetDataFilePath() {
+// 自定义数据目录（空=使用默认 %APPDATA%\SmartClip）
+static std::wstring g_customDataDir;
+
+// 获取默认数据根目录
+static std::wstring GetDefaultDataDir() {
     WCHAR szPath[MAX_PATH];
     if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, szPath) != S_OK) {
         if (GetCurrentDirectoryW(MAX_PATH, szPath) == 0) {
             wcscpy_s(szPath, L".");
         }
     }
-    
-    std::wstring dataPath = szPath;
-    dataPath += L"\\SmartClip";
-    CreateDirectoryW(dataPath.c_str(), NULL);
-    
-    return dataPath + L"\\history.txt";
+    return std::wstring(szPath) + L"\\SmartClip";
+}
+
+// 获取配置文件路径（始终在默认位置，用于存储自定义目录路径）
+static std::wstring GetConfigFilePath() {
+    return GetDefaultDataDir() + L"\\datadir.cfg";
+}
+
+void LoadCustomDataDir() {
+    CreateDirectoryW(GetDefaultDataDir().c_str(), NULL);
+    std::wstring cfgPath = GetConfigFilePath();
+    HANDLE hFile = CreateFileW(cfgPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) { g_customDataDir.clear(); return; }
+    DWORD sz = GetFileSize(hFile, NULL);
+    if (sz > 0 && sz < MAX_PATH * 2) {
+        std::vector<BYTE> buf(sz + 2);
+        DWORD read = 0;
+        ReadFile(hFile, &buf[0], sz, &read, NULL);
+        buf[sz] = 0; buf[sz + 1] = 0;
+        int uLen = MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)&buf[0], sz, NULL, 0);
+        if (uLen > 0) {
+            std::vector<wchar_t> wbuf(uLen + 1);
+            MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)&buf[0], sz, &wbuf[0], uLen);
+            wbuf[uLen] = 0;
+            g_customDataDir = &wbuf[0];
+            // 去除换行
+            while (!g_customDataDir.empty() && (g_customDataDir.back() == L'\n' || g_customDataDir.back() == L'\r'))
+                g_customDataDir.pop_back();
+        }
+    }
+    CloseHandle(hFile);
+}
+
+void SaveCustomDataDir() {
+    CreateDirectoryW(GetDefaultDataDir().c_str(), NULL);
+    std::wstring cfgPath = GetConfigFilePath();
+    HANDLE hFile = CreateFileW(cfgPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        int utf8Len = WideCharToMultiByte(CP_UTF8, 0, g_customDataDir.c_str(), -1, NULL, 0, NULL, NULL);
+        if (utf8Len > 0) {
+            std::vector<char> utf8(utf8Len);
+            WideCharToMultiByte(CP_UTF8, 0, g_customDataDir.c_str(), -1, &utf8[0], utf8Len, NULL, NULL);
+            DWORD written = 0;
+            WriteFile(hFile, &utf8[0], utf8Len - 1, &written, NULL);
+        }
+        CloseHandle(hFile);
+    }
+}
+
+std::wstring GetSmartClipDataDir() {
+    if (!g_customDataDir.empty()) {
+        CreateDirectoryW(g_customDataDir.c_str(), NULL);
+        return g_customDataDir;
+    }
+    std::wstring dir = GetDefaultDataDir();
+    CreateDirectoryW(dir.c_str(), NULL);
+    return dir;
+}
+
+// 获取数据文件路径
+std::wstring GetDataFilePath() {
+    return GetSmartClipDataDir() + L"\\history.txt";
 }
 
 // 保存历史记录到文件（修复编码问题）
@@ -475,6 +534,238 @@ void ClearIconCache() {
     g_iconCache.clear();
 }
 
+// 清理所有非收藏历史记录
+void ClearNonFavoriteHistory() {
+    std::wstring imagesPath = GetImagesPath();
+    std::wstring thumbsPath = GetThumbsPath();
+
+    for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+        if (!g_history[i].isFavorite) {
+            const ClipboardItem& item = g_history[i];
+            // 删除关联的图片文件
+            if (item.type == TYPE_IMAGE) {
+                if (!item.imageFileName.empty()) {
+                    std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
+                    DeleteFileW(imgFile.c_str());
+                }
+                // 删除缩略图
+                std::wstring thumbFile = thumbsPath + L"\\thumb_" + std::to_wstring(i) + L".dat";
+                DeleteFileW(thumbFile.c_str());
+            }
+            g_history.erase(g_history.begin() + i);
+        }
+    }
+    SaveHistory();
+    UpdateListBox();
+}
+
+// 递归计算目录大小
+static ULONGLONG CalcDirSize(const std::wstring& dir) {
+    ULONGLONG total = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring path = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            total += CalcDirSize(path);
+        } else {
+            LARGE_INTEGER sz;
+            sz.LowPart = fd.nFileSizeLow;
+            sz.HighPart = fd.nFileSizeHigh;
+            total += sz.QuadPart;
+        }
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    return total;
+}
+
+ULONGLONG GetDataDirSize() {
+    std::wstring filePath = GetDataFilePath();
+    size_t lastSlash = filePath.find_last_of(L"\\");
+    if (lastSlash == std::wstring::npos) return 0;
+    return CalcDirSize(filePath.substr(0, lastSlash));
+}
+
+std::wstring FormatFileSize(ULONGLONG bytes) {
+    wchar_t buf[64];
+    if (bytes < 1024ULL)
+        swprintf(buf, 64, L"%llu B", bytes);
+    else if (bytes < 1024ULL * 1024)
+        swprintf(buf, 64, L"%.1f KB", bytes / 1024.0);
+    else if (bytes < 1024ULL * 1024 * 1024)
+        swprintf(buf, 64, L"%.1f MB", bytes / (1024.0 * 1024));
+    else
+        swprintf(buf, 64, L"%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    return buf;
+}
+
+// ==================== 数据迁移（带进度，非阻塞） ====================
+
+struct MigrateContext {
+    std::wstring srcDir;
+    std::wstring dstDir;
+    HWND hwndProgress;
+    HWND hwndProgressBar;
+    HWND hwndProgressText;
+    HFONT hFont;
+    int totalFiles;
+    int copiedFiles;
+    bool success;
+};
+
+static int CountFilesRecursive(const std::wstring& dir) {
+    int count = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            count += CountFilesRecursive(dir + L"\\" + fd.cFileName);
+        else
+            count++;
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    return count;
+}
+
+static bool CopyDirWithProgress(const std::wstring& src, const std::wstring& dst, MigrateContext* ctx) {
+    CreateDirectoryW(dst.c_str(), NULL);
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW((src + L"\\*").c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return true;
+    bool ok = true;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        std::wstring srcPath = src + L"\\" + fd.cFileName;
+        std::wstring dstPath = dst + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!CopyDirWithProgress(srcPath, dstPath, ctx)) ok = false;
+        } else {
+            if (!CopyFileW(srcPath.c_str(), dstPath.c_str(), FALSE)) ok = false;
+            ctx->copiedFiles++;
+            if (ctx->hwndProgress && IsWindow(ctx->hwndProgress)) {
+                PostMessageW(ctx->hwndProgressBar, PBM_SETPOS, ctx->copiedFiles, 0);
+                PostMessageW(ctx->hwndProgress, WM_APP + 1, 0, (LPARAM)_wcsdup(fd.cFileName));
+            }
+        }
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+    return ok;
+}
+
+static DWORD WINAPI MigrateThreadProc(LPVOID lpParam) {
+    MigrateContext* ctx = (MigrateContext*)lpParam;
+    ctx->success = CopyDirWithProgress(ctx->srcDir, ctx->dstDir, ctx);
+    if (ctx->hwndProgress && IsWindow(ctx->hwndProgress))
+        PostMessageW(ctx->hwndProgress, WM_APP + 2, 0, 0);
+    return 0;
+}
+
+static LRESULT CALLBACK ProgressDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    MigrateContext* ctx = (MigrateContext*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    switch (msg) {
+    case WM_APP + 1: {
+        wchar_t* fileName = (wchar_t*)lParam;
+        if (fileName && ctx) {
+            std::wstring text = L"正在复制: " + std::wstring(fileName)
+                + L"  (" + std::to_wstring(ctx->copiedFiles) + L"/" + std::to_wstring(ctx->totalFiles) + L")";
+            SetWindowTextW(ctx->hwndProgressText, text.c_str());
+            free(fileName);
+        }
+        return 0;
+    }
+    case WM_APP + 2: {
+        // 迁移完成，应用结果
+        if (ctx) {
+            if (ctx->success) {
+                g_customDataDir = ctx->dstDir;
+                SaveCustomDataDir();
+                g_history.clear();
+                LoadHistory();
+                UpdateListBox();
+                MessageBoxW(hwnd, L"数据迁移成功！", L"提示", MB_OK | MB_ICONINFORMATION);
+            } else {
+                MessageBoxW(hwnd, L"数据迁移失败，请检查目标目录权限。", L"错误", MB_OK | MB_ICONERROR);
+            }
+            if (ctx->hFont) DeleteObject(ctx->hFont);
+            delete ctx;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    case WM_CLOSE:
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool MigrateDataDir(const std::wstring& newDir) {
+    std::wstring oldDir = GetSmartClipDataDir();
+    std::wstring newSmartClipDir = newDir + L"\\SmartClip";
+    if (oldDir == newSmartClipDir) return true;
+
+    CreateDirectoryW(newSmartClipDir.c_str(), NULL);
+    int totalFiles = CountFilesRecursive(oldDir);
+
+    static bool progressClassReg = false;
+    if (!progressClassReg) {
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = ProgressDlgProc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+        wc.hbrBackground = CreateSolidBrush(RGB(245, 245, 245));
+        wc.lpszClassName = L"SmartClipProgress";
+        RegisterClassExW(&wc);
+        progressClassReg = true;
+    }
+
+    int pw = 420, ph = 110;
+    int sx = (GetSystemMetrics(SM_CXSCREEN) - pw) / 2;
+    int sy = (GetSystemMetrics(SM_CYSCREEN) - ph) / 2;
+    HWND hwndProg = CreateWindowExW(WS_EX_TOPMOST,
+        L"SmartClipProgress", L"数据迁移中...",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        sx, sy, pw, ph, NULL, NULL, GetModuleHandleW(NULL), NULL);
+
+    INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_PROGRESS_CLASS };
+    InitCommonControlsEx(&icex);
+
+    HWND hwndBar = CreateWindowExW(0, PROGRESS_CLASSW, NULL,
+        WS_CHILD | WS_VISIBLE | PBS_SMOOTH,
+        10, 10, pw - 40, 20, hwndProg, NULL, GetModuleHandleW(NULL), NULL);
+    SendMessageW(hwndBar, PBM_SETRANGE, 0, MAKELPARAM(0, totalFiles > 0 ? totalFiles : 1));
+
+    HWND hwndText = CreateWindowExW(0, L"STATIC", L"准备中...",
+        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+        10, 38, pw - 40, 20, hwndProg, NULL, GetModuleHandleW(NULL), NULL);
+    HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
+    SendMessageW(hwndText, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+    MigrateContext* ctx = new MigrateContext();
+    ctx->srcDir = oldDir;
+    ctx->dstDir = newSmartClipDir;
+    ctx->hwndProgress = hwndProg;
+    ctx->hwndProgressBar = hwndBar;
+    ctx->hwndProgressText = hwndText;
+    ctx->hFont = hFont;
+    ctx->totalFiles = totalFiles;
+    ctx->copiedFiles = 0;
+    ctx->success = false;
+
+    SetWindowLongPtrW(hwndProg, GWLP_USERDATA, (LONG_PTR)ctx);
+    ShowWindow(hwndProg, SW_SHOW);
+    UpdateWindow(hwndProg);
+
+    CreateThread(NULL, 0, MigrateThreadProc, ctx, 0, NULL);
+    return true;
+}
+
 // 获取当前时间字符串
 std::wstring GetCurrentTimeString() {
     time_t now = time(NULL);
@@ -856,44 +1147,20 @@ void AddImageFileToHistory(const std::wstring& filePath, const std::vector<BYTE>
 
 // 获取图片存储目录（原图）
 std::wstring GetImagesPath() {
-    WCHAR szPath[MAX_PATH];
-    if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, szPath) != S_OK) {
-        if (GetCurrentDirectoryW(MAX_PATH, szPath) == 0) {
-            wcscpy_s(szPath, L".");
-        }
-    }
-
-    std::wstring imagesPath = szPath;
-    imagesPath += L"\\SmartClip\\images\\originals";
-
-    // 创建目录（包括父目录）
-    std::wstring parentPath = szPath;
-    parentPath += L"\\SmartClip\\images";
-    CreateDirectoryW((std::wstring(szPath) + L"\\SmartClip").c_str(), NULL);
-    CreateDirectoryW(parentPath.c_str(), NULL);
+    std::wstring base = GetSmartClipDataDir();
+    std::wstring imagesPath = base + L"\\images\\originals";
+    CreateDirectoryW((base + L"\\images").c_str(), NULL);
     CreateDirectoryW(imagesPath.c_str(), NULL);
-
     return imagesPath;
 }
 
 // 获取缩略图存储目录
 std::wstring GetThumbsPath() {
-    WCHAR szPath[MAX_PATH];
-    if (SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, szPath) != S_OK) {
-        if (GetCurrentDirectoryW(MAX_PATH, szPath) == 0) {
-            wcscpy_s(szPath, L".");
-        }
-    }
-
-    std::wstring thumbsPath = szPath;
-    thumbsPath += L"\\SmartClip\\images\\thumbs";
-
-    // 创建目录（包括父目录）
-    std::wstring parentPath = szPath;
-    parentPath += L"\\SmartClip\\images";
-    CreateDirectoryW((std::wstring(szPath) + L"\\SmartClip").c_str(), NULL);
-    CreateDirectoryW(parentPath.c_str(), NULL);
+    std::wstring base = GetSmartClipDataDir();
+    std::wstring thumbsPath = base + L"\\images\\thumbs";
+    CreateDirectoryW((base + L"\\images").c_str(), NULL);
     CreateDirectoryW(thumbsPath.c_str(), NULL);
+    return thumbsPath;
 
     return thumbsPath;
 }

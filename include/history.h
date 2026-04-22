@@ -96,6 +96,15 @@ bool SaveOriginalImage(const std::vector<BYTE>& imageData, int width, int height
 bool GenerateThumbnail(const std::vector<BYTE>& imageData, int width, int height, std::vector<BYTE>& thumbData, int& thumbWidth, int& thumbHeight, int maxSize = 128);  // 生成缩略图
 bool LoadOriginalImage(const std::wstring& fileName, std::vector<BYTE>& imageData, int& width, int& height);  // 加载原图
 
+// 数据管理函数
+void ClearNonFavoriteHistory();                     // 清理所有非收藏历史记录
+ULONGLONG GetDataDirSize();                         // 获取数据目录总大小（字节）
+std::wstring FormatFileSize(ULONGLONG bytes);       // 格式化文件大小
+std::wstring GetSmartClipDataDir();                 // 获取 SmartClip 数据根目录
+bool MigrateDataDir(const std::wstring& newDir);    // 迁移数据目录到新位置
+void LoadCustomDataDir();                           // 加载自定义数据目录配置
+void SaveCustomDataDir();                           // 保存自定义数据目录配置
+
 // 标签管理函数
 void LoadTags();                                    // 加载标签列表
 void SaveTags();                                    // 保存标签列表
