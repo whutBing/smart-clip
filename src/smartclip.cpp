@@ -8,7 +8,6 @@
 #include "settings.h"
 #include "smart_action.h"
 #include "text_utils.h"
-#include "transfer_station.h"
 #include "tray.h"
 #include <algorithm> // 用于std::remove_if
 #include <cmath>     // 用于sin函数
@@ -69,6 +68,8 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define IDM_TAG_FILTER_ALL 3200  // 全部收藏筛选
 #define IDM_TAG_FILTER_BASE 3201 // 标签筛选基础ID
 #define IDM_TAG_ADD_NEW 3300     // 新增标签
+#define IDM_BATCH_PASTE_ASC 3400  // 连续粘贴-正序
+#define IDM_BATCH_PASTE_DESC 3401 // 连续粘贴-反序
 
 // 增加新的控件ID定义
 #define ID_TAB_CONTROL 103
@@ -563,6 +564,71 @@ HWND g_hwndBatchEditBtn = NULL;
 bool g_isBatchEditBtnHover = false;
 bool g_isBatchEditMode = false;   // 批量编辑模式状态
 std::vector<int> g_selectedItems; // 批量编辑模式下选中的记录索引
+
+// 连续粘贴模式
+bool g_isBatchPasteMode = false;
+std::vector<int> g_batchPasteQueue; // 待粘贴的历史记录索引队列
+int g_batchPasteIndex = 0;          // 当前粘贴到第几条
+static HHOOK g_hBatchPasteHook = NULL;
+
+static void BatchPasteLoadNext() {
+  if (!g_isBatchPasteMode) return;
+  g_batchPasteIndex++;
+  if (g_batchPasteIndex >= (int)g_batchPasteQueue.size()) {
+    g_batchPasteIndex = (int)g_batchPasteQueue.size() - 1;
+    return;
+  }
+  int idx = g_batchPasteQueue[g_batchPasteIndex];
+  if (idx >= 0 && idx < (int)g_history.size()) {
+    const ClipboardItem &item = g_history[idx];
+    if (OpenClipboard(NULL)) {
+      EmptyClipboard();
+      HGLOBAL hGlobal = GlobalAlloc(
+          GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
+      if (hGlobal) {
+        wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+        if (pData) {
+          wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
+          GlobalUnlock(hGlobal);
+          SetClipboardData(CF_UNICODETEXT, hGlobal);
+        }
+      }
+      g_isRestoringClipboard = true;
+      CloseClipboard();
+    }
+  }
+}
+
+static LRESULT CALLBACK BatchPasteKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+  if (nCode == HC_ACTION && g_isBatchPasteMode) {
+    KBDLLHOOKSTRUCT *pKb = (KBDLLHOOKSTRUCT *)lParam;
+    if (wParam == WM_KEYUP && pKb->vkCode == 'V' &&
+        (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+      PostMessageW(g_hwndMain, WM_USER + 200, 0, 0);
+    }
+    // Esc 退出连续粘贴模式
+    if (wParam == WM_KEYDOWN && pKb->vkCode == VK_ESCAPE) {
+      PostMessageW(g_hwndMain, WM_USER + 201, 0, 0);
+    }
+  }
+  return CallNextHookEx(g_hBatchPasteHook, nCode, wParam, lParam);
+}
+
+static void StartBatchPasteHook() {
+  if (g_hBatchPasteHook) return;
+  g_hBatchPasteHook = SetWindowsHookExW(WH_KEYBOARD_LL, BatchPasteKeyboardProc,
+                                         GetModuleHandleW(NULL), 0);
+}
+
+static void StopBatchPasteHook() {
+  if (g_hBatchPasteHook) {
+    UnhookWindowsHookEx(g_hBatchPasteHook);
+    g_hBatchPasteHook = NULL;
+  }
+  g_isBatchPasteMode = false;
+  g_batchPasteQueue.clear();
+  g_batchPasteIndex = 0;
+}
 
 // 按钮图片句柄
 Gdiplus::Image *g_imgTopmostSelected = NULL;
@@ -5619,6 +5685,62 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           }
         }
       }
+    } else if (wID == IDM_BATCH_PASTE_ASC || wID == IDM_BATCH_PASTE_DESC) {
+      // 连续粘贴模式
+      if (g_isBatchEditMode && !g_selectedItems.empty()) {
+        g_batchPasteQueue.clear();
+        // 按 g_selectedItems 中的索引排序
+        std::vector<int> sorted = g_selectedItems;
+        std::sort(sorted.begin(), sorted.end());
+        if (wID == IDM_BATCH_PASTE_DESC) {
+          std::reverse(sorted.begin(), sorted.end());
+        }
+        g_batchPasteQueue = sorted;
+        g_batchPasteIndex = 0;
+        g_isBatchPasteMode = true;
+
+        // 把第一条放入剪贴板
+        if (g_batchPasteIndex < (int)g_batchPasteQueue.size()) {
+          int idx = g_batchPasteQueue[g_batchPasteIndex];
+          if (idx >= 0 && idx < (int)g_history.size()) {
+            const ClipboardItem &item = g_history[idx];
+            if (OpenClipboard(NULL)) {
+              EmptyClipboard();
+              HGLOBAL hGlobal = GlobalAlloc(
+                  GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
+              if (hGlobal) {
+                wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+                if (pData) {
+                  wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
+                  GlobalUnlock(hGlobal);
+                  SetClipboardData(CF_UNICODETEXT, hGlobal);
+                }
+              }
+              g_isRestoringClipboard = true;
+              CloseClipboard();
+            }
+          }
+        }
+
+        // 退出批量编辑模式，隐藏窗口
+        g_isBatchEditMode = false;
+        g_selectedItems.clear();
+        InvalidateRect(g_hwndListBox, NULL, TRUE);
+        InvalidateRect(g_hwndBatchEditBtn, NULL, TRUE);
+
+        if (!g_isTopmost) {
+          ShowWindow(hwnd, SW_HIDE);
+        }
+
+        StartBatchPasteHook();
+
+        if (g_isNotificationEnabled) {
+          wchar_t msg[64];
+          _snwprintf_s(msg, 64, L"连续粘贴模式：共 %d 条，按 Ctrl+V 逐条粘贴",
+                       (int)g_batchPasteQueue.size());
+          ShowTrayBalloon(hwnd, L"连续粘贴", msg);
+        }
+      }
     } else if (wID == IDM_ADD_TO_STATION) {
       // 右键菜单：加入中转站
       if (g_isBatchEditMode && !g_selectedItems.empty()) {
@@ -5798,6 +5920,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         mii.dwTypeData = (LPWSTR)L"批量加入中转站";
         mii.hbmpItem = hStationIcon;
         InsertMenuItemW(hMenu, 0, TRUE, &mii);
+
+        // 连续粘贴（二级菜单）
+        HBITMAP hPasteIcon = CreateMenuIconBitmap(L"");
+        HMENU hPasteSubMenu = CreatePopupMenu();
+        AppendMenuW(hPasteSubMenu, MF_STRING, IDM_BATCH_PASTE_ASC, L"正序");
+        AppendMenuW(hPasteSubMenu, MF_STRING, IDM_BATCH_PASTE_DESC, L"反序");
+        mii.fMask = MIIM_STRING | MIIM_SUBMENU | MIIM_BITMAP;
+        mii.hSubMenu = hPasteSubMenu;
+        mii.dwTypeData = (LPWSTR)L"连续粘贴";
+        mii.hbmpItem = hPasteIcon;
+        InsertMenuItemW(hMenu, 1, TRUE, &mii);
+        mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
+        mii.hSubMenu = NULL;
 
         // 批量加入标签（二级菜单）
         HMENU hTagSubMenu = CreatePopupMenu();
@@ -6115,12 +6250,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     FreeButtonImages();
     // 确保重置剪贴板恢复标志，避免下次启动时无法录入
     g_isRestoringClipboard = false;
+    StopBatchPasteHook();
     PostQuitMessage(0);
     break;
   }
+  // 连续粘贴：Ctrl+V 后加载下一条
+  case WM_USER + 200: {
+    BatchPasteLoadNext();
+    IncrementPasteCount();
+    return 0;
+  }
+  // 连续粘贴：Esc 退出
+  case WM_USER + 201: {
+    StopBatchPasteHook();
+    if (g_isNotificationEnabled) {
+      ShowTrayBalloon(hwnd, L"连续粘贴", L"已退出连续粘贴模式");
+    }
+    return 0;
+  }
+
   case WM_CLIPBOARDUPDATE: {
-    if (!g_isRestoringClipboard && !g_isTransferStationPasting &&
-        OpenClipboard(NULL)) {
+    if (!g_isRestoringClipboard && !g_isTransferStationPasting) {
+      // 外部剪贴板变化，退出连续粘贴模式
+      if (g_isBatchPasteMode) {
+        StopBatchPasteHook();
+      }
+      if (OpenClipboard(NULL)) {
       // 优先处理文件路径
       if (IsClipboardFormatAvailable(CF_HDROP)) {
         HGLOBAL hGlobal = GetClipboardData(CF_HDROP);
@@ -6260,6 +6415,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         }
       }
       CloseClipboard();
+    }
     }
     break;
   }
