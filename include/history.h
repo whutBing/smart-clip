@@ -98,8 +98,15 @@ bool LoadOriginalImage(const std::wstring& fileName, std::vector<BYTE>& imageDat
 
 // 数据管理函数
 void ClearNonFavoriteHistory();                     // 清理所有非收藏历史记录
+void CleanInvalidImageRecords();                    // 清理失效图片记录
 ULONGLONG GetDataDirSize();                         // 获取数据目录总大小（字节）
 std::wstring FormatFileSize(ULONGLONG bytes);       // 格式化文件大小
+
+// 粘贴次数统计
+extern int g_pasteCount;
+void LoadPasteCount();
+void SavePasteCount();
+void IncrementPasteCount();
 std::wstring GetSmartClipDataDir();                 // 获取 SmartClip 数据根目录
 bool MigrateDataDir(const std::wstring& newDir);    // 迁移数据目录到新位置
 void LoadCustomDataDir();                           // 加载自定义数据目录配置

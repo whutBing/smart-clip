@@ -559,6 +559,88 @@ void ClearNonFavoriteHistory() {
     UpdateListBox();
 }
 
+void CleanInvalidImageRecords() {
+    std::wstring imagesPath = GetImagesPath();
+    std::wstring thumbsPath = GetThumbsPath();
+    int cleaned = 0;
+
+    for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+        if (g_history[i].type == TYPE_IMAGE) {
+            const ClipboardItem& item = g_history[i];
+            bool isInvalid = false;
+
+            if (!item.imageFilePath.empty()) {
+                // 图片文件类型：检查原始路径
+                DWORD attrs = GetFileAttributesW(item.imageFilePath.c_str());
+                if (attrs == INVALID_FILE_ATTRIBUTES) isInvalid = true;
+            } else if (!item.imageFileName.empty()) {
+                // 截图类型：检查 images 目录下的文件
+                std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
+                DWORD attrs = GetFileAttributesW(imgFile.c_str());
+                if (attrs == INVALID_FILE_ATTRIBUTES) isInvalid = true;
+            } else {
+                // 没有任何图片路径，视为失效
+                isInvalid = true;
+            }
+
+            if (isInvalid) {
+                // 删除关联的缩略图文件
+                if (!item.imageFileName.empty()) {
+                    std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
+                    DeleteFileW(imgFile.c_str());
+                }
+                g_history.erase(g_history.begin() + i);
+                cleaned++;
+            }
+        }
+    }
+    if (cleaned > 0) {
+        SaveHistory();
+        UpdateListBox();
+    }
+}
+
+// ==================== 粘贴次数统计 ====================
+
+int g_pasteCount = 0;
+
+static std::wstring GetPasteCountPath() {
+    std::wstring filePath = GetDataFilePath();
+    size_t lastSlash = filePath.find_last_of(L"\\");
+    if (lastSlash == std::wstring::npos) return L"";
+    return filePath.substr(0, lastSlash) + L"\\paste_count.txt";
+}
+
+void LoadPasteCount() {
+    std::wstring path = GetPasteCountPath();
+    if (path.empty()) return;
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    char buf[32] = {};
+    DWORD read = 0;
+    ReadFile(hFile, buf, 31, &read, NULL);
+    CloseHandle(hFile);
+    g_pasteCount = atoi(buf);
+    if (g_pasteCount < 0) g_pasteCount = 0;
+}
+
+void SavePasteCount() {
+    std::wstring path = GetPasteCountPath();
+    if (path.empty()) return;
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    char buf[32];
+    sprintf_s(buf, "%d", g_pasteCount);
+    DWORD written = 0;
+    WriteFile(hFile, buf, (DWORD)strlen(buf), &written, NULL);
+    CloseHandle(hFile);
+}
+
+void IncrementPasteCount() {
+    g_pasteCount++;
+    SavePasteCount();
+}
+
 // 递归计算目录大小
 static ULONGLONG CalcDirSize(const std::wstring& dir) {
     ULONGLONG total = 0;

@@ -82,9 +82,9 @@ static HWND g_hwndToggleCollapse = NULL;
 static HWND g_hwndHistoryLimitEdit = NULL;
 
 // === 数据分类控件 ===
-static HWND g_hwndOpenDataBtn = NULL;
 static HWND g_hwndSetDataDirBtn = NULL;
 static HWND g_hwndClearNonFavBtn = NULL;
+static HWND g_hwndCleanInvalidImagesBtn = NULL;
 static std::wstring g_dataSizeText = L"计算中...";
 
 // === 智能操作分类控件 ===
@@ -102,6 +102,12 @@ static void DestroySmartActionControls() {
 
 static void CreateSmartActionControls(HWND hwndDlg);
 static void RefreshSmartActionControls(HWND hwndDlg);
+
+// 前向声明（定义在智能操作下拉选择器区域）
+static HWND g_hwndSmartEditName = NULL;
+static HWND g_hwndSmartEditPattern = NULL;
+static HWND g_hwndSmartEditCmd = NULL;
+static HWND g_hwndSmartDropdown = NULL;
 
 // GDI 资源（WM_CREATE 创建，WM_DESTROY 释放）
 static HFONT g_hTitleFont = NULL;
@@ -179,8 +185,38 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
     }
 
     switch (uMsg) {
-    case WM_NCPAINT:
+    case WM_NCPAINT: {
+        // 用背景色填充非客户区（避免暗黑模式下白色残留）
+        HDC hdc = GetWindowDC(hwnd);
+        if (hdc) {
+            RECT rcWin;
+            GetWindowRect(hwnd, &rcWin);
+            OffsetRect(&rcWin, -rcWin.left, -rcWin.top);
+            HBRUSH hBr = CreateSolidBrush(GetSettingsEditBg());
+            FillRect(hdc, &rcWin, hBr);
+            DeleteObject(hBr);
+            ReleaseDC(hwnd, hdc);
+        }
         return 0;
+    }
+    case WM_SETFOCUS:
+        // 获得焦点时显示光标
+        CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+        ShowCaret(hwnd);
+        return 0;
+    case WM_KILLFOCUS:
+        // 失焦时隐藏光标
+        HideCaret(hwnd);
+        CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return 0;
+    case WM_SETCURSOR:
+        // 失焦状态下不显示竖条光标
+        if (GetFocus() != hwnd) {
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+            return TRUE;
+        }
+        break;
     case WM_NCCALCSIZE: {
         // 添加内边距让文本垂直居中
         LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
@@ -386,10 +422,16 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
 
 static void SwitchSettingsTab(int tab) {
     g_currentSettingsTab = tab;
+
+    // 销毁临时编辑框
+    if (g_hwndSmartEditName) { DestroyWindow(g_hwndSmartEditName); g_hwndSmartEditName = NULL; }
+    if (g_hwndSmartEditPattern) { DestroyWindow(g_hwndSmartEditPattern); g_hwndSmartEditPattern = NULL; }
+    if (g_hwndSmartEditCmd) { DestroyWindow(g_hwndSmartEditCmd); g_hwndSmartEditCmd = NULL; }
+    if (g_hwndSmartDropdown) { DestroyWindow(g_hwndSmartDropdown); g_hwndSmartDropdown = NULL; }
+
     int showGen = (tab == 0) ? SW_SHOW : SW_HIDE;
     int showHk  = (tab == 1) ? SW_SHOW : SW_HIDE;
-    int showTs  = (tab == 2) ? SW_SHOW : SW_HIDE;
-    int showDt  = (tab == 3) ? SW_SHOW : SW_HIDE;
+    int showDt  = (tab == 2) ? SW_SHOW : SW_HIDE;
 
     if (g_hwndToggleStartup) ShowWindow(g_hwndToggleStartup, showGen);
     if (g_hwndToggleNotification) ShowWindow(g_hwndToggleNotification, showGen);
@@ -403,25 +445,23 @@ static void SwitchSettingsTab(int tab) {
     if (g_hwndToggleQuickPaste) ShowWindow(g_hwndToggleQuickPaste, showHk);
     if (g_hwndQuickPasteCombo) ShowWindow(g_hwndQuickPasteCombo, showHk);
 
-    if (g_hwndToggleCollapse) ShowWindow(g_hwndToggleCollapse, showTs);
-
-    if (g_hwndOpenDataBtn) ShowWindow(g_hwndOpenDataBtn, showDt);
     if (g_hwndSetDataDirBtn) ShowWindow(g_hwndSetDataDirBtn, showDt);
     if (g_hwndClearNonFavBtn) ShowWindow(g_hwndClearNonFavBtn, showDt);
+    if (g_hwndCleanInvalidImagesBtn) ShowWindow(g_hwndCleanInvalidImagesBtn, showDt);
 
     // 智能操作控件
-    int showSa = (tab == 4) ? SW_SHOW : SW_HIDE;
+    int showSa = (tab == 3) ? SW_SHOW : SW_HIDE;
     for (auto h : g_smartToggleHwnds) if (h) ShowWindow(h, showSa);
     for (auto h : g_smartDelHwnds) if (h) ShowWindow(h, showSa);
     if (g_hwndSmartAddBtn) ShowWindow(g_hwndSmartAddBtn, showSa);
 
     // 切换到数据页时刷新磁盘空间
-    if (tab == 3) {
+    if (tab == 2) {
         g_dataSizeText = FormatFileSize(GetDataDirSize());
     }
 
     // 切换到智能操作页时刷新控件
-    if (tab == 4 && g_hwndSettingsDlg) {
+    if (tab == 3 && g_hwndSettingsDlg) {
         RefreshSmartActionControls(g_hwndSettingsDlg);
     }
 
@@ -438,12 +478,11 @@ struct SidebarItem {
 static const SidebarItem g_sidebarItems[] = {
     { L"\uE713", L"通用" },
     { L"\uE765", L"快捷键" },
-    { L"\uE8F1", L"中转站" },
 
     { L"", L"数据" },
     { L"", L"智能操作" },
 };
-#define SIDEBAR_COUNT 5
+#define SIDEBAR_COUNT 4
 
 // 设置行数据
 struct SettingRowInfo {
@@ -465,14 +504,12 @@ static const SettingRowInfo g_hotkeyRows[] = {
     { L"快捷粘贴", L"使用修饰键+数字快速粘贴" },
     { L"快捷粘贴修饰键", L"选择快捷粘贴使用的修饰键" },
 };
-static const SettingRowInfo g_transitRows[] = {
-    { L"用完收起", L"粘贴后自动收起中转站卡片" },
-};
 static const SettingRowInfo g_dataRows[] = {
-    { L"数据目录", L"在资源管理器中打开数据目录" },
-    { L"设置数据目录", L"自定义数据存储位置" },
+    { L"占用磁盘空间", L"" },
+    { L"粘贴次数", L"" },
+    { L"设置数据目录", L"" },
     { L"清理非收藏数据", L"删除所有未收藏的历史记录" },
-    { L"磁盘空间占用", L"数据占用的磁盘空间" },
+    { L"删除失效图片", L"清理原始图片已丢失的记录" },
 };
 
 // 分类标题
@@ -485,8 +522,7 @@ struct CategoryHeader {
 static const CategoryHeader g_categories[] = {
     { L"通用", L"基本设置和外观", g_generalRows, 6 },
     { L"快捷键", L"快捷键配置", g_hotkeyRows, 4 },
-    { L"中转站", L"中转站行为设置", g_transitRows, 1 },
-    { L"数据", L"数据存储与管理", g_dataRows, 4 },
+    { L"数据", L"", g_dataRows, 5 },
     { L"智能操作", L"根据内容自动执行操作", NULL, 0 },
 };
 
@@ -768,6 +804,336 @@ static void ShowDropdownPopup(HWND hwndBtn, int ctlId) {
     UpdateWindow(g_hwndDropdownPopup);
 }
 
+// ==================== 智能操作下拉选择器 ====================
+
+static int g_smartActionEditIndex = -1;
+static int g_smartDropdownHover = -1;
+static bool g_smartDropdownClassRegistered = false;
+
+static int g_smartEditFieldIndex = -1;
+static WNDPROC g_oldSmartEditProc = NULL;
+
+// 构建扁平列表：分类标题(isSeparator=true) + 模板项
+struct SmartDropdownItem {
+    const wchar_t* text;
+    int templateIndex; // -1 = 分类标题
+    bool isSeparator;
+};
+static std::vector<SmartDropdownItem> g_smartDropdownItems;
+
+static void BuildSmartDropdownItems() {
+    g_smartDropdownItems.clear();
+    const wchar_t* lastCat = NULL;
+    for (int i = 0; i < g_actionTemplateCount; i++) {
+        if (lastCat == NULL || wcscmp(lastCat, g_actionTemplates[i].category) != 0) {
+            lastCat = g_actionTemplates[i].category;
+            SmartDropdownItem sep;
+            sep.text = lastCat;
+            sep.templateIndex = -1;
+            sep.isSeparator = true;
+            g_smartDropdownItems.push_back(sep);
+        }
+        SmartDropdownItem item;
+        item.text = g_actionTemplates[i].name;
+        item.templateIndex = i;
+        item.isSeparator = false;
+        g_smartDropdownItems.push_back(item);
+    }
+}
+
+#define SMART_DD_ITEM_H 30
+#define SMART_DD_SEP_H 24
+#define SMART_DD_PAD 6
+
+static LRESULT CALLBACK SmartEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+LRESULT CALLBACK SmartDropdownProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rcClient;
+        GetClientRect(hwnd, &rcClient);
+
+        // 双缓冲防闪烁
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        HBITMAP hBmp = CreateCompatibleBitmap(hdc, rcClient.right, rcClient.bottom);
+        HBITMAP hOldBmp = (HBITMAP)SelectObject(hdcMem, hBmp);
+
+        Gdiplus::Graphics g(hdcMem);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+        COLORREF bg = GetSettingsEditBg();
+        Gdiplus::GraphicsPath bgPath;
+        CreateRoundRectPath(&bgPath, 0, 0, rcClient.right, rcClient.bottom, DROPDOWN_RADIUS);
+        Gdiplus::SolidBrush bgBrush(Gdiplus::Color(255, GetRValue(bg), GetGValue(bg), GetBValue(bg)));
+        g.FillPath(&bgBrush, &bgPath);
+        COLORREF bc = GetSeparatorColor();
+        Gdiplus::Pen borderPen(Gdiplus::Color(255, GetRValue(bc), GetGValue(bc), GetBValue(bc)), 1.0f);
+        g.DrawPath(&borderPen, &bgPath);
+
+        int y = SMART_DD_PAD;
+        for (int i = 0; i < (int)g_smartDropdownItems.size(); i++) {
+            const auto& di = g_smartDropdownItems[i];
+            int h = di.isSeparator ? SMART_DD_SEP_H : SMART_DD_ITEM_H;
+
+            if (di.isSeparator) {
+                Gdiplus::Font catFont(L"Microsoft YaHei", 8.0f);
+                COLORREF dc = GetDescTextColor();
+                Gdiplus::SolidBrush catBrush(Gdiplus::Color(255, GetRValue(dc), GetGValue(dc), GetBValue(dc)));
+                Gdiplus::StringFormat sf;
+                sf.SetAlignment(Gdiplus::StringAlignmentNear);
+                sf.SetLineAlignment(Gdiplus::StringAlignmentFar);
+                Gdiplus::RectF catRect((float)(SMART_DD_PAD + 8), (float)y, (float)(rcClient.right - 20), (float)h);
+                g.DrawString(di.text, -1, &catFont, catRect, &sf, &catBrush);
+            } else {
+                if (i == g_smartDropdownHover) {
+                    COLORREF hc = g_isDarkMode ? RGB(55, 55, 60) : RGB(230, 230, 230);
+                    Gdiplus::GraphicsPath hoverPath;
+                    CreateRoundRectPath(&hoverPath, SMART_DD_PAD, y, rcClient.right - SMART_DD_PAD * 2, h, 6);
+                    Gdiplus::SolidBrush hoverBrush(Gdiplus::Color(255, GetRValue(hc), GetGValue(hc), GetBValue(hc)));
+                    g.FillPath(&hoverBrush, &hoverPath);
+                }
+                Gdiplus::Font font(L"Microsoft YaHei", 9.5f);
+                COLORREF tc = GetSettingsTextColor();
+                Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, GetRValue(tc), GetGValue(tc), GetBValue(tc)));
+                Gdiplus::StringFormat sf;
+                sf.SetAlignment(Gdiplus::StringAlignmentNear);
+                sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                Gdiplus::RectF textRect((float)(SMART_DD_PAD + 16), (float)y, (float)(rcClient.right - 40), (float)h);
+                g.DrawString(di.text, -1, &font, textRect, &sf, &textBrush);
+            }
+            y += h;
+        }
+
+        BitBlt(hdc, 0, 0, rcClient.right, rcClient.bottom, hdcMem, 0, 0, SRCCOPY);
+        SelectObject(hdcMem, hOldBmp);
+        DeleteObject(hBmp);
+        DeleteDC(hdcMem);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        int my = GET_Y_LPARAM(lParam);
+        int y = SMART_DD_PAD;
+        int newHover = -1;
+        for (int i = 0; i < (int)g_smartDropdownItems.size(); i++) {
+            int h = g_smartDropdownItems[i].isSeparator ? SMART_DD_SEP_H : SMART_DD_ITEM_H;
+            if (my >= y && my < y + h && !g_smartDropdownItems[i].isSeparator) {
+                newHover = i;
+                break;
+            }
+            y += h;
+        }
+        if (newHover != g_smartDropdownHover) {
+            g_smartDropdownHover = newHover;
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
+        TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+        TrackMouseEvent(&tme);
+        return 0;
+    }
+    case WM_MOUSELEAVE:
+        g_smartDropdownHover = -1;
+        InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    case WM_LBUTTONDOWN: {
+        if (g_smartDropdownHover >= 0 && g_smartDropdownHover < (int)g_smartDropdownItems.size()) {
+            const auto& di = g_smartDropdownItems[g_smartDropdownHover];
+            if (!di.isSeparator && di.templateIndex >= 0) {
+                int ti = di.templateIndex;
+                const auto& tmpl = g_actionTemplates[ti];
+                if (g_smartActionEditIndex >= 0 && g_smartActionEditIndex < (int)g_smartActions.size()) {
+                    auto& rule = g_smartActions[g_smartActionEditIndex];
+                    rule.action = tmpl.action;
+                    rule.customCmd = tmpl.cmdTemplate;
+
+                    // "自定义命令"或"自定义URL" — 弹出输入框
+                    if (wcscmp(tmpl.name, L"自定义命令") == 0 ||
+                        wcscmp(tmpl.name, L"自定义URL") == 0) {
+                        DestroyWindow(hwnd);
+                        g_hwndSmartDropdown = NULL;
+                        // 销毁已有的临时编辑框
+                        if (g_hwndSmartEditCmd) { DestroyWindow(g_hwndSmartEditCmd); g_hwndSmartEditCmd = NULL; }
+                        if (g_hwndSmartEditName) { DestroyWindow(g_hwndSmartEditName); g_hwndSmartEditName = NULL; }
+                        if (g_hwndSmartEditPattern) { DestroyWindow(g_hwndSmartEditPattern); g_hwndSmartEditPattern = NULL; }
+                        // 在动作区域创建临时编辑框
+                        int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+                        int ruleRowH = 50;
+                        int startY = headerY + 24;
+                        int rowY = startY + g_smartActionEditIndex * ruleRowH;
+                        int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
+                        int editX = contentRight - 170;
+                        int editW = 140;
+                        g_smartEditFieldIndex = g_smartActionEditIndex;
+                        g_hwndSmartEditCmd = CreateWindowExW(0, L"EDIT", rule.customCmd.c_str(),
+                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                            editX, rowY + 10, editW, 20,
+                            g_hwndSettingsDlg, NULL, GetModuleHandleW(NULL), NULL);
+                        HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+                        SendMessageW(g_hwndSmartEditCmd, WM_SETFONT, (WPARAM)hFont, TRUE);
+                        g_oldSmartEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndSmartEditCmd, GWLP_WNDPROC, (LONG_PTR)SmartEditProc);
+                        SetFocus(g_hwndSmartEditCmd);
+                        SendMessageW(g_hwndSmartEditCmd, EM_SETSEL, 0, -1);
+                        InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
+                        return 0;
+                    }
+
+                    SaveSmartActions();
+                    // 销毁已有的临时编辑框
+                    if (g_hwndSmartEditCmd) { DestroyWindow(g_hwndSmartEditCmd); g_hwndSmartEditCmd = NULL; }
+                    if (g_hwndSmartEditName) { DestroyWindow(g_hwndSmartEditName); g_hwndSmartEditName = NULL; }
+                    if (g_hwndSmartEditPattern) { DestroyWindow(g_hwndSmartEditPattern); g_hwndSmartEditPattern = NULL; }
+                }
+            }
+        }
+        DestroyWindow(hwnd);
+        g_hwndSmartDropdown = NULL;
+        if (g_hwndSettingsDlg) {
+            SetForegroundWindow(g_hwndSettingsDlg);
+            InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
+        }
+        return 0;
+    }
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) == WA_INACTIVE) {
+            DestroyWindow(hwnd);
+            g_hwndSmartDropdown = NULL;
+        }
+        return 0;
+    case WM_DESTROY:
+        g_hwndSmartDropdown = NULL;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void RegisterSmartDropdownClass() {
+    if (g_smartDropdownClassRegistered) return;
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+    wc.lpfnWndProc = SmartDropdownProc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.lpszClassName = L"SmartClipSmartDropdown";
+    RegisterClassExW(&wc);
+    g_smartDropdownClassRegistered = true;
+}
+
+static void ShowSmartActionDropdown(int ruleIndex) {
+    if (g_hwndSmartDropdown) {
+        DestroyWindow(g_hwndSmartDropdown);
+        g_hwndSmartDropdown = NULL;
+    }
+    g_smartActionEditIndex = ruleIndex;
+    g_smartDropdownHover = -1;
+    BuildSmartDropdownItems();
+    RegisterSmartDropdownClass();
+
+    // 计算弹窗位置（在动作文字右侧下方）
+    int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+    int ruleRowH = 50;
+    int startY = headerY + 24;
+    int rowY = startY + ruleIndex * ruleRowH;
+    int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
+
+    RECT rcDlg;
+    GetWindowRect(g_hwndSettingsDlg, &rcDlg);
+    int popupX = rcDlg.left + contentRight - 180;
+    int popupY = rcDlg.top + rowY + 32;
+    int popupW = 180;
+
+    // 计算高度
+    int totalH = SMART_DD_PAD * 2;
+    for (const auto& di : g_smartDropdownItems) {
+        totalH += di.isSeparator ? SMART_DD_SEP_H : SMART_DD_ITEM_H;
+    }
+
+    g_hwndSmartDropdown = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"SmartClipSmartDropdown", NULL, WS_POPUP,
+        popupX, popupY, popupW, totalH,
+        g_hwndSettingsDlg, NULL, GetModuleHandleW(NULL), NULL);
+    ShowWindow(g_hwndSmartDropdown, SW_SHOW);
+    SetForegroundWindow(g_hwndSmartDropdown);
+}
+
+// ==================== 智能操作临时编辑框 ====================
+
+static LRESULT CALLBACK SmartEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (uMsg == WM_KILLFOCUS) {
+        // 保存内容
+        wchar_t buf[512] = {};
+        GetWindowTextW(hwnd, buf, 512);
+        if (g_smartEditFieldIndex >= 0 && g_smartEditFieldIndex < (int)g_smartActions.size()) {
+            if (hwnd == g_hwndSmartEditName) {
+                g_smartActions[g_smartEditFieldIndex].name = buf;
+            } else if (hwnd == g_hwndSmartEditPattern) {
+                g_smartActions[g_smartEditFieldIndex].pattern = buf;
+            } else if (hwnd == g_hwndSmartEditCmd) {
+                g_smartActions[g_smartEditFieldIndex].customCmd = buf;
+            }
+            SaveSmartActions();
+        }
+        // 延迟销毁
+        PostMessageW(g_hwndSettingsDlg, WM_USER + 100, (WPARAM)hwnd, 0);
+        if (g_hwndSettingsDlg) InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
+        return 0;
+    }
+    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
+        SetFocus(g_hwndSettingsDlg);
+        return 0;
+    }
+    if (uMsg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        SetFocus(g_hwndSettingsDlg);
+        return 0;
+    }
+    return CallWindowProcW(g_oldSmartEditProc, hwnd, uMsg, wParam, lParam);
+}
+
+static void ShowSmartEditField(int ruleIndex, int field) {
+    // field: 0=name, 1=pattern
+    if (g_hwndSmartEditName) { DestroyWindow(g_hwndSmartEditName); g_hwndSmartEditName = NULL; }
+    if (g_hwndSmartEditPattern) { DestroyWindow(g_hwndSmartEditPattern); g_hwndSmartEditPattern = NULL; }
+
+    if (ruleIndex < 0 || ruleIndex >= (int)g_smartActions.size()) return;
+    g_smartEditFieldIndex = ruleIndex;
+
+    int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+    int ruleRowH = 50;
+    int startY = headerY + 24;
+    int rowY = startY + ruleIndex * ruleRowH;
+    int editX = SIDEBAR_W + CONTENT_PADDING + 50;
+    int editW = SETTINGS_WIDTH - CONTENT_PADDING * 2 - SIDEBAR_W - 200;
+
+    const wchar_t* text = L"";
+    int editY = rowY + 6;
+    if (field == 0) {
+        text = g_smartActions[ruleIndex].name.c_str();
+    } else {
+        text = g_smartActions[ruleIndex].pattern.c_str();
+        editY = rowY + 26;
+    }
+
+    HWND hEdit = CreateWindowExW(0, L"EDIT", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        editX, editY, editW, 18,
+        g_hwndSettingsDlg, NULL, GetModuleHandleW(NULL), NULL);
+    HFONT hFont = CreateFontW(field == 0 ? 17 : 15, 0, 0, 0, field == 0 ? FW_BOLD : FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft YaHei");
+    SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+    g_oldSmartEditProc = (WNDPROC)SetWindowLongPtrW(hEdit, GWLP_WNDPROC, (LONG_PTR)SmartEditProc);
+    SetFocus(hEdit);
+    SendMessageW(hEdit, EM_SETSEL, 0, -1);
+
+    if (field == 0) g_hwndSmartEditName = hEdit;
+    else g_hwndSmartEditPattern = hEdit;
+}
+
 // PLACEHOLDER_SETTINGS_PART5
 
 // ==================== 窗口过程 ====================
@@ -934,17 +1300,38 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
         }
 
-        // 数据分类：磁盘空间占用文字（第3行右侧）
-        if (g_currentSettingsTab == 3) {
-            int sizeRowY = GetRowY(3);
+        // 数据分类：动态内容
+        if (g_currentSettingsTab == 2) {
+            // 第0行右侧：蓝色磁盘占用大小
+            int row0Y = GetRowY(0);
             SelectObject(hdc, g_hTitleFont);
             SetTextColor(hdc, COLOR_ACCENT);
-            RECT rcSize = { contentRight - 150, sizeRowY + 12, contentRight, sizeRowY + 48 };
-            DrawTextW(hdc, g_dataSizeText.c_str(), -1, &rcSize, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            RECT rcSize = { contentRight - 150, row0Y + 12, contentRight, row0Y + 30 };
+            DrawTextW(hdc, g_dataSizeText.c_str(), -1, &rcSize, DT_RIGHT | DT_SINGLELINE);
+
+            // 第1行右侧：蓝色粘贴次数
+            extern int g_pasteCount;
+            int row1Y = GetRowY(1);
+            SelectObject(hdc, g_hTitleFont);
+            SetTextColor(hdc, COLOR_ACCENT);
+            wchar_t pasteBuf[32];
+            _snwprintf_s(pasteBuf, 32, L"%d 次", g_pasteCount);
+            RECT rcPaste = { contentRight - 150, row1Y + 12, contentRight, row1Y + 30 };
+            DrawTextW(hdc, pasteBuf, -1, &rcPaste, DT_RIGHT | DT_SINGLELINE);
+
+            // 第2行：数据目录路径作为描述文字（按钮左侧）
+            int row2Y = GetRowY(2);
+            SelectObject(hdc, g_hDescFont);
+            SetTextColor(hdc, GetDescTextColor());
+            std::wstring dataPath = GetDataFilePath();
+            size_t lastSlash = dataPath.find_last_of(L"\\");
+            if (lastSlash != std::wstring::npos) dataPath = dataPath.substr(0, lastSlash);
+            RECT rcPath = { contentLeft, row2Y + 32, contentRight - 70, row2Y + 48 };
+            DrawTextW(hdc, dataPath.c_str(), -1, &rcPath, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
 
         // 智能操作分类：动态绘制规则列表
-        if (g_currentSettingsTab == 4) {
+        if (g_currentSettingsTab == 3) {
             // 列标题
             int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
             SelectObject(hdc, g_hDescFont);
@@ -972,16 +1359,28 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 RECT rcPattern = { contentLeft + 50, rowY + 26, contentRight - 170, rowY + 42 };
                 DrawTextW(hdc, a.pattern.c_str(), -1, &rcPattern, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-                // 动作文字
-                const wchar_t* actionText = L"";
-                if (a.action == L"browser") actionText = L"浏览器打开";
-                else if (a.action == L"explorer") actionText = L"资源管理器";
-                else if (a.action == L"custom" && !a.customCmd.empty()) actionText = L"自定义命令";
-                else if (a.action == L"custom") actionText = L"未设置";
+                // 动作文字 — browser/explorer 显示中文，cmd_template 显示命令
+                std::wstring actionStr;
+                bool actionEmpty = false;
+                if (a.action == L"browser") {
+                    actionStr = L"浏览器打开";
+                } else if (a.action == L"explorer") {
+                    actionStr = L"资源管理器";
+                } else if (a.action == L"cmd_template" || a.action == L"custom") {
+                    if (a.customCmd.empty()) {
+                        actionStr = L"未设置";
+                        actionEmpty = true;
+                    } else {
+                        actionStr = a.customCmd;
+                    }
+                } else {
+                    actionStr = L"未设置";
+                    actionEmpty = true;
+                }
                 SelectObject(hdc, g_hDescFont);
-                SetTextColor(hdc, a.action == L"custom" && a.customCmd.empty() ? RGB(180, 180, 180) : COLOR_ACCENT);
+                SetTextColor(hdc, actionEmpty ? RGB(180, 180, 180) : COLOR_ACCENT);
                 RECT rcAction = { contentRight - 160, rowY + 12, contentRight - 30, rowY + 32 };
-                DrawTextW(hdc, actionText, -1, &rcAction, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                DrawTextW(hdc, actionStr.c_str(), -1, &rcAction, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
                 // 分隔线
                 if (i < (int)g_smartActions.size() - 1) {
@@ -1027,8 +1426,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (lpDIS->CtlID == IDC_STARTUP_CHECK ||
             lpDIS->CtlID == IDC_NOTIFICATION_CHECK ||
             lpDIS->CtlID == IDC_SMOOTH_SCROLL_CHECK ||
-            lpDIS->CtlID == IDC_QUICK_PASTE_CHECK ||
-            lpDIS->CtlID == IDC_COLLAPSE_AFTER_PASTE_CHECK) {
+            lpDIS->CtlID == IDC_QUICK_PASTE_CHECK) {
 
             // 先填充背景
             HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
@@ -1041,7 +1439,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 case IDC_NOTIFICATION_CHECK: isOn = g_isNotificationEnabled; break;
                 case IDC_SMOOTH_SCROLL_CHECK: isOn = g_isSmoothScrollEnabled; break;
                 case IDC_QUICK_PASTE_CHECK: isOn = g_isQuickPasteEnabled; break;
-                case IDC_COLLAPSE_AFTER_PASTE_CHECK: isOn = g_isCollapseAfterPaste; break;
             }
             DrawToggleSwitch(lpDIS->hDC, rc, isOn);
             return TRUE;
@@ -1116,9 +1513,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         // iOS 风格操作按钮（蓝色圆角）
-        if (lpDIS->CtlID == IDC_OPEN_DATA_FOLDER ||
-            lpDIS->CtlID == IDC_SET_DATA_DIR ||
-            lpDIS->CtlID == IDC_CLEAR_NON_FAV) {
+        if (lpDIS->CtlID == IDC_SET_DATA_DIR ||
+            lpDIS->CtlID == IDC_CLEAR_NON_FAV ||
+            lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES) {
             HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
             FillRect(lpDIS->hDC, &rc, hBgBr);
             DeleteObject(hBgBr);
@@ -1127,16 +1524,16 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
             g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 
-            COLORREF btnColor = (lpDIS->CtlID == IDC_CLEAR_NON_FAV) ? RGB(220, 60, 60) : COLOR_ACCENT;
+            COLORREF btnColor = (lpDIS->CtlID == IDC_CLEAR_NON_FAV || lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES) ? RGB(220, 60, 60) : COLOR_ACCENT;
             Gdiplus::GraphicsPath btnPath;
             CreateRoundRectPath(&btnPath, 0, 0, rc.right - rc.left, rc.bottom - rc.top, 8);
             Gdiplus::SolidBrush btnBrush(Gdiplus::Color(255, GetRValue(btnColor), GetGValue(btnColor), GetBValue(btnColor)));
             g.FillPath(&btnBrush, &btnPath);
 
             const wchar_t* text = L"";
-            if (lpDIS->CtlID == IDC_OPEN_DATA_FOLDER) text = L"打开";
-            else if (lpDIS->CtlID == IDC_SET_DATA_DIR) text = L"选择";
+            if (lpDIS->CtlID == IDC_SET_DATA_DIR) text = L"选择";
             else if (lpDIS->CtlID == IDC_CLEAR_NON_FAV) text = L"清理";
+            else if (lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES) text = L"清理";
 
             Gdiplus::Font font(L"Microsoft YaHei", 9.0f);
             Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 255, 255, 255));
@@ -1178,13 +1575,70 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_LBUTTONDOWN: {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        // 点击非输入框区域时，让输入框失焦
+        HWND hFocus = GetFocus();
+        if (hFocus && hFocus != hwnd) {
+            HWND hParent = GetParent(hFocus);
+            if (hParent == hwnd) {
+                SetFocus(hwnd);
+            }
+        }
         if (pt.x < SIDEBAR_W && pt.y >= SETTINGS_TITLEBAR_H) {
             int idx = (pt.y - SETTINGS_TITLEBAR_H) / SIDEBAR_ITEM_H;
             if (idx >= 0 && idx < SIDEBAR_COUNT && idx != g_currentSettingsTab) {
                 SwitchSettingsTab(idx);
             }
         }
+        // 数据分类：点击数据目录路径打开资源管理器（第2行）
+        if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
+            int row2Y = GetRowY(2);
+            if (pt.y >= row2Y + 10 && pt.y <= row2Y + 45) {
+                std::wstring dataPath = GetDataFilePath();
+                size_t lastSlash = dataPath.find_last_of(L"\\");
+                if (lastSlash != std::wstring::npos) {
+                    dataPath = dataPath.substr(0, lastSlash);
+                    ShellExecuteW(NULL, L"open", L"explorer.exe", dataPath.c_str(), NULL, SW_SHOW);
+                }
+            }
+        }
+        // 智能操作面板点击
+        if (g_currentSettingsTab == 3 && pt.x > SIDEBAR_W) {
+            int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+            int ruleRowH = 50;
+            int startY = headerY + 24;
+            int contentLeft = SIDEBAR_W + CONTENT_PADDING;
+            int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
+
+            for (int i = 0; i < (int)g_smartActions.size(); i++) {
+                int rowY = startY + i * ruleRowH;
+                if (pt.y >= rowY && pt.y < rowY + ruleRowH) {
+                    // 点击动作区域（右侧）
+                    if (pt.x >= contentRight - 170) {
+                        ShowSmartActionDropdown(i);
+                    }
+                    // 点击名称区域
+                    else if (pt.y < rowY + 24 && pt.x >= contentLeft + 50) {
+                        ShowSmartEditField(i, 0);
+                    }
+                    // 点击正则区域
+                    else if (pt.y >= rowY + 24 && pt.x >= contentLeft + 50) {
+                        ShowSmartEditField(i, 1);
+                    }
+                    break;
+                }
+            }
+        }
         break;
+    }
+
+    // 延迟销毁临时编辑框
+    case WM_USER + 100: {
+        HWND hEdit = (HWND)wParam;
+        if (hEdit) DestroyWindow(hEdit);
+        if (hEdit == g_hwndSmartEditName) g_hwndSmartEditName = NULL;
+        if (hEdit == g_hwndSmartEditPattern) g_hwndSmartEditPattern = NULL;
+        if (hEdit == g_hwndSmartEditCmd) g_hwndSmartEditCmd = NULL;
+        return 0;
     }
 
     case WM_CTLCOLOREDIT: {
@@ -1248,22 +1702,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 SaveHotkeySettings();
                 return 0;
             }
-            if (wID == IDC_COLLAPSE_AFTER_PASTE_CHECK) {
-                g_isCollapseAfterPaste = !g_isCollapseAfterPaste;
-                InvalidateRect(g_hwndToggleCollapse, NULL, TRUE);
-                SaveHotkeySettings();
-                return 0;
-            }
-            if (wID == IDC_OPEN_DATA_FOLDER) {
-                std::wstring dataPath = GetDataFilePath();
-                size_t lastSlash = dataPath.find_last_of(L"\\");
-                if (lastSlash != std::wstring::npos) {
-                    dataPath = dataPath.substr(0, lastSlash);
-                    std::wstring cmd = L"/select,\"" + dataPath + L"\"";
-                    ShellExecuteW(NULL, L"open", L"explorer.exe", cmd.c_str(), NULL, SW_SHOW);
-                }
-                return 0;
-            }
             if (wID == IDC_SET_DATA_DIR) {
                 BROWSEINFOW bi = {};
                 bi.hwndOwner = hwnd;
@@ -1297,6 +1735,20 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 }
                 return 0;
             }
+            if (wID == IDC_CLEAN_INVALID_IMAGES) {
+                int result = MessageBoxW(hwnd,
+                    L"确定要删除所有原始图片已丢失的图片记录吗？\n此操作不可撤销。",
+                    L"确认清理", MB_YESNO | MB_ICONWARNING);
+                if (result == IDYES) {
+                    extern void CleanInvalidImageRecords();
+                    CleanInvalidImageRecords();
+                    g_dataSizeText = FormatFileSize(GetDataDirSize());
+                    InvalidateRect(hwnd, NULL, TRUE);
+                    if (g_isNotificationEnabled)
+                        ShowTrayBalloon(g_hwndMain, L"提示", L"失效图片记录已清理");
+                }
+                return 0;
+            }
             // 下拉按钮点击 → 弹出选择器
             if (wID == IDC_THEME_COMBO) {
                 ShowDropdownPopup(g_hwndThemeCombo, IDC_THEME_COMBO);
@@ -1323,14 +1775,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             ApplyTheme();
             SaveHotkeySettings();
             UpdateSettingsBrushes();
-            InvalidateRect(hwnd, NULL, TRUE);
-            if (g_hwndToggleStartup) InvalidateRect(g_hwndToggleStartup, NULL, TRUE);
-            if (g_hwndToggleNotification) InvalidateRect(g_hwndToggleNotification, NULL, TRUE);
-            if (g_hwndToggleSmoothScroll) InvalidateRect(g_hwndToggleSmoothScroll, NULL, TRUE);
-            if (g_hwndToggleQuickPaste) InvalidateRect(g_hwndToggleQuickPaste, NULL, TRUE);
-            if (g_hwndToggleCollapse) InvalidateRect(g_hwndToggleCollapse, NULL, TRUE);
-            if (g_hwndSettingsClose) InvalidateRect(g_hwndSettingsClose, NULL, TRUE);
-            if (g_hwndThemeCombo) InvalidateRect(g_hwndThemeCombo, NULL, TRUE);
+            // 更新窗口背景画刷
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(GetSettingsBgColor()));
+            // 强制重绘整个窗口和所有子控件
+            RedrawWindow(hwnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
             return 0;
         }
 
@@ -1426,7 +1874,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (idx < (int)g_smartActions.size()) {
                 g_smartActions[idx].enabled = !g_smartActions[idx].enabled;
                 SaveSmartActions();
-                InvalidateRect((HWND)lParam, NULL, TRUE);
+                // 重绘 toggle 按钮和整个面板
+                if (idx < (int)g_smartToggleHwnds.size() && g_smartToggleHwnds[idx])
+                    InvalidateRect(g_smartToggleHwnds[idx], NULL, TRUE);
+                InvalidateRect(hwnd, NULL, TRUE);
             }
             return 0;
         }
@@ -1460,6 +1911,13 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return 0;
         }
         break;
+    }
+
+    case WM_THEMECHANGED: {
+        UpdateSettingsBrushes();
+        SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, (LONG_PTR)CreateSolidBrush(GetSettingsBgColor()));
+        RedrawWindow(hwnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        return 0;
     }
 
     case WM_CLOSE:
@@ -1712,9 +2170,9 @@ void ShowSettingsDialog(HWND hwndParent) {
             x, y, width, 32,
             hwndDlg, (HMENU)(INT_PTR)ctlId, GetModuleHandleW(NULL), NULL);
     };
-    g_hwndOpenDataBtn = CreateIosButton(0, IDC_OPEN_DATA_FOLDER, 60);
-    g_hwndSetDataDirBtn = CreateIosButton(1, IDC_SET_DATA_DIR, 60);
-    g_hwndClearNonFavBtn = CreateIosButton(2, IDC_CLEAR_NON_FAV, 60);
+    g_hwndSetDataDirBtn = CreateIosButton(2, IDC_SET_DATA_DIR, 60);
+    g_hwndClearNonFavBtn = CreateIosButton(3, IDC_CLEAR_NON_FAV, 60);
+    g_hwndCleanInvalidImagesBtn = CreateIosButton(4, IDC_CLEAN_INVALID_IMAGES, 60);
 
     // ===== 快捷键分类控件 =====
     g_hwndHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 0, IDC_HOTKEY_EDIT);
@@ -1748,9 +2206,6 @@ void ShowSettingsDialog(HWND hwndParent) {
     g_hwndToggleQuickPaste = CreateToggle(hwndDlg, 2, IDC_QUICK_PASTE_CHECK);
 
     g_hwndQuickPasteCombo = CreateSettingsCombo(hwndDlg, 3, IDC_QUICK_PASTE_COMBO, 130);
-
-    // ===== 中转站分类控件 =====
-    g_hwndToggleCollapse = CreateToggle(hwndDlg, 0, IDC_COLLAPSE_AFTER_PASTE_CHECK);
 
     // ===== 智能操作分类控件 =====
     CreateSmartActionControls(hwndDlg);

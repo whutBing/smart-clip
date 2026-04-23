@@ -1131,7 +1131,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               }
             }
 
-            if (IsLinkText(contentText)) {
+            if (IsLinkText(contentText) && HasEnabledMatch(contentText)) {
               // 文本区域：标题下方
               RECT rcLinkText;
               rcLinkText.left = rcItem.left + 10;
@@ -1596,29 +1596,30 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
           const ClipboardItem &item = g_history[actualIndex];
           std::wstring contentText = item.content;
-          // 替换换行符为空格
           for (size_t ci = 0; ci < contentText.length(); ci++) {
             if (contentText[ci] == L'\r' || contentText[ci] == L'\n') {
               contentText[ci] = L' ';
             }
           }
-          // 截取第一个空格前的部分作为链接
           size_t spacePos = contentText.find(L' ');
           if (spacePos != std::wstring::npos) {
             contentText = contentText.substr(0, spacePos);
           }
 
+          // 优先使用智能操作规则
+          if (MatchAndExecute(contentText)) {
+            return 0;
+          }
+
+          // 没有匹配的规则时，使用默认行为
           LinkType linkType = GetLinkType(contentText);
           if (linkType == LINK_FILE_PATH) {
-            // 本地路径：用资源管理器打开
             DWORD attrs = GetFileAttributesW(contentText.c_str());
             if (attrs != INVALID_FILE_ATTRIBUTES) {
               if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-                // 文件夹：直接打开
                 ShellExecuteW(NULL, L"explore", contentText.c_str(), NULL, NULL,
                               SW_SHOWNORMAL);
               } else {
-                // 文件：在资源管理器中选中
                 std::wstring param = L"/select,\"" + contentText + L"\"";
                 ShellExecuteW(NULL, NULL, L"explorer.exe", param.c_str(), NULL,
                               SW_SHOWNORMAL);
@@ -1626,9 +1627,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             }
             return 0;
           } else if (linkType == LINK_URL) {
-            // 网址：用默认浏览器打开
             std::wstring url = contentText;
-            // 如果以 www. 开头但没有协议，补上 https://
             if (_wcsnicmp(url.c_str(), L"www.", 4) == 0) {
               url = L"https://" + url;
             }
@@ -1636,7 +1635,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
                           SW_SHOWNORMAL);
             return 0;
           } else if (linkType == LINK_IP) {
-            // IP 地址：调用 cmd 进行 ping
             std::wstring cmd = L"/c ping " + contentText + L" & pause";
             ShellExecuteW(NULL, L"open", L"cmd.exe", cmd.c_str(), NULL,
                           SW_SHOWNORMAL);
@@ -3414,6 +3412,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 加载智能操作规则
     LoadSmartActions();
 
+    // 加载粘贴次数统计
+    LoadPasteCount();
+
     // 不再创建主菜单
 
     // 注册快捷键，如果默认快捷键冲突则禁用
@@ -3696,6 +3697,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
       InvalidateRect(g_hwndListBox, NULL, TRUE);
     }
+    // 首次显示时确保快捷键已注册
+    static bool s_firstShow = true;
+    if (s_firstShow) {
+      s_firstShow = false;
+      if (g_isHotkeyEnabled) RegisterHotkey(hwnd);
+      if (g_isQuickPasteEnabled) RegisterQuickPasteHotkeys(hwnd);
+    }
     return DefWindowProcW(hwnd, message, wParam, lParam);
   }
   case WM_MOUSEWHEEL: {
@@ -3818,7 +3826,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 设置窗口最小尺寸
     LPMINMAXINFO lpMMI = (LPMINMAXINFO)lParam;
     lpMMI->ptMinTrackSize.x = 600; // 最小宽度
-    lpMMI->ptMinTrackSize.y = 700; // 最小高度
+    lpMMI->ptMinTrackSize.y = 694; // 最小高度
     return 0;
   }
   case WM_MEASUREITEM: {
@@ -3963,11 +3971,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       HDC hdc = lpDIS->hDC;
       RECT rc = lpDIS->rcItem;
 
-      // 设置背景色
-      COLORREF bgColor = RGB(245, 245, 245);
+      // 设置背景色（跟随主题）
+      COLORREF bgColor = GetBgColor();
       HBRUSH hBrush = CreateSolidBrush(bgColor);
       FillRect(hdc, &rc, hBrush);
       DeleteObject(hBrush);
+
+      // 批量编辑按钮使用圆形裁剪
+      if (lpDIS->CtlID == ID_BATCH_EDIT_BUTTON) {
+        int btnW = rc.right - rc.left;
+        int btnH = rc.bottom - rc.top;
+        int diameter = std::min(btnW, btnH);
+        int cx = rc.left + (btnW - diameter) / 2;
+        int cy = rc.top + (btnH - diameter) / 2;
+        HRGN hRgn = CreateEllipticRgn(cx, cy, cx + diameter, cy + diameter);
+        SelectClipRgn(hdc, hRgn);
+        DeleteObject(hRgn);
+      }
 
       // 置顶按钮：使用图片绘制（带波浪动画）
       if (lpDIS->CtlID == ID_TOPMOST_BUTTON) {
@@ -4111,6 +4131,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             graphics.DrawImage(img, x, y, drawW, drawH);
           }
         }
+        SelectClipRgn(hdc, NULL);
         return TRUE;
       }
 
@@ -5064,6 +5085,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
           keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
 
+          IncrementPasteCount();
           if (g_isNotificationEnabled) {
             ShowTrayBalloon(hwnd, L"提示", L"已粘贴");
           }
@@ -5475,6 +5497,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         if (g_isNotificationEnabled) {
           ShowTrayBalloon(hwnd, L"提示", L"已粘贴");
         }
+        IncrementPasteCount();
       }
     } else if (wID == IDM_FAVORITE) {
       // 保留兼容性：旧的收藏/取消收藏逻辑
@@ -5553,6 +5576,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           std::sort(g_selectedItems.rbegin(), g_selectedItems.rend());
           for (int actualIndex : g_selectedItems) {
             if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
+              // 删除关联的图片文件
+              const ClipboardItem &delItem = g_history[actualIndex];
+              if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
+                std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
+                DeleteFileW(imgFile.c_str());
+              }
               g_history.erase(g_history.begin() + actualIndex);
             }
           }
@@ -5576,6 +5605,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         }
 
         if (shouldDelete) {
+          // 删除关联的图片文件
+          const ClipboardItem &delItem = g_history[actualIndex];
+          if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
+            std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
+            DeleteFileW(imgFile.c_str());
+          }
           g_history.erase(g_history.begin() + actualIndex);
           SaveHistory();
           UpdateListBox();
@@ -5639,17 +5674,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 托盘菜单：切换到日间模式
       if (g_themeMode != THEME_LIGHT || g_isDarkMode) {
         g_themeMode = THEME_LIGHT;
-        g_isDarkMode = true; // 设置为相反值，让ApplyTheme触发更新
+        g_isDarkMode = true;
         ApplyTheme();
         SaveHotkeySettings();
+        if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
+          SendMessageW(g_hwndSettingsDlg, WM_THEMECHANGED, 0, 0);
+        }
       }
     } else if (wID == IDM_THEME_DARK) {
       // 托盘菜单：切换到夜间模式
       if (g_themeMode != THEME_DARK || !g_isDarkMode) {
         g_themeMode = THEME_DARK;
-        g_isDarkMode = false; // 设置为相反值，让ApplyTheme触发更新
+        g_isDarkMode = false;
         ApplyTheme();
         SaveHotkeySettings();
+        if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
+          SendMessageW(g_hwndSettingsDlg, WM_THEMECHANGED, 0, 0);
+        }
       }
     }
     break;
@@ -5999,7 +6040,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SelectObject(hdc, hOldFont);
     DeleteObject(hTitleFont);
 
-    // 绘制搜索框渐变边框
+    // 绘制搜索框边框
     if (g_hwndSearchBox) {
       RECT searchRect;
       GetWindowRect(g_hwndSearchBox, &searchRect);
@@ -6011,22 +6052,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       Graphics graphics(hdc);
       graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-
-      // 创建渐变画刷 (#6547FF -> #4769FF -> #0090FE)
-      LinearGradientBrush gradientBrush(Point(borderRect.left, borderRect.top),
-                                        Point(borderRect.right, borderRect.top),
-                                        Color(255, 0x65, 0x47, 0xFF),
-                                        Color(255, 0x00, 0x90, 0xFE));
-
-      // 设置三色渐变
-      Color colors[] = {Color(255, 0x65, 0x47, 0xFF),
-                        Color(255, 0x47, 0x69, 0xFF),
-                        Color(255, 0x00, 0x90, 0xFE)};
-      REAL positions[] = {0.0f, 0.5f, 1.0f};
-      gradientBrush.SetInterpolationColors(colors, positions, 3);
-
-      // 创建渐变画笔
-      Pen gradientPen(&gradientBrush, 1.0f);
 
       // 绘制圆角矩形边框
       int radius = 8;
@@ -6041,7 +6066,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                   radius * 2, 90, 90);
       path.CloseFigure();
 
-      graphics.DrawPath(&gradientPen, &path);
+      if (g_isDarkMode) {
+        // 暗黑模式：与背景一致的边框色
+        Pen borderPen(Color(255, 60, 60, 64), 1.0f);
+        graphics.DrawPath(&borderPen, &path);
+      } else {
+        // 日间模式：渐变边框
+        LinearGradientBrush gradientBrush(
+            Point(borderRect.left, borderRect.top),
+            Point(borderRect.right, borderRect.top),
+            Color(255, 0x65, 0x47, 0xFF), Color(255, 0x00, 0x90, 0xFE));
+        Color colors[] = {Color(255, 0x65, 0x47, 0xFF),
+                          Color(255, 0x47, 0x69, 0xFF),
+                          Color(255, 0x00, 0x90, 0xFE)};
+        REAL positions[] = {0.0f, 0.5f, 1.0f};
+        gradientBrush.SetInterpolationColors(colors, positions, 3);
+        Pen gradientPen(&gradientBrush, 1.0f);
+        graphics.DrawPath(&gradientPen, &path);
+      }
     }
 
     EndPaint(hwnd, &ps);
@@ -6427,6 +6469,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         if (g_isNotificationEnabled) {
           ShowTrayBalloon(hwnd, L"快捷粘贴", L"已粘贴");
         }
+        IncrementPasteCount();
       }
     }
     break;
@@ -6485,7 +6528,7 @@ BOOL InitApplication(HINSTANCE hInstance, int nCmdShow) {
   int screenWidth = GetSystemMetrics(SM_CXSCREEN);
   int screenHeight = GetSystemMetrics(SM_CYSCREEN);
   int windowWidth = 600;
-  int windowHeight = 700;
+  int windowHeight = 694;
   int x = (screenWidth - windowWidth) / 2;
   int y = (screenHeight - windowHeight) / 2;
 
