@@ -945,12 +945,17 @@ void UpdateListBox() {
 // 添加内容到历史记录
 void AddToHistory(const std::wstring& content) {
     // 检查是否已存在相同内容
+    bool wasFavorite = false;
+    bool wasInStation = false;
+    std::set<int> oldTagIds;
     auto it = std::find_if(g_history.begin(), g_history.end(), [&content](const ClipboardItem& item) {
         return item.type == TYPE_TEXT && item.content == content;
     });
 
     if (it != g_history.end()) {
-        // 如果已存在，移除旧的记录
+        wasFavorite = it->isFavorite;
+        wasInStation = it->isInTransferStation;
+        oldTagIds = it->tagIds;
         g_history.erase(it);
     }
 
@@ -962,12 +967,27 @@ void AddToHistory(const std::wstring& content) {
     item.sourceAppPath = GetActiveWindowProcessPath();
     item.imageWidth = 0;
     item.imageHeight = 0;
-    item.isFavorite = false;
-    item.isInTransferStation = false;
+    item.isFavorite = wasFavorite;
+    item.isInTransferStation = wasInStation;
+    item.tagIds = oldTagIds;
 
-    // 限制历史记录数量
-    if (g_history.size() >= 20) {
-        g_history.pop_back();
+    // 限制历史记录数量（收藏项不占名额）
+    int nonFavCount = 0;
+    for (const auto& h : g_history) {
+        if (!h.isFavorite) nonFavCount++;
+    }
+    while (nonFavCount >= g_maxHistoryCount) {
+        // 从末尾找第一个非收藏项删除
+        bool removed = false;
+        for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+            if (!g_history[i].isFavorite) {
+                g_history.erase(g_history.begin() + i);
+                nonFavCount--;
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) break;
     }
 
     // 将新记录添加到最前面
@@ -1036,9 +1056,22 @@ void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height
         item.thumbHeight = height;
     }
 
-    // 限制历史记录数量
-    if (g_history.size() >= 20) {
-        g_history.pop_back();
+    // 限制历史记录数量（收藏项不占名额）
+    int nonFavCount = 0;
+    for (const auto& h : g_history) {
+        if (!h.isFavorite) nonFavCount++;
+    }
+    while (nonFavCount >= g_maxHistoryCount) {
+        bool removed = false;
+        for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+            if (!g_history[i].isFavorite) {
+                g_history.erase(g_history.begin() + i);
+                nonFavCount--;
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) break;
     }
 
     // 将新记录添加到最前面
@@ -1055,6 +1088,21 @@ void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height
 
 // 添加文件到历史记录
 void AddFileToHistory(const std::wstring& filePath) {
+    // 检查是否已存在相同文件路径
+    bool wasFavorite = false;
+    bool wasInStation = false;
+    std::set<int> oldTagIds;
+    auto it = std::find_if(g_history.begin(), g_history.end(), [&filePath](const ClipboardItem& item) {
+        return item.type == TYPE_FILE && item.content == filePath;
+    });
+
+    if (it != g_history.end()) {
+        wasFavorite = it->isFavorite;
+        wasInStation = it->isInTransferStation;
+        oldTagIds = it->tagIds;
+        g_history.erase(it);
+    }
+
     ClipboardItem item;
     item.type = TYPE_FILE;
     item.content = filePath;
@@ -1063,12 +1111,26 @@ void AddFileToHistory(const std::wstring& filePath) {
     item.sourceAppPath = GetActiveWindowProcessPath();
     item.imageWidth = 0;
     item.imageHeight = 0;
-    item.isFavorite = false;
-    item.isInTransferStation = false;
+    item.isFavorite = wasFavorite;
+    item.isInTransferStation = wasInStation;
+    item.tagIds = oldTagIds;
 
-    // 限制历史记录数量
-    if (g_history.size() >= 20) {
-        g_history.pop_back();
+    // 限制历史记录数量（收藏项不占名额）
+    int nonFavCount = 0;
+    for (const auto& h : g_history) {
+        if (!h.isFavorite) nonFavCount++;
+    }
+    while (nonFavCount >= g_maxHistoryCount) {
+        bool removed = false;
+        for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+            if (!g_history[i].isFavorite) {
+                g_history.erase(g_history.begin() + i);
+                nonFavCount--;
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) break;
     }
 
     // 将新记录添加到最前面

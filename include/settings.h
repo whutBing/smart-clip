@@ -21,6 +21,9 @@
 #define IDC_CLEAR_NON_FAV 123
 #define IDC_HOTKEY_BTN 124
 #define IDC_SEARCH_HOTKEY_BTN 125
+#define IDC_SMART_ACTION_ADD 126
+#define IDC_SMART_ACTION_TOGGLE_BASE 200
+#define IDC_SMART_ACTION_DEL_BASE 300
 
 // 图片预览质量枚举
 enum ImagePreviewQuality {
@@ -36,6 +39,7 @@ extern bool g_isNotificationEnabled;
 extern bool g_isCollapseAfterPaste;
 extern bool g_isSmoothScrollEnabled;
 extern ImagePreviewQuality g_imagePreviewQuality;
+extern int g_maxHistoryCount;
 extern std::wstring g_fontName;
 extern int g_fontSize;
 extern bool g_isSettingsDialogOpen;

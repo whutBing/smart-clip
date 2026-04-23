@@ -3,6 +3,7 @@
 #include "history.h"
 #include "tray.h"
 #include "graphics_utils.h"
+#include "smart_action.h"
 #include "resource.h"
 #include <commctrl.h>
 #include <gdiplus.h>
@@ -17,7 +18,7 @@ extern HWND g_hwndMain;
 
 // ==================== 布局常量 ====================
 #define SETTINGS_WIDTH 600
-#define SETTINGS_HEIGHT 450
+#define SETTINGS_HEIGHT 550
 #define SETTINGS_TITLEBAR_H 36
 #define SIDEBAR_W 180
 #define CONTENT_PADDING 24
@@ -61,7 +62,10 @@ static bool g_isRecordingHotkey = false;
 static bool g_isRecordingSearchHotkey = false;
 static WNDPROC g_oldEditProc = NULL;
 static WNDPROC g_oldSearchEditProc = NULL;
+static WNDPROC g_oldIosEditProc = NULL;
 static bool g_settingsClassRegistered = false;
+static bool g_hotkeyConflict = false;
+static bool g_searchHotkeyConflict = false;
 
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
@@ -82,6 +86,22 @@ static HWND g_hwndOpenDataBtn = NULL;
 static HWND g_hwndSetDataDirBtn = NULL;
 static HWND g_hwndClearNonFavBtn = NULL;
 static std::wstring g_dataSizeText = L"计算中...";
+
+// === 智能操作分类控件 ===
+static HWND g_hwndSmartAddBtn = NULL;
+static std::vector<HWND> g_smartToggleHwnds;
+static std::vector<HWND> g_smartDelHwnds;
+
+static void DestroySmartActionControls() {
+    for (auto h : g_smartToggleHwnds) if (h) DestroyWindow(h);
+    for (auto h : g_smartDelHwnds) if (h) DestroyWindow(h);
+    g_smartToggleHwnds.clear();
+    g_smartDelHwnds.clear();
+    if (g_hwndSmartAddBtn) { DestroyWindow(g_hwndSmartAddBtn); g_hwndSmartAddBtn = NULL; }
+}
+
+static void CreateSmartActionControls(HWND hwndDlg);
+static void RefreshSmartActionControls(HWND hwndDlg);
 
 // GDI 资源（WM_CREATE 创建，WM_DESTROY 释放）
 static HFONT g_hTitleFont = NULL;
@@ -136,6 +156,137 @@ static int GetControlX(int controlWidth) {
 
 // PLACEHOLDER_SETTINGS_PART3
 
+// ==================== iOS 风格编辑框子类 ====================
+
+// 前向声明
+LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    WNDPROC origProc = g_oldIosEditProc;
+    // 快捷键编辑框使用各自的原始 proc
+    if (hwnd == g_hwndHotkeyEdit) {
+        origProc = g_oldEditProc;
+        // 转发按键事件给快捷键处理
+        if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_CHAR || uMsg == WM_SYSCHAR) {
+            return HotkeyEditProc(hwnd, uMsg, wParam, lParam);
+        }
+    } else if (hwnd == g_hwndSearchHotkeyEdit) {
+        origProc = g_oldSearchEditProc;
+        if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN || uMsg == WM_CHAR || uMsg == WM_SYSCHAR) {
+            return SearchHotkeyEditProc(hwnd, uMsg, wParam, lParam);
+        }
+    }
+
+    switch (uMsg) {
+    case WM_NCPAINT:
+        return 0;
+    case WM_NCCALCSIZE: {
+        // 添加内边距让文本垂直居中
+        LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+        if (wParam) {
+            NCCALCSIZE_PARAMS* pParams = (NCCALCSIZE_PARAMS*)lParam;
+            pParams->rgrc[0].top += 4;
+            pParams->rgrc[0].bottom -= 4;
+            pParams->rgrc[0].left += 6;
+            pParams->rgrc[0].right -= 6;
+        }
+        return result;
+    }
+    case WM_PAINT: {
+        // 先让默认绘制完成
+        LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+
+        // 在父窗口 DC 上绘制圆角边框
+        HWND hParent = GetParent(hwnd);
+        HDC hdc = GetDC(hParent);
+        if (hdc) {
+            RECT rcEdit;
+            GetWindowRect(hwnd, &rcEdit);
+            MapWindowPoints(HWND_DESKTOP, hParent, (LPPOINT)&rcEdit, 2);
+
+            // 扩展 1px 绘制边框
+            RECT rcBorder = { rcEdit.left - 1, rcEdit.top - 1, rcEdit.right + 1, rcEdit.bottom + 1 };
+            int w = rcBorder.right - rcBorder.left;
+            int h = rcBorder.bottom - rcBorder.top;
+
+            Gdiplus::Graphics g(hdc);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+            COLORREF borderColor = GetSettingsEditBg();
+            Gdiplus::GraphicsPath path;
+            CreateRoundRectPath(&path, rcBorder.left, rcBorder.top, w, h, 8);
+            Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(borderColor), GetGValue(borderColor), GetBValue(borderColor)), 1.5f);
+            g.DrawPath(&pen, &path);
+
+            // 如果是快捷键编辑框且有冲突，绘制红色感叹号
+            bool showConflict = false;
+            if (hwnd == g_hwndHotkeyEdit && g_hotkeyConflict) showConflict = true;
+            if (hwnd == g_hwndSearchHotkeyEdit && g_searchHotkeyConflict) showConflict = true;
+
+            if (showConflict) {
+                // 红色圆角边框
+                Gdiplus::Pen redPen(Gdiplus::Color(255, 220, 60, 60), 1.5f);
+                g.DrawPath(&redPen, &path);
+
+                // 红色感叹号图标（编辑框右侧）
+                int iconSize = 20;
+                int iconX = rcEdit.right + 4;
+                int iconY = rcEdit.top + (rcEdit.bottom - rcEdit.top - iconSize) / 2;
+
+                // 红色圆底
+                Gdiplus::SolidBrush redBrush(Gdiplus::Color(255, 220, 60, 60));
+                g.FillEllipse(&redBrush,
+                    iconX, iconY, iconSize, iconSize);
+
+                // 白色感叹号
+                Gdiplus::Font iconFont(L"Microsoft YaHei", 10.0f, Gdiplus::FontStyleBold);
+                Gdiplus::SolidBrush whiteBrush(Gdiplus::Color(255, 255, 255, 255));
+                Gdiplus::StringFormat sf;
+                sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+                sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                Gdiplus::RectF iconRect((float)iconX, (float)iconY, (float)iconSize, (float)iconSize);
+                g.DrawString(L"!", -1, &iconFont, iconRect, &sf, &whiteBrush);
+            }
+
+            ReleaseDC(hParent, hdc);
+        }
+        return result;
+    }
+    }
+    return CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+}
+
+// ==================== 快捷键冲突检测 ====================
+
+// excludeType: 0=排除切换快捷键, 1=排除搜索快捷键
+static bool CheckHotkeyConflict(UINT mod, UINT vk, int excludeType) {
+    // 检查与另一个快捷键是否冲突
+    if (excludeType != 0 && g_isHotkeyEnabled) {
+        if (g_hotkeyModifiers == mod && g_hotkeyVirtualKey == vk)
+            return true;
+    }
+    if (excludeType != 1 && g_isSearchHotkeyEnabled) {
+        if (g_searchHotkeyModifiers == mod && g_searchHotkeyVirtualKey == vk)
+            return true;
+    }
+
+    // 检查与快捷粘贴是否冲突
+    if (g_isQuickPasteEnabled && mod == g_quickPasteModifiers) {
+        if (vk >= '0' && vk <= '9')
+            return true;
+    }
+
+    return false;
+}
+
+static void UpdateHotkeyConflictState() {
+    g_hotkeyConflict = g_isHotkeyEnabled &&
+        CheckHotkeyConflict(g_hotkeyModifiers, g_hotkeyVirtualKey, 0);
+    g_searchHotkeyConflict = g_isSearchHotkeyEnabled &&
+        CheckHotkeyConflict(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, 1);
+}
+
 // ==================== 快捷键编辑框子类 ====================
 
 LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -165,8 +316,15 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 SetWindowTextW(hwnd, text);
                 g_isHotkeyEnabled = true;
                 SaveHotkeySettings();
-                RegisterHotkey(g_hwndMain);
-                ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+                bool regOk = RegisterHotkey(g_hwndMain);
+                UpdateHotkeyConflictState();
+                if (!regOk) g_hotkeyConflict = true;
+                if (g_hotkeyConflict)
+                    ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
+                else
+                    ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+                InvalidateRect(hwnd, NULL, TRUE);
+                if (g_hwndSearchHotkeyEdit) InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
                 g_isRecordingHotkey = false;
                 return 0;
             }
@@ -207,6 +365,11 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARA
                 g_isSearchHotkeyEnabled = true;
                 SaveHotkeySettings();
                 RegisterHotkey(g_hwndMain);
+                UpdateHotkeyConflictState();
+                if (g_searchHotkeyConflict)
+                    ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
+                InvalidateRect(hwnd, NULL, TRUE);
+                if (g_hwndHotkeyEdit) InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
                 g_isRecordingSearchHotkey = false;
                 return 0;
             }
@@ -233,6 +396,7 @@ static void SwitchSettingsTab(int tab) {
     if (g_hwndToggleSmoothScroll) ShowWindow(g_hwndToggleSmoothScroll, showGen);
     if (g_hwndThemeCombo) ShowWindow(g_hwndThemeCombo, showGen);
     if (g_hwndImagePreviewCombo) ShowWindow(g_hwndImagePreviewCombo, showGen);
+    if (g_hwndHistoryLimitEdit) ShowWindow(g_hwndHistoryLimitEdit, showGen);
 
     if (g_hwndHotkeyEdit) ShowWindow(g_hwndHotkeyEdit, showHk);
     if (g_hwndSearchHotkeyEdit) ShowWindow(g_hwndSearchHotkeyEdit, showHk);
@@ -240,15 +404,25 @@ static void SwitchSettingsTab(int tab) {
     if (g_hwndQuickPasteCombo) ShowWindow(g_hwndQuickPasteCombo, showHk);
 
     if (g_hwndToggleCollapse) ShowWindow(g_hwndToggleCollapse, showTs);
-    if (g_hwndHistoryLimitEdit) ShowWindow(g_hwndHistoryLimitEdit, showTs);
 
     if (g_hwndOpenDataBtn) ShowWindow(g_hwndOpenDataBtn, showDt);
     if (g_hwndSetDataDirBtn) ShowWindow(g_hwndSetDataDirBtn, showDt);
     if (g_hwndClearNonFavBtn) ShowWindow(g_hwndClearNonFavBtn, showDt);
 
+    // 智能操作控件
+    int showSa = (tab == 4) ? SW_SHOW : SW_HIDE;
+    for (auto h : g_smartToggleHwnds) if (h) ShowWindow(h, showSa);
+    for (auto h : g_smartDelHwnds) if (h) ShowWindow(h, showSa);
+    if (g_hwndSmartAddBtn) ShowWindow(g_hwndSmartAddBtn, showSa);
+
     // 切换到数据页时刷新磁盘空间
     if (tab == 3) {
         g_dataSizeText = FormatFileSize(GetDataDirSize());
+    }
+
+    // 切换到智能操作页时刷新控件
+    if (tab == 4 && g_hwndSettingsDlg) {
+        RefreshSmartActionControls(g_hwndSettingsDlg);
     }
 
     if (g_hwndSettingsDlg) InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
@@ -267,8 +441,9 @@ static const SidebarItem g_sidebarItems[] = {
     { L"\uE8F1", L"中转站" },
 
     { L"", L"数据" },
+    { L"", L"智能操作" },
 };
-#define SIDEBAR_COUNT 4
+#define SIDEBAR_COUNT 5
 
 // 设置行数据
 struct SettingRowInfo {
@@ -282,6 +457,7 @@ static const SettingRowInfo g_generalRows[] = {
     { L"平滑滚动", L"列表滚动时使用平滑动画" },
     { L"主题模式", L"切换日间、夜间或跟随系统" },
     { L"图片预览质量", L"设置剪贴板图片的预览清晰度" },
+    { L"历史记录数量", L"最多保存的剪贴板记录条数" },
 };
 static const SettingRowInfo g_hotkeyRows[] = {
     { L"切换快捷键", L"显示/隐藏 Smart Clip 窗口" },
@@ -291,7 +467,6 @@ static const SettingRowInfo g_hotkeyRows[] = {
 };
 static const SettingRowInfo g_transitRows[] = {
     { L"用完收起", L"粘贴后自动收起中转站卡片" },
-    { L"历史记录数量", L"最多保存的剪贴板记录条数" },
 };
 static const SettingRowInfo g_dataRows[] = {
     { L"数据目录", L"在资源管理器中打开数据目录" },
@@ -308,10 +483,11 @@ struct CategoryHeader {
     int rowCount;
 };
 static const CategoryHeader g_categories[] = {
-    { L"通用", L"基本设置和外观", g_generalRows, 5 },
+    { L"通用", L"基本设置和外观", g_generalRows, 6 },
     { L"快捷键", L"快捷键配置", g_hotkeyRows, 4 },
-    { L"中转站", L"中转站行为设置", g_transitRows, 2 },
+    { L"中转站", L"中转站行为设置", g_transitRows, 1 },
     { L"数据", L"数据存储与管理", g_dataRows, 4 },
+    { L"智能操作", L"根据内容自动执行操作", NULL, 0 },
 };
 
 // ==================== 绘制辅助 ====================
@@ -767,6 +943,58 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             DrawTextW(hdc, g_dataSizeText.c_str(), -1, &rcSize, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         }
 
+        // 智能操作分类：动态绘制规则列表
+        if (g_currentSettingsTab == 4) {
+            // 列标题
+            int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+            SelectObject(hdc, g_hDescFont);
+            SetTextColor(hdc, GetDescTextColor());
+            RECT rcColLeft = { contentLeft + 50, headerY, contentLeft + 200, headerY + 20 };
+            DrawTextW(hdc, L"匹配规则", -1, &rcColLeft, DT_LEFT | DT_SINGLELINE);
+            RECT rcColRight = { contentRight - 160, headerY, contentRight, headerY + 20 };
+            DrawTextW(hdc, L"执行动作", -1, &rcColRight, DT_LEFT | DT_SINGLELINE);
+
+            int ruleRowH = 50;
+            int startY = headerY + 24;
+            for (int i = 0; i < (int)g_smartActions.size(); i++) {
+                const auto& a = g_smartActions[i];
+                int rowY = startY + i * ruleRowH;
+
+                // 规则名称
+                SelectObject(hdc, g_hTitleFont);
+                SetTextColor(hdc, GetSettingsTextColor());
+                RECT rcName = { contentLeft + 50, rowY + 6, contentRight - 170, rowY + 24 };
+                DrawTextW(hdc, a.name.c_str(), -1, &rcName, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+                // 正则表达式（灰色小字）
+                SelectObject(hdc, g_hDescFont);
+                SetTextColor(hdc, GetDescTextColor());
+                RECT rcPattern = { contentLeft + 50, rowY + 26, contentRight - 170, rowY + 42 };
+                DrawTextW(hdc, a.pattern.c_str(), -1, &rcPattern, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+                // 动作文字
+                const wchar_t* actionText = L"";
+                if (a.action == L"browser") actionText = L"浏览器打开";
+                else if (a.action == L"explorer") actionText = L"资源管理器";
+                else if (a.action == L"custom" && !a.customCmd.empty()) actionText = L"自定义命令";
+                else if (a.action == L"custom") actionText = L"未设置";
+                SelectObject(hdc, g_hDescFont);
+                SetTextColor(hdc, a.action == L"custom" && a.customCmd.empty() ? RGB(180, 180, 180) : COLOR_ACCENT);
+                RECT rcAction = { contentRight - 160, rowY + 12, contentRight - 30, rowY + 32 };
+                DrawTextW(hdc, actionText, -1, &rcAction, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                // 分隔线
+                if (i < (int)g_smartActions.size() - 1) {
+                    HPEN hPen = CreatePen(PS_SOLID, 1, GetSeparatorColor());
+                    HPEN hOldPen2 = (HPEN)SelectObject(hdc, hPen);
+                    MoveToEx(hdc, contentLeft, rowY + ruleRowH - 1, NULL);
+                    LineTo(hdc, contentRight, rowY + ruleRowH - 1);
+                    SelectObject(hdc, hOldPen2);
+                    DeleteObject(hPen);
+                }
+            }
+        }
+
         SelectObject(hdc, hOld);
         EndPaint(hwnd, &ps);
         return 0;
@@ -816,6 +1044,63 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 case IDC_COLLAPSE_AFTER_PASTE_CHECK: isOn = g_isCollapseAfterPaste; break;
             }
             DrawToggleSwitch(lpDIS->hDC, rc, isOn);
+            return TRUE;
+        }
+
+        // 智能操作 Toggle 开关
+        if (lpDIS->CtlID >= IDC_SMART_ACTION_TOGGLE_BASE &&
+            lpDIS->CtlID < IDC_SMART_ACTION_TOGGLE_BASE + 100) {
+            HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
+            FillRect(lpDIS->hDC, &rc, hBgBr);
+            DeleteObject(hBgBr);
+            int idx = lpDIS->CtlID - IDC_SMART_ACTION_TOGGLE_BASE;
+            bool isOn = (idx < (int)g_smartActions.size()) ? g_smartActions[idx].enabled : false;
+            DrawToggleSwitch(lpDIS->hDC, rc, isOn);
+            return TRUE;
+        }
+
+        // 智能操作删除按钮
+        if (lpDIS->CtlID >= IDC_SMART_ACTION_DEL_BASE &&
+            lpDIS->CtlID < IDC_SMART_ACTION_DEL_BASE + 100) {
+            HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
+            FillRect(lpDIS->hDC, &rc, hBgBr);
+            DeleteObject(hBgBr);
+            Gdiplus::Graphics g(lpDIS->hDC);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+            Gdiplus::GraphicsPath btnPath;
+            CreateRoundRectPath(&btnPath, 0, 0, rc.right - rc.left, rc.bottom - rc.top, 6);
+            Gdiplus::SolidBrush btnBrush(Gdiplus::Color(255, 220, 60, 60));
+            g.FillPath(&btnBrush, &btnPath);
+            Gdiplus::Font font(L"Microsoft YaHei", 8.0f);
+            Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 255, 255, 255));
+            Gdiplus::StringFormat sf;
+            sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+            sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::RectF textRect(0, 0, (float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
+            g.DrawString(L"删除", -1, &font, textRect, &sf, &textBrush);
+            return TRUE;
+        }
+
+        // 新建规则按钮
+        if (lpDIS->CtlID == IDC_SMART_ACTION_ADD) {
+            HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
+            FillRect(lpDIS->hDC, &rc, hBgBr);
+            DeleteObject(hBgBr);
+            Gdiplus::Graphics g(lpDIS->hDC);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+            Gdiplus::GraphicsPath btnPath;
+            CreateRoundRectPath(&btnPath, 0, 0, rc.right - rc.left, rc.bottom - rc.top, 8);
+            Gdiplus::SolidBrush btnBrush(Gdiplus::Color(255, GetRValue(COLOR_ACCENT), GetGValue(COLOR_ACCENT), GetBValue(COLOR_ACCENT)));
+            g.FillPath(&btnBrush, &btnPath);
+            Gdiplus::Font font(L"Microsoft YaHei", 9.0f);
+            Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 255, 255, 255));
+            Gdiplus::StringFormat sf;
+            sf.SetAlignment(Gdiplus::StringAlignmentCenter);
+            sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::RectF textRect(0, 0, (float)(rc.right - rc.left), (float)(rc.bottom - rc.top));
+            g.DrawString(L"+ 新建规则", -1, &font, textRect, &sf, &textBrush);
             return TRUE;
         }
 
@@ -1121,6 +1406,59 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 SetWindowTextW(g_hwndSearchHotkeyEdit, t);
             }
         }
+
+        // 历史记录数量编辑框
+        if (wID == IDC_HISTORY_LIMIT_EDIT && wNotify == EN_CHANGE) {
+            wchar_t buf[16] = {};
+            GetWindowTextW(g_hwndHistoryLimitEdit, buf, 16);
+            int val = _wtoi(buf);
+            if (val >= 10 && val <= 10000) {
+                g_maxHistoryCount = val;
+                SaveHotkeySettings();
+            }
+            return 0;
+        }
+
+        // 智能操作 Toggle 开关
+        if (wNotify == BN_CLICKED && wID >= IDC_SMART_ACTION_TOGGLE_BASE &&
+            wID < IDC_SMART_ACTION_TOGGLE_BASE + 100) {
+            int idx = wID - IDC_SMART_ACTION_TOGGLE_BASE;
+            if (idx < (int)g_smartActions.size()) {
+                g_smartActions[idx].enabled = !g_smartActions[idx].enabled;
+                SaveSmartActions();
+                InvalidateRect((HWND)lParam, NULL, TRUE);
+            }
+            return 0;
+        }
+
+        // 智能操作删除按钮
+        if (wNotify == BN_CLICKED && wID >= IDC_SMART_ACTION_DEL_BASE &&
+            wID < IDC_SMART_ACTION_DEL_BASE + 100) {
+            int idx = wID - IDC_SMART_ACTION_DEL_BASE;
+            if (idx < (int)g_smartActions.size() && !g_smartActions[idx].isDefault) {
+                g_smartActions.erase(g_smartActions.begin() + idx);
+                SaveSmartActions();
+                RefreshSmartActionControls(hwnd);
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            return 0;
+        }
+
+        // 新建规则按钮
+        if (wNotify == BN_CLICKED && wID == IDC_SMART_ACTION_ADD) {
+            SmartAction newAction;
+            newAction.name = L"新规则";
+            newAction.pattern = L"";
+            newAction.action = L"custom";
+            newAction.customCmd = L"";
+            newAction.enabled = true;
+            newAction.isDefault = false;
+            g_smartActions.push_back(newAction);
+            SaveSmartActions();
+            RefreshSmartActionControls(hwnd);
+            InvalidateRect(hwnd, NULL, TRUE);
+            return 0;
+        }
         break;
     }
 
@@ -1140,6 +1478,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (g_hCloseIconFont) { DeleteObject(g_hCloseIconFont); g_hCloseIconFont = NULL; }
         if (g_hSettingsBgBrush) { DeleteObject(g_hSettingsBgBrush); g_hSettingsBgBrush = NULL; }
         if (g_hEditBgBrush) { DeleteObject(g_hEditBgBrush); g_hEditBgBrush = NULL; }
+        DestroySmartActionControls();
         g_isSettingsDialogOpen = false;
         g_hwndSettingsDlg = NULL;
         return 0;
@@ -1232,10 +1571,59 @@ static HWND CreateSettingsCombo(HWND parent, int rowIndex, int ctlId, int width)
 static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
     int y = GetRowY(rowIndex) + (ROW_HEIGHT - 28) / 2;
     int x = GetControlX(180);
-    return CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", NULL,
-        WS_CHILD | WS_BORDER | WS_TABSTOP | ES_CENTER,
+    return CreateWindowExW(0, L"EDIT", NULL,
+        WS_CHILD | WS_TABSTOP | ES_CENTER,
         x, y, 180, 28,
         parent, (HMENU)(INT_PTR)ctlId, GetModuleHandleW(NULL), NULL);
+}
+
+// ==================== 智能操作控件管理 ====================
+
+static void CreateSmartActionControls(HWND hwndDlg) {
+    DestroySmartActionControls();
+
+    int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+    int ruleRowH = 50;
+    int startY = headerY + 24;
+    int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
+
+    for (int i = 0; i < (int)g_smartActions.size(); i++) {
+        int rowY = startY + i * ruleRowH;
+
+        // Toggle 开关
+        int toggleY = rowY + (ruleRowH - TOGGLE_H) / 2;
+        HWND hToggle = CreateWindowExW(0, L"BUTTON", L"",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            SIDEBAR_W + CONTENT_PADDING, toggleY, TOGGLE_W, TOGGLE_H,
+            hwndDlg, (HMENU)(INT_PTR)(IDC_SMART_ACTION_TOGGLE_BASE + i),
+            GetModuleHandleW(NULL), NULL);
+        g_smartToggleHwnds.push_back(hToggle);
+
+        // 删除按钮（仅非默认规则）
+        if (!g_smartActions[i].isDefault) {
+            int delY = rowY + (ruleRowH - 24) / 2;
+            HWND hDel = CreateWindowExW(0, L"BUTTON", L"",
+                WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                contentRight - 24, delY, 40, 24,
+                hwndDlg, (HMENU)(INT_PTR)(IDC_SMART_ACTION_DEL_BASE + i),
+                GetModuleHandleW(NULL), NULL);
+            g_smartDelHwnds.push_back(hDel);
+        } else {
+            g_smartDelHwnds.push_back(NULL);
+        }
+    }
+
+    // "+新建规则"按钮
+    int addY = startY + (int)g_smartActions.size() * ruleRowH + 10;
+    g_hwndSmartAddBtn = CreateWindowExW(0, L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        SIDEBAR_W + CONTENT_PADDING, addY, 120, 32,
+        hwndDlg, (HMENU)IDC_SMART_ACTION_ADD,
+        GetModuleHandleW(NULL), NULL);
+}
+
+static void RefreshSmartActionControls(HWND hwndDlg) {
+    CreateSmartActionControls(hwndDlg);
 }
 
 // ==================== 显示设置对话框 ====================
@@ -1302,6 +1690,19 @@ void ShowSettingsDialog(HWND hwndParent) {
 
     g_hwndImagePreviewCombo = CreateSettingsCombo(hwndDlg, 4, IDC_IMAGE_PREVIEW_COMBO, 100);
 
+    {
+        int limitY = GetRowY(5) + (ROW_HEIGHT - 28) / 2;
+        wchar_t limitBuf[16];
+        _snwprintf_s(limitBuf, _countof(limitBuf), L"%d", g_maxHistoryCount);
+        g_hwndHistoryLimitEdit = CreateWindowExW(0, L"EDIT", limitBuf,
+            WS_CHILD | WS_TABSTOP | ES_CENTER | ES_NUMBER,
+            GetControlX(80), limitY, 80, 28,
+            hwndDlg, (HMENU)IDC_HISTORY_LIMIT_EDIT, GetModuleHandleW(NULL), NULL);
+        SendMessageW(g_hwndHistoryLimitEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
+        g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndHistoryLimitEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+        SetWindowPos(g_hwndHistoryLimitEdit, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    }
+
     // ===== 数据分类控件 =====
     auto CreateIosButton = [&](int rowIndex, int ctlId, int width) -> HWND {
         int y = GetRowY(rowIndex) + (ROW_HEIGHT - 32) / 2;
@@ -1318,7 +1719,8 @@ void ShowSettingsDialog(HWND hwndParent) {
     // ===== 快捷键分类控件 =====
     g_hwndHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 0, IDC_HOTKEY_EDIT);
     SendMessageW(g_hwndHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
-    g_oldEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)HotkeyEditProc);
+    g_oldEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+    SetWindowPos(g_hwndHotkeyEdit, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     wchar_t hkText[128] = L"";
     if (oldMod & MOD_CONTROL) wcscat_s(hkText, L"Ctrl+");
     if (oldMod & MOD_ALT) wcscat_s(hkText, L"Alt+");
@@ -1331,7 +1733,8 @@ void ShowSettingsDialog(HWND hwndParent) {
 
     g_hwndSearchHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 1, IDC_SEARCH_HOTKEY_EDIT);
     SendMessageW(g_hwndSearchHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
-    g_oldSearchEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndSearchHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)SearchHotkeyEditProc);
+    g_oldSearchEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndSearchHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+    SetWindowPos(g_hwndSearchHotkeyEdit, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     wchar_t shText[128] = L"";
     if (g_searchHotkeyModifiers & MOD_CONTROL) wcscat_s(shText, L"Ctrl+");
     if (g_searchHotkeyModifiers & MOD_ALT) wcscat_s(shText, L"Alt+");
@@ -1349,16 +1752,15 @@ void ShowSettingsDialog(HWND hwndParent) {
     // ===== 中转站分类控件 =====
     g_hwndToggleCollapse = CreateToggle(hwndDlg, 0, IDC_COLLAPSE_AFTER_PASTE_CHECK);
 
-    int limitY = GetRowY(1) + (ROW_HEIGHT - 28) / 2;
-    g_hwndHistoryLimitEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"100",
-        WS_CHILD | WS_BORDER | WS_TABSTOP | ES_CENTER | ES_NUMBER,
-        GetControlX(80), limitY, 80, 28,
-        hwndDlg, (HMENU)IDC_HISTORY_LIMIT_EDIT, GetModuleHandleW(NULL), NULL);
-    SendMessageW(g_hwndHistoryLimitEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
+    // ===== 智能操作分类控件 =====
+    CreateSmartActionControls(hwndDlg);
 
     // 初始显示通用分类
     g_currentSettingsTab = 0;
     SwitchSettingsTab(0);
+
+    // 初始化冲突检测状态
+    UpdateHotkeyConflictState();
 
     ShowWindow(hwndDlg, SW_SHOW);
     SetForegroundWindow(hwndDlg);
