@@ -268,8 +268,9 @@ bool MatchAndExecute(const std::wstring &text) {
                         SW_SHOWNORMAL);
         }
       } else {
-        // 非本地路径（如 FTP URL），直接用系统默认方式打开
-        ShellExecuteW(NULL, L"open", text.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        // 非本地路径（如 FTP URL），用资源管理器打开
+        ShellExecuteW(NULL, NULL, L"explorer.exe", text.c_str(), NULL,
+                      SW_SHOWNORMAL);
       }
       return true;
     } else if (a.action == L"url_template" && !a.customCmd.empty()) {

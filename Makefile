@@ -38,7 +38,6 @@ SRCS := \
     $(SRCDIR)/hotkey.cpp            \
     $(SRCDIR)/card_renderer.cpp     \
     $(SRCDIR)/tray.cpp              \
-    $(SRCDIR)/transfer_station.cpp  \
     $(SRCDIR)/settings.cpp          \
     $(SRCDIR)/search.cpp            \
     $(SRCDIR)/text_utils.cpp        \

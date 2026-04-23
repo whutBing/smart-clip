@@ -32,19 +32,8 @@ struct ClipboardItem {
     int thumbHeight;           // 缩略图高度
     std::wstring imageFileName; // 图片文件名（不含路径，如 "a1b2c3.png"）- 截图用
     std::wstring imageFilePath; // 图片文件原始路径（图片文件类型用，非截图）
-    bool isFavorite;  // 是否收藏（保留兼容性，有标签即为收藏）
-    bool isInTransferStation;  // 是否在中转站中
+    bool isFavorite;  // 是否收藏
     std::set<int> tagIds;      // 所属标签ID集合
-};
-
-// 中转站项目结构
-struct TransferStationItem {
-    int historyIndex;           // 对应 g_history 中的索引
-    HWND hwndCard;              // 对应的卡片窗口句柄
-    POINT position;             // 卡片位置
-    SIZE size;                  // 卡片大小
-    bool isHidden;              // 是否已隐藏（收起后）
-    bool isCollapsed;           // 是否处于收起状态（窄条）
 };
 
 // 主窗口句柄
@@ -69,11 +58,6 @@ extern int g_listBoxTopIndex;       // 列表框顶部索引
 extern HWND g_hwndPageUpBtn;        // 上一页按钮句柄
 extern HWND g_hwndPageDownBtn;      // 下一页按钮句柄
 #define ITEMS_PER_PAGE 9            // 每页显示的项目数
-
-// 中转站相关全局变量
-extern std::vector<TransferStationItem> g_transferStation;
-extern HWND g_hwndTransferStationContainer;
-extern bool g_isTransferStationVisible;
 
 std::wstring GetDataFilePath();
 void SaveHistory();

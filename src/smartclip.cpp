@@ -58,8 +58,6 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define IDM_PASTE 3002
 #define IDM_FAVORITE 3003
 #define IDM_DELETE 3004
-#define IDM_ADD_TO_STATION 3005
-#define IDM_REMOVE_FROM_STATION 3006
 #define IDM_OPEN_LOCATION 3007 // 打开所在位置
 #define IDM_BATCH_ADD_TAG 3008 // 批量加入标签
 
@@ -106,8 +104,8 @@ HWND g_hwndFilterFavorite = NULL;
 
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
-// 中转站粘贴标志（定义在transfer_station.cpp）
-extern bool g_isTransferStationPasting;
+// 剪贴板恢复标志
+static bool g_isTransferStationPasting = false;
 // 主窗口句柄
 extern HWND g_hwndMain;
 HWND g_hwndMain;
@@ -225,9 +223,6 @@ int g_contextMenuIndex = -1;
 HWND g_previousActiveWindow = NULL;
 
 // 中转站相关全局变量
-std::vector<TransferStationItem> g_transferStation;
-HWND g_hwndTransferStationContainer = NULL;
-bool g_isTransferStationVisible = false;
 
 // 列表框子类化
 WNDPROC g_oldListBoxProc = NULL;
@@ -5741,34 +5736,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           ShowTrayBalloon(hwnd, L"连续粘贴", msg);
         }
       }
-    } else if (wID == IDM_ADD_TO_STATION) {
-      // 右键菜单：加入中转站
-      if (g_isBatchEditMode && !g_selectedItems.empty()) {
-        // 批量加入中转站
-        for (int actualIndex : g_selectedItems) {
-          if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
-            AddToTransferStation(actualIndex);
-          }
-        }
-        g_selectedItems.clear(); // 清空选中列表
-        UpdateListBox();         // 更新列表框显示
-        if (g_isNotificationEnabled) {
-          ShowTrayBalloon(hwnd, L"提示", L"已批量加入中转站");
-        }
-      } else if (g_contextMenuIndex >= 0 &&
-                 g_contextMenuIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[g_contextMenuIndex];
-        AddToTransferStation(actualIndex);
-        UpdateListBox(); // 更新列表框显示
-      }
-    } else if (wID == IDM_REMOVE_FROM_STATION) {
-      // 右键菜单：从中转站移除
-      if (g_contextMenuIndex >= 0 &&
-          g_contextMenuIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[g_contextMenuIndex];
-        RemoveFromTransferStation(actualIndex);
-        UpdateListBox(); // 更新列表框显示
-      }
     } else if (wID >= IDM_BATCH_ADD_TAG) {
       // 批量编辑模式：批量加入标签（处理二级菜单选择）
       if (g_isBatchEditMode && !g_selectedItems.empty()) {
@@ -5907,19 +5874,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 创建菜单图标
         HBITMAP hDeleteIcon =
             CreateMenuIconBitmap(L"\uE74D", RGB(200, 60, 60)); // Delete (红色)
-        HBITMAP hStationIcon =
             CreateMenuIconBitmap(L"\uE710");                // Add to station
         HBITMAP hTagIcon = CreateMenuIconBitmap(L"\uE719"); // Tag
 
         MENUITEMINFOW mii = {};
         mii.cbSize = sizeof(MENUITEMINFOW);
         mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
-
-        // 批量加入中转站
-        mii.wID = IDM_ADD_TO_STATION;
-        mii.dwTypeData = (LPWSTR)L"批量加入中转站";
-        mii.hbmpItem = hStationIcon;
-        InsertMenuItemW(hMenu, 0, TRUE, &mii);
 
         // 连续粘贴（二级菜单）
         HBITMAP hPasteIcon = CreateMenuIconBitmap(L"");
@@ -5966,7 +5926,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
         // 释放位图资源
         DeleteObject(hDeleteIcon);
-        DeleteObject(hStationIcon);
         DeleteObject(hTagIcon);
       } else if (g_contextMenuIndex >= 0 &&
                  g_contextMenuIndex < (int)g_displayIndexMap.size()) {
@@ -5976,8 +5935,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 创建菜单图标
         HBITMAP hCopyIcon = CreateMenuIconBitmap(L"\uE8C8");  // Copy
         HBITMAP hPasteIcon = CreateMenuIconBitmap(L"\uE77F"); // Paste
-        HBITMAP hStationIcon = CreateMenuIconBitmap(
-            item.isInTransferStation ? L"\uE738" : L"\uE710"); // Remove/Add
         HBITMAP hFavoriteIcon = CreateMenuIconBitmap(
             item.isFavorite ? L"\uE735"
                             : L"\uE734"); // FavoriteStar/FavoriteStarFill
@@ -6001,20 +5958,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         mii.dwTypeData = (LPWSTR)L"执行粘贴";
         mii.hbmpItem = hPasteIcon;
         InsertMenuItemW(hMenu, 1, TRUE, &mii);
-
-        // 分隔符
-        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-
-        // 中转站选项
-        if (item.isInTransferStation) {
-          mii.wID = IDM_REMOVE_FROM_STATION;
-          mii.dwTypeData = (LPWSTR)L"从中转站移除";
-        } else {
-          mii.wID = IDM_ADD_TO_STATION;
-          mii.dwTypeData = (LPWSTR)L"加入中转站";
-        }
-        mii.hbmpItem = hStationIcon;
-        InsertMenuItemW(hMenu, 3, TRUE, &mii);
 
         // 分隔符
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -6079,7 +6022,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 释放位图资源
         DeleteObject(hCopyIcon);
         DeleteObject(hPasteIcon);
-        DeleteObject(hStationIcon);
         DeleteObject(hFavoriteIcon);
         DeleteObject(hDeleteIcon);
         DeleteObject(hOpenLocationIcon);
@@ -6270,12 +6212,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   }
 
   case WM_CLIPBOARDUPDATE: {
-    if (!g_isRestoringClipboard && !g_isTransferStationPasting) {
-      // 外部剪贴板变化，退出连续粘贴模式
-      if (g_isBatchPasteMode) {
-        StopBatchPasteHook();
-      }
-      if (OpenClipboard(NULL)) {
+    // 外部剪贴板变化，退出连续粘贴模式
+    if (g_isBatchPasteMode && !g_isRestoringClipboard && !g_isTransferStationPasting) {
+      StopBatchPasteHook();
+    }
+    if (!g_isRestoringClipboard && !g_isTransferStationPasting &&
+        OpenClipboard(NULL)) {
       // 优先处理文件路径
       if (IsClipboardFormatAvailable(CF_HDROP)) {
         HGLOBAL hGlobal = GetClipboardData(CF_HDROP);
@@ -6415,7 +6357,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         }
       }
       CloseClipboard();
-    }
     }
     break;
   }
@@ -6674,11 +6615,6 @@ BOOL InitApplication(HINSTANCE hInstance, int nCmdShow) {
   if (!RegisterWindowClass(hInstance)) {
     return FALSE;
   }
-
-  // 注册中转站窗口类
-  RegisterTransferStationContainerClass(hInstance);
-  RegisterTransferStationCardClass(hInstance);
-  RegisterFlagpoleClass(hInstance);
 
   // 计算屏幕中央位置
   int screenWidth = GetSystemMetrics(SM_CXSCREEN);

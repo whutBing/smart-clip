@@ -212,7 +212,6 @@ void LoadHistory() {
                     ClipboardItem item;
                     item.type = TYPE_TEXT;  // 默认类型
                     item.isFavorite = false;
-                    item.isInTransferStation = false;  // 初始化为false
                     item.imageWidth = 0;
                     item.imageHeight = 0;
                     item.thumbWidth = 0;
@@ -1028,7 +1027,6 @@ void UpdateListBox() {
 void AddToHistory(const std::wstring& content) {
     // 检查是否已存在相同内容
     bool wasFavorite = false;
-    bool wasInStation = false;
     std::set<int> oldTagIds;
     auto it = std::find_if(g_history.begin(), g_history.end(), [&content](const ClipboardItem& item) {
         return item.type == TYPE_TEXT && item.content == content;
@@ -1036,7 +1034,6 @@ void AddToHistory(const std::wstring& content) {
 
     if (it != g_history.end()) {
         wasFavorite = it->isFavorite;
-        wasInStation = it->isInTransferStation;
         oldTagIds = it->tagIds;
         g_history.erase(it);
     }
@@ -1050,7 +1047,6 @@ void AddToHistory(const std::wstring& content) {
     item.imageWidth = 0;
     item.imageHeight = 0;
     item.isFavorite = wasFavorite;
-    item.isInTransferStation = wasInStation;
     item.tagIds = oldTagIds;
 
     // 限制历史记录数量（收藏项不占名额）
@@ -1100,7 +1096,6 @@ void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height
     item.imageWidth = width;
     item.imageHeight = height;
     item.isFavorite = false;
-    item.isInTransferStation = false;
 
     // 生成唯一文件名
     item.imageFileName = GenerateImageFileName();
@@ -1172,7 +1167,6 @@ void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height
 void AddFileToHistory(const std::wstring& filePath) {
     // 检查是否已存在相同文件路径
     bool wasFavorite = false;
-    bool wasInStation = false;
     std::set<int> oldTagIds;
     auto it = std::find_if(g_history.begin(), g_history.end(), [&filePath](const ClipboardItem& item) {
         return item.type == TYPE_FILE && item.content == filePath;
@@ -1180,7 +1174,6 @@ void AddFileToHistory(const std::wstring& filePath) {
 
     if (it != g_history.end()) {
         wasFavorite = it->isFavorite;
-        wasInStation = it->isInTransferStation;
         oldTagIds = it->tagIds;
         g_history.erase(it);
     }
@@ -1194,7 +1187,6 @@ void AddFileToHistory(const std::wstring& filePath) {
     item.imageWidth = 0;
     item.imageHeight = 0;
     item.isFavorite = wasFavorite;
-    item.isInTransferStation = wasInStation;
     item.tagIds = oldTagIds;
 
     // 限制历史记录数量（收藏项不占名额）
@@ -1238,7 +1230,6 @@ void AddImageFileToHistory(const std::wstring& filePath, const std::vector<BYTE>
     item.imageWidth = width;
     item.imageHeight = height;
     item.isFavorite = false;
-    item.isInTransferStation = false;
     item.imageFileName = L"";  // 不保存原图到程序目录
     item.imageFilePath = filePath;  // 保存原始图片文件路径
 
