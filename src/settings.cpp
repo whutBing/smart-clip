@@ -2,6 +2,7 @@
 #include "graphics_utils.h"
 #include "history.h"
 #include "hotkey.h"
+#include "password_vault.h"
 #include "resource.h"
 #include "smart_action.h"
 #include "tray.h"
@@ -64,7 +65,7 @@ inline COLORREF GetTitlebarBgColor() {
 bool g_isStartupEnabled = false;
 bool g_isSettingsDialogOpen = false;
 bool g_isNotificationEnabled = false;
-bool g_isSmoothScrollEnabled = true;
+bool g_isSmoothScrollEnabled = false;
 ImagePreviewQuality g_imagePreviewQuality = PREVIEW_HD;
 std::wstring g_fontName = L"Microsoft YaHei";
 int g_fontSize = 16;
@@ -86,6 +87,11 @@ static bool g_settingsClassRegistered = false;
 static bool g_hotkeyConflict = false;
 static bool g_searchHotkeyConflict = false;
 
+// 数据目录路径悬浮动画
+static bool g_dataDirHovered = false;
+static float g_dataDirUnderlineProgress = 0.0f;
+#define ID_DATADIR_UNDERLINE_TIMER 301
+
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
 static HWND g_hwndToggleStartup = NULL;
@@ -97,7 +103,6 @@ static HWND g_hwndHotkeyEdit = NULL;
 static HWND g_hwndSearchHotkeyEdit = NULL;
 static HWND g_hwndToggleQuickPaste = NULL;
 static HWND g_hwndQuickPasteCombo = NULL;
-static HWND g_hwndToggleCollapse = NULL;
 static HWND g_hwndHistoryLimitEdit = NULL;
 
 // === 数据分类控件 ===
@@ -110,6 +115,14 @@ static std::wstring g_dataSizeText = L"计算中...";
 static HWND g_hwndSmartAddBtn = NULL;
 static std::vector<HWND> g_smartToggleHwnds;
 static std::vector<HWND> g_smartDelHwnds;
+
+// === 密码分类控件 ===
+static HWND g_hwndToggleVaultProtection = NULL;
+static HWND g_hwndAuthMethodCombo = NULL;
+static HWND g_hwndResetPasswordBtn = NULL;
+#define IDC_VAULT_PROTECTION_TOGGLE 400
+#define IDC_AUTH_METHOD_COMBO 401
+#define IDC_RESET_PASSWORD_BTN 402
 
 static void DestroySmartActionControls() {
   for (auto h : g_smartToggleHwnds)
@@ -411,10 +424,13 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       UpdateHotkeyConflictState();
       if (!regOk)
         g_hotkeyConflict = true;
-      if (g_hotkeyConflict)
-        ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
-      else
-        ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+      if (g_hotkeyConflict) {
+        if (g_isNotificationEnabled)
+          ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
+      } else {
+        if (g_isNotificationEnabled)
+          ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+      }
       InvalidateRect(hwnd, NULL, TRUE);
       if (g_hwndSearchHotkeyEdit)
         InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
@@ -472,8 +488,10 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       SaveHotkeySettings();
       RegisterHotkey(g_hwndMain);
       UpdateHotkeyConflictState();
-      if (g_searchHotkeyConflict)
-        ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
+      if (g_searchHotkeyConflict) {
+        if (g_isNotificationEnabled)
+          ShowTrayBalloon(g_hwndMain, L"快捷键冲突", L"该快捷键与其他快捷键冲突");
+      }
       InvalidateRect(hwnd, NULL, TRUE);
       if (g_hwndHotkeyEdit)
         InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
@@ -568,6 +586,22 @@ static void SwitchSettingsTab(int tab) {
     RefreshSmartActionControls(g_hwndSettingsDlg);
   }
 
+  // 密码分类控件
+  int showPw = (tab == 4) ? SW_SHOW : SW_HIDE;
+  if (g_hwndToggleVaultProtection)
+    ShowWindow(g_hwndToggleVaultProtection, showPw);
+  if (g_hwndAuthMethodCombo) {
+    ShowWindow(g_hwndAuthMethodCombo,
+               (tab == 4 && g_vaultProtectionEnabled) ? SW_SHOW : SW_HIDE);
+    EnableWindow(g_hwndAuthMethodCombo, g_vaultProtectionEnabled);
+  }
+  if (g_hwndResetPasswordBtn) {
+    ShowWindow(g_hwndResetPasswordBtn,
+               (tab == 4 && g_vaultProtectionEnabled) ? SW_SHOW : SW_HIDE);
+    EnableWindow(g_hwndResetPasswordBtn,
+                 g_vaultProtectionEnabled && IsMasterPasswordSet());
+  }
+
   if (g_hwndSettingsDlg)
     InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
 }
@@ -585,8 +619,9 @@ static const SidebarItem g_sidebarItems[] = {
 
     {L"", L"数据"},
     {L"", L"智能操作"},
+    {L"", L"密码"},
 };
-#define SIDEBAR_COUNT 4
+#define SIDEBAR_COUNT 5
 
 // 设置行数据
 struct SettingRowInfo {
@@ -615,6 +650,11 @@ static const SettingRowInfo g_dataRows[] = {
     {L"清理非收藏数据", L"删除所有未收藏的历史记录"},
     {L"删除失效图片", L"清理原始图片已丢失的记录"},
 };
+static const SettingRowInfo g_passwordRows[] = {
+    {L"开启密码保护", L"访问密码库时需要验证身份"},
+    {L"认证方式", L"选择解锁密码库的验证方式"},
+    {L"重置主密码", L"修改主密码（需验证旧密码）"},
+};
 
 // 分类标题
 struct CategoryHeader {
@@ -628,6 +668,7 @@ static const CategoryHeader g_categories[] = {
     {L"快捷键", L"快捷键配置", g_hotkeyRows, 4},
     {L"数据", L"", g_dataRows, 5},
     {L"智能操作", L"根据内容自动执行操作", NULL, 0},
+    {L"密码", L"密码库保护设置", g_passwordRows, 3},
 };
 
 // ==================== 绘制辅助 ====================
@@ -682,6 +723,7 @@ static const wchar_t *g_themeItems[] = {L"日间", L"夜间", L"跟随系统"};
 static const wchar_t *g_previewItems[] = {L"关闭", L"模糊", L"标清", L"高清"};
 static const wchar_t *g_quickPasteItems[] = {
     L"Alt", L"Ctrl", L"Shift", L"Ctrl+Alt", L"Ctrl+Shift", L"Alt+Shift"};
+static const wchar_t *g_authMethodItems[] = {L"主密码", L"Windows Hello"};
 
 // 获取下拉按钮当前显示文字
 static const wchar_t *GetDropdownText(int ctlId) {
@@ -704,6 +746,8 @@ static const wchar_t *GetDropdownText(int ctlId) {
       return g_quickPasteItems[5];
     return g_quickPasteItems[0];
   }
+  if (ctlId == IDC_AUTH_METHOD_COMBO)
+    return g_authMethodItems[g_vaultAuthMethod];
   return L"";
 }
 
@@ -727,6 +771,8 @@ static int GetDropdownSelectedIndex(int ctlId) {
       return 5;
     return 0;
   }
+  if (ctlId == IDC_AUTH_METHOD_COMBO)
+    return g_vaultAuthMethod;
   return 0;
 }
 
@@ -923,6 +969,9 @@ static void ShowDropdownPopup(HWND hwndBtn, int ctlId) {
   } else if (ctlId == IDC_QUICK_PASTE_COMBO) {
     g_activeDropdown.items = g_quickPasteItems;
     g_activeDropdown.itemCount = 6;
+  } else if (ctlId == IDC_AUTH_METHOD_COMBO) {
+    g_activeDropdown.items = g_authMethodItems;
+    g_activeDropdown.itemCount = 2;
   }
   g_activeDropdown.selectedIndex = GetDropdownSelectedIndex(ctlId);
   g_dropdownHoverIndex = -1;
@@ -1541,14 +1590,38 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       // 第2行：数据目录路径作为描述文字（按钮左侧）
       int row2Y = GetRowY(2);
       SelectObject(hdc, g_hDescFont);
-      SetTextColor(hdc, GetDescTextColor());
       std::wstring dataPath = GetDataFilePath();
       size_t lastSlash = dataPath.find_last_of(L"\\");
       if (lastSlash != std::wstring::npos)
         dataPath = dataPath.substr(0, lastSlash);
       RECT rcPath = {contentLeft, row2Y + 32, contentRight - 70, row2Y + 48};
+
+      // 悬浮时蓝色，否则灰色
+      COLORREF pathColor = GetDescTextColor();
+      if (g_dataDirUnderlineProgress > 0.0f) {
+        int r = GetRValue(pathColor) + (int)((GetRValue(COLOR_ACCENT) - GetRValue(pathColor)) * g_dataDirUnderlineProgress);
+        int g = GetGValue(pathColor) + (int)((GetGValue(COLOR_ACCENT) - GetGValue(pathColor)) * g_dataDirUnderlineProgress);
+        int b = GetBValue(pathColor) + (int)((GetBValue(COLOR_ACCENT) - GetBValue(pathColor)) * g_dataDirUnderlineProgress);
+        pathColor = RGB(r, g, b);
+      }
+      SetTextColor(hdc, pathColor);
       DrawTextW(hdc, dataPath.c_str(), -1, &rcPath,
                 DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+      // 下划线动画
+      if (g_dataDirUnderlineProgress > 0.0f) {
+        SIZE textSize;
+        GetTextExtentPoint32W(hdc, dataPath.c_str(), (int)dataPath.size(), &textSize);
+        int maxW = rcPath.right - rcPath.left;
+        int textW = (textSize.cx < maxW) ? textSize.cx : maxW;
+        int lineW = (int)(textW * g_dataDirUnderlineProgress);
+        HPEN hLinePen = CreatePen(PS_SOLID, 1, pathColor);
+        HPEN hOldPen2 = (HPEN)SelectObject(hdc, hLinePen);
+        MoveToEx(hdc, contentLeft, row2Y + 48, NULL);
+        LineTo(hdc, contentLeft + lineW, row2Y + 48);
+        SelectObject(hdc, hOldPen2);
+        DeleteObject(hLinePen);
+      }
     }
 
     // 智能操作分类：动态绘制规则列表
@@ -1684,7 +1757,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (lpDIS->CtlID == IDC_STARTUP_CHECK ||
         lpDIS->CtlID == IDC_NOTIFICATION_CHECK ||
         lpDIS->CtlID == IDC_SMOOTH_SCROLL_CHECK ||
-        lpDIS->CtlID == IDC_QUICK_PASTE_CHECK) {
+        lpDIS->CtlID == IDC_QUICK_PASTE_CHECK ||
+        lpDIS->CtlID == IDC_VAULT_PROTECTION_TOGGLE) {
 
       // 先填充背景
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
@@ -1704,6 +1778,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         break;
       case IDC_QUICK_PASTE_CHECK:
         isOn = g_isQuickPasteEnabled;
+        break;
+      case IDC_VAULT_PROTECTION_TOGGLE:
+        isOn = g_vaultProtectionEnabled;
         break;
       }
       DrawToggleSwitch(lpDIS->hDC, rc, isOn);
@@ -1778,7 +1855,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     // 下拉选择器按钮
     if (lpDIS->CtlID == IDC_THEME_COMBO ||
         lpDIS->CtlID == IDC_IMAGE_PREVIEW_COMBO ||
-        lpDIS->CtlID == IDC_QUICK_PASTE_COMBO) {
+        lpDIS->CtlID == IDC_QUICK_PASTE_COMBO ||
+        lpDIS->CtlID == IDC_AUTH_METHOD_COMBO) {
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
       FillRect(lpDIS->hDC, &rc, hBgBr);
       DeleteObject(hBgBr);
@@ -1788,7 +1866,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // iOS 风格操作按钮（蓝色圆角）
     if (lpDIS->CtlID == IDC_SET_DATA_DIR || lpDIS->CtlID == IDC_CLEAR_NON_FAV ||
-        lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES) {
+        lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES ||
+        lpDIS->CtlID == IDC_RESET_PASSWORD_BTN) {
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
       FillRect(lpDIS->hDC, &rc, hBgBr);
       DeleteObject(hBgBr);
@@ -1846,6 +1925,25 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     // 跟踪鼠标离开
     TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
     TrackMouseEvent(&tme);
+
+    // 数据目录路径悬浮检测
+    if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
+      int row2Y = GetRowY(2);
+      bool overPath = (pt.y >= row2Y + 30 && pt.y <= row2Y + 50 &&
+                        pt.x < SETTINGS_WIDTH - CONTENT_PADDING - 70);
+      if (overPath && !g_dataDirHovered) {
+        g_dataDirHovered = true;
+        SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
+        SetCursor(LoadCursorW(NULL, IDC_HAND));
+      } else if (!overPath && g_dataDirHovered) {
+        g_dataDirHovered = false;
+        SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
+      }
+      if (overPath) SetCursor(LoadCursorW(NULL, IDC_HAND));
+    } else if (g_dataDirHovered) {
+      g_dataDirHovered = false;
+      SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
+    }
     break;
   }
 
@@ -1855,6 +1953,34 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       RECT rcSb = {0, SETTINGS_TITLEBAR_H, SIDEBAR_W,
                    SETTINGS_TITLEBAR_H + SIDEBAR_COUNT * SIDEBAR_ITEM_H};
       InvalidateRect(hwnd, &rcSb, FALSE);
+    }
+    if (g_dataDirHovered) {
+      g_dataDirHovered = false;
+      SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
+    }
+    break;
+
+  case WM_TIMER:
+    if (wParam == ID_DATADIR_UNDERLINE_TIMER) {
+      float step = 0.08f;
+      if (g_dataDirHovered) {
+        g_dataDirUnderlineProgress += step;
+        if (g_dataDirUnderlineProgress >= 1.0f) {
+          g_dataDirUnderlineProgress = 1.0f;
+          KillTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER);
+        }
+      } else {
+        g_dataDirUnderlineProgress -= step;
+        if (g_dataDirUnderlineProgress <= 0.0f) {
+          g_dataDirUnderlineProgress = 0.0f;
+          KillTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER);
+        }
+      }
+      // 只重绘数据目录路径区域
+      int row2Y = GetRowY(2);
+      RECT rcPath = {SIDEBAR_W, row2Y + 28, SETTINGS_WIDTH, row2Y + 52};
+      InvalidateRect(hwnd, &rcPath, FALSE);
+      return 0;
     }
     break;
 
@@ -1997,6 +2123,25 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         SaveHotkeySettings();
         return 0;
       }
+      if (wID == IDC_VAULT_PROTECTION_TOGGLE) {
+        if (!g_vaultProtectionEnabled && !IsMasterPasswordSet()) {
+          // 首次开启，需要先设置主密码
+          extern void ShowSetMasterPasswordDialog(HWND);
+          ShowSetMasterPasswordDialog(hwnd);
+          if (!IsMasterPasswordSet()) return 0;
+        }
+        g_vaultProtectionEnabled = !g_vaultProtectionEnabled;
+        InvalidateRect(g_hwndToggleVaultProtection, NULL, TRUE);
+        SaveVaultSettings();
+        // 刷新认证方式和重置按钮的可见性
+        SwitchSettingsTab(4);
+        return 0;
+      }
+      if (wID == IDC_RESET_PASSWORD_BTN) {
+        extern void ShowResetMasterPasswordDialog(HWND);
+        ShowResetMasterPasswordDialog(hwnd);
+        return 0;
+      }
       if (wID == IDC_SET_DATA_DIR) {
         BROWSEINFOW bi = {};
         bi.hwndOwner = hwnd;
@@ -2058,6 +2203,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       }
       if (wID == IDC_QUICK_PASTE_COMBO) {
         ShowDropdownPopup(g_hwndQuickPasteCombo, IDC_QUICK_PASTE_COMBO);
+        return 0;
+      }
+      if (wID == IDC_AUTH_METHOD_COMBO) {
+        ShowDropdownPopup(g_hwndAuthMethodCombo, IDC_AUTH_METHOD_COMBO);
         return 0;
       }
     }
@@ -2132,6 +2281,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       SaveHotkeySettings();
       if (g_hwndQuickPasteCombo)
         InvalidateRect(g_hwndQuickPasteCombo, NULL, TRUE);
+      return 0;
+    }
+    if (wID == IDC_AUTH_METHOD_COMBO && wNotify == CBN_SELCHANGE) {
+      int sel = g_activeDropdown.selectedIndex;
+      g_vaultAuthMethod = sel;
+      SaveVaultSettings();
+      if (g_hwndAuthMethodCombo)
+        InvalidateRect(g_hwndAuthMethodCombo, NULL, TRUE);
       return 0;
     }
 
@@ -2610,6 +2767,21 @@ void ShowSettingsDialog(HWND hwndParent) {
 
   // ===== 智能操作分类控件 =====
   CreateSmartActionControls(hwndDlg);
+
+  // ===== 密码分类控件 =====
+
+  g_hwndToggleVaultProtection = CreateWindowExW(
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW,
+      GetControlX(TOGGLE_W), GetRowY(0) + (ROW_HEIGHT - TOGGLE_H) / 2,
+      TOGGLE_W, TOGGLE_H, hwndDlg, (HMENU)IDC_VAULT_PROTECTION_TOGGLE,
+      GetModuleHandleW(NULL), NULL);
+
+  g_hwndAuthMethodCombo = CreateSettingsCombo(hwndDlg, 1, IDC_AUTH_METHOD_COMBO, 150);
+
+  g_hwndResetPasswordBtn = CreateWindowExW(
+      0, L"BUTTON", L"重置主密码", WS_CHILD | BS_OWNERDRAW,
+      GetControlX(120), GetRowY(2) + (ROW_HEIGHT - 32) / 2, 120, 32,
+      hwndDlg, (HMENU)IDC_RESET_PASSWORD_BTN, GetModuleHandleW(NULL), NULL);
 
   // 初始显示通用分类
   g_currentSettingsTab = 0;

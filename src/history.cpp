@@ -923,6 +923,9 @@ std::wstring GetRelativeTimeString(const std::wstring& timeStr) {
 
 // 更新列表框
 void UpdateListBox() {
+    // 密码标签页时不更新历史列表
+    if (g_currentTab == 5) return;
+
     // 禁用重绘，避免闪烁
     SendMessageW(g_hwndListBox, WM_SETREDRAW, FALSE, 0);
 

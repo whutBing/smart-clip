@@ -3,6 +3,7 @@
 #include "history.h"
 #include "hotkey.h"
 #include "image_handler.h"
+#include "password_vault.h"
 #include "resource.h" // 添加资源头文件
 #include "search.h"
 #include "settings.h"
@@ -10,6 +11,7 @@
 #include "text_utils.h"
 #include "tray.h"
 #include <algorithm> // 用于std::remove_if
+#include <set>
 #include <cmath>     // 用于sin函数
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -39,6 +41,13 @@ using namespace Gdiplus;
 // 函数声明
 bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
               wchar_t *result, int maxLen);
+void UpdatePasswordListBox();
+void ShowSetMasterPasswordDialog(HWND hwndParent);
+void ShowVerifyMasterPasswordDialog(HWND hwndParent);
+void ShowPasswordEntryDialog(HWND hwndParent, int editId = -1);
+void ShowPasswordContextMenu(HWND hwnd, int index, POINT pt);
+void ShowResetMasterPasswordDialog(HWND hwndParent);
+static bool AuthenticateVaultAccess(HWND hwndParent);
 
 // 菜单和控件ID定义
 #define ID_LISTBOX 1001
@@ -69,6 +78,12 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define IDM_BATCH_PASTE_ASC 3400  // 连续粘贴-正序
 #define IDM_BATCH_PASTE_DESC 3401 // 连续粘贴-反序
 
+// 密码库菜单ID
+#define IDM_PW_ADD 3500
+#define IDM_PW_EDIT 3501
+#define IDM_PW_DELETE 3502
+#define IDM_PW_COPY 3503
+
 // 增加新的控件ID定义
 #define ID_TAB_CONTROL 103
 #define ID_SEARCH_BOX 104
@@ -81,6 +96,7 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define ID_FILTER_IMAGE 1103
 #define ID_FILTER_FILE 1104
 #define ID_FILTER_FAVORITE 1105
+#define ID_FILTER_PASSWORD 1106
 
 // 翻页按钮ID
 #define ID_PAGE_UP_BTN 1201
@@ -101,9 +117,12 @@ HWND g_hwndFilterText = NULL;
 HWND g_hwndFilterImage = NULL;
 HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
+HWND g_hwndFilterPassword = NULL;
 
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
+// 密码列表：密码可见状态（存储 g_displayIndexMap 中的索引）
+static std::set<int> g_pwVisibleSet;
 // 剪贴板恢复标志
 static bool g_isTransferStationPasting = false;
 // 主窗口句柄
@@ -131,6 +150,7 @@ bool g_isTitleTopmostHover = false;
 bool g_isTitleMinimizeHover = false;
 bool g_isTitleMaximizeHover = false;
 bool g_isTitleCloseHover = false;
+static bool g_hotkeyRegisterPendingRetry = false;
 // 标题栏按钮原始窗口过程
 WNDPROC g_oldTitleTopmostProc = NULL;
 WNDPROC g_oldTitleMinimizeProc = NULL;
@@ -547,6 +567,7 @@ void SetDragImage(IDataObject *pDataObject, const std::wstring &filePath,
 
 // 搜索框子类化（渐变光标）
 WNDPROC g_oldSearchBoxProc = NULL;
+static WNDPROC g_oldDialogEditProc = NULL;
 #define ID_CARET_TIMER 101
 
 // 置顶按钮子类化（悬浮效果）
@@ -1030,6 +1051,41 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     if (g_isHoveringLink || g_isHoveringFolder || g_isHoveringIcon) {
       SetCursor(LoadCursor(NULL, IDC_HAND));
       return TRUE;
+    }
+    // 密码列表中 URL 条目显示手型光标
+    if (g_currentTab == 5 && g_vaultUnlocked) {
+      POINT pt;
+      GetCursorPos(&pt);
+      ScreenToClient(hwnd, &pt);
+      int idx = (int)SendMessageW(hwnd, LB_ITEMFROMPOINT, 0,
+                                   MAKELPARAM(pt.x, pt.y));
+      if (HIWORD(idx) == 0) {
+        int i = LOWORD(idx);
+        if (i >= 0 && i < (int)g_displayIndexMap.size()) {
+          int pwIdx = g_displayIndexMap[i];
+          if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
+            // 眼睛图标区域
+            RECT rcItem;
+            SendMessageW(hwnd, LB_GETITEMRECT, i, (LPARAM)&rcItem);
+            int colEnd = rcItem.right - 10;
+            int eyeW = 20;
+            if (pt.x >= colEnd - eyeW && pt.x <= colEnd) {
+              SetCursor(LoadCursor(NULL, IDC_HAND));
+              return TRUE;
+            }
+            // URL 区域
+            if (g_passwords[pwIdx].isUrl) {
+              int W = rcItem.right - rcItem.left;
+              int col1 = rcItem.left + W * 22 / 100;
+              int col2 = rcItem.left + W * 52 / 100;
+              if (pt.x >= col1 && pt.x < col2) {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1529,6 +1585,31 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     POINT pt;
     pt.x = GET_X_LPARAM(lParam);
     pt.y = GET_Y_LPARAM(lParam);
+
+    // 密码列表：眼睛图标点击切换密码可见
+    if (g_currentTab == 5 && g_vaultUnlocked) {
+      int hitIdx = (int)SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+      if (HIWORD(hitIdx) == 0) {
+        int i = LOWORD(hitIdx);
+        if (i >= 0 && i < (int)g_displayIndexMap.size()) {
+          int pwIdx = g_displayIndexMap[i];
+          if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
+            RECT rcItem;
+            SendMessageW(hwnd, LB_GETITEMRECT, i, (LPARAM)&rcItem);
+            int colEnd = rcItem.right - 10;
+            int eyeW = 20;
+            if (pt.x >= colEnd - eyeW && pt.x <= colEnd) {
+              if (g_pwVisibleSet.count(i))
+                g_pwVisibleSet.erase(i);
+              else
+                g_pwVisibleSet.insert(i);
+              InvalidateRect(hwnd, &rcItem, FALSE);
+              return 0;
+            }
+          }
+        }
+      }
+    }
 
     int index = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
     if (HIWORD(index) == 0) {
@@ -2249,6 +2330,71 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
   return CallWindowProcW(g_oldSearchBoxProc, hwnd, message, wParam, lParam);
 }
 
+LRESULT CALLBACK DialogEditProc(HWND hwnd, UINT message, WPARAM wParam,
+                                LPARAM lParam) {
+  switch (message) {
+  case WM_NCPAINT: {
+    HDC hdc = GetWindowDC(hwnd);
+    if (hdc) {
+      RECT rcWin;
+      GetWindowRect(hwnd, &rcWin);
+      OffsetRect(&rcWin, -rcWin.left, -rcWin.top);
+      HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
+      FillRect(hdc, &rcWin, hBr);
+      DeleteObject(hBr);
+      ReleaseDC(hwnd, hdc);
+    }
+    return 0;
+  }
+  case WM_PAINT: {
+    LRESULT result =
+        CallWindowProcW(g_oldDialogEditProc, hwnd, message, wParam, lParam);
+
+    HWND hParent = GetParent(hwnd);
+    HDC hdc = GetDC(hParent);
+    if (hdc) {
+      RECT rcEdit;
+      GetWindowRect(hwnd, &rcEdit);
+      MapWindowPoints(HWND_DESKTOP, hParent, (LPPOINT)&rcEdit, 2);
+
+      RECT rcBorder = {rcEdit.left - 1, rcEdit.top - 1, rcEdit.right + 1,
+                       rcEdit.bottom + 1};
+      int w = rcBorder.right - rcBorder.left;
+      int h = rcBorder.bottom - rcBorder.top;
+
+      Gdiplus::Graphics g(hdc);
+      g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+
+      COLORREF borderColor = GetWhiteColor();
+      Gdiplus::GraphicsPath path;
+      CreateRoundRectPath(&path, rcBorder.left, rcBorder.top, w, h, 6);
+      Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(borderColor),
+                                      GetGValue(borderColor),
+                                      GetBValue(borderColor)),
+                       1.2f);
+      g.DrawPath(&pen, &path);
+      ReleaseDC(hParent, hdc);
+    }
+    return result;
+  }
+  }
+  return CallWindowProcW(g_oldDialogEditProc, hwnd, message, wParam, lParam);
+}
+
+static BOOL CALLBACK StyleDialogEditChildren(HWND hwnd, LPARAM) {
+  wchar_t className[32] = {};
+  GetClassNameW(hwnd, className, _countof(className));
+  if (wcscmp(className, L"Edit") != 0) return TRUE;
+
+  LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if ((exStyle & WS_EX_CLIENTEDGE) == 0) return TRUE;
+
+  g_oldDialogEditProc =
+      (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)DialogEditProc);
+  return TRUE;
+}
+
 // ==================== 标签管理弹出窗口 ====================
 #define IDC_TAG_POPUP_LIST 4010
 #define IDC_TAG_POPUP_ADD 4011
@@ -2813,6 +2959,7 @@ LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       InvalidateRect(g_hwndFilterImage, NULL, TRUE);
       InvalidateRect(g_hwndFilterFile, NULL, TRUE);
       InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
+      InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
       UpdateListBox();
       DestroyWindow(hwnd);
       return 0;
@@ -3470,6 +3617,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 加载快捷键设置
     LoadHotkeySettings();
 
+    // 加载密码库设置
+    LoadVaultSettings();
+
     // 加载智能操作规则
     LoadSmartActions();
 
@@ -3480,8 +3630,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 注册快捷键，如果默认快捷键冲突则禁用
     if (!RegisterHotkey(hwnd)) {
-      g_isHotkeyEnabled = false;
-      SaveHotkeySettings();
+      // 首次创建阶段可能因窗口尚未稳定而短暂失败，延迟到首次显示后重试。
+      g_hotkeyRegisterPendingRetry = g_isHotkeyEnabled;
     }
 
     // 注册快捷粘贴快捷键
@@ -3531,6 +3681,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     g_hwndFilterFavorite = CreateWindowExW(
         0, L"BUTTON", L"收藏", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
+    g_hwndFilterPassword = CreateWindowExW(
+        0, L"BUTTON", L"密码", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        hwnd, (HMENU)ID_FILTER_PASSWORD, GetModuleHandleW(NULL), NULL);
 
     // 设置筛选按钮字体（比UI字体大4px）
     HFONT hFilterFont = CreateFontW(
@@ -3542,6 +3695,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SendMessageW(g_hwndFilterImage, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFile, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFavorite, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
+    SendMessageW(g_hwndFilterPassword, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
 
     // 创建剪贴板内容列表（使用 owner-drawn 模式，自绘滚动条）
     g_hwndListBox = CreateWindowExW(
@@ -3762,7 +3916,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     static bool s_firstShow = true;
     if (s_firstShow) {
       s_firstShow = false;
-      if (g_isHotkeyEnabled) RegisterHotkey(hwnd);
+      if (g_isHotkeyEnabled) {
+        if (!RegisterHotkey(hwnd)) {
+          if (g_hotkeyRegisterPendingRetry) {
+            g_isHotkeyEnabled = false;
+            SaveHotkeySettings();
+          }
+        } else {
+          g_hotkeyRegisterPendingRetry = false;
+        }
+      }
       if (g_isQuickPasteEnabled) RegisterQuickPasteHotkeys(hwnd);
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -3825,9 +3988,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       SendMessageW(g_hwndSearchBox, EM_SETRECT, 0, (LPARAM)&rcEdit);
     }
 
-    // 调整筛选按钮位置
-    const int filterBtnWidth = 75;
-    const int filterBtnSpacing = 5;
+    // 调整筛选按钮位置（6个按钮，总宽度与列表框对齐）
+    const int filterBtnSpacing = 4;
+    const int iconBtnSize = 32;   // 图标按钮大小
+    const int iconBtnSpacing = 5; // 按钮间距
+    int filterTotalWidth = clientWidth - margin * 2 - iconBtnSize - margin;
+    int filterBtnWidth = (filterTotalWidth - filterBtnSpacing * 5) / 6;
     int filterY = contentTop + margin + searchHeight + margin;
     MoveWindow(g_hwndFilterAll, margin, filterY, filterBtnWidth, tabHeight,
                TRUE);
@@ -3842,10 +4008,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     MoveWindow(g_hwndFilterFavorite,
                margin + (filterBtnWidth + filterBtnSpacing) * 4, filterY,
                filterBtnWidth, tabHeight, TRUE);
+    // 最后一个按钮用剩余宽度，确保右边对齐
+    int lastBtnX = margin + (filterBtnWidth + filterBtnSpacing) * 5;
+    int lastBtnW = filterTotalWidth - (lastBtnX - margin);
+    MoveWindow(g_hwndFilterPassword, lastBtnX, filterY, lastBtnW, tabHeight,
+               TRUE);
 
     // 调整列表框大小（右侧留出按钮空间）
-    const int iconBtnSize = 32;   // 图标按钮大小
-    const int iconBtnSpacing = 5; // 按钮间距
     int listBoxTop = contentTop + margin + searchHeight + margin + tabHeight;
     MoveWindow(g_hwndListBox, margin, listBoxTop,
                clientWidth - margin * 2 - iconBtnSize - margin,
@@ -3893,6 +4062,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_MEASUREITEM: {
     LPMEASUREITEMSTRUCT lpMIS = (LPMEASUREITEMSTRUCT)lParam;
     if (lpMIS->CtlID == ID_LISTBOX) {
+      // 密码列表项高度
+      if (g_currentTab == 5) {
+        int idx = (int)lpMIS->itemID;
+        if (idx >= 0 && idx < (int)g_displayIndexMap.size()) {
+          int v = g_displayIndexMap[idx];
+          if (v == -2) lpMIS->itemHeight = 36;      // 标题行
+          else if (v == -1) lpMIS->itemHeight = 42;  // 新增按钮
+          else lpMIS->itemHeight = 42;               // 数据行
+        } else {
+          lpMIS->itemHeight = 36;
+        }
+        return TRUE;
+      }
+
       // 动态获取列表框宽度
       RECT rcListBox;
       GetClientRect(g_hwndListBox, &rcListBox);
@@ -3951,7 +4134,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     LPDRAWITEMSTRUCT lpDIS = (LPDRAWITEMSTRUCT)lParam;
 
     // 处理筛选按钮绘制
-    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_FAVORITE) {
+    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_PASSWORD) {
       HDC hdc = lpDIS->hDC;
       RECT rc = lpDIS->rcItem;
 
@@ -3991,6 +4174,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       case ID_FILTER_FAVORITE:
         icon = L"\uE734";
         break; // FavoriteStar
+      case ID_FILTER_PASSWORD:
+        icon = L"";
+        break; // Lock
       }
 
       // 创建图标字体
@@ -4037,18 +4223,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       HBRUSH hBrush = CreateSolidBrush(bgColor);
       FillRect(hdc, &rc, hBrush);
       DeleteObject(hBrush);
-
-      // 批量编辑按钮使用圆形裁剪
-      if (lpDIS->CtlID == ID_BATCH_EDIT_BUTTON) {
-        int btnW = rc.right - rc.left;
-        int btnH = rc.bottom - rc.top;
-        int diameter = std::min(btnW, btnH);
-        int cx = rc.left + (btnW - diameter) / 2;
-        int cy = rc.top + (btnH - diameter) / 2;
-        HRGN hRgn = CreateEllipticRgn(cx, cy, cx + diameter, cy + diameter);
-        SelectClipRgn(hdc, hRgn);
-        DeleteObject(hRgn);
-      }
 
       // 置顶按钮：使用图片绘制（带波浪动画）
       if (lpDIS->CtlID == ID_TOPMOST_BUTTON) {
@@ -4131,9 +4305,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         graphics.SetInterpolationMode(
             Gdiplus::InterpolationModeHighQualityBicubic);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
 
         int btnW = rc.right - rc.left;
         int btnH = rc.bottom - rc.top;
+        int diameter = std::min(btnW, btnH) - 1;
+        Gdiplus::REAL clipX = (Gdiplus::REAL)(rc.left + (btnW - diameter) / 2) + 0.5f;
+        Gdiplus::REAL clipY = (Gdiplus::REAL)(rc.top + (btnH - diameter) / 2) + 0.5f;
+        Gdiplus::GraphicsPath buttonClipPath;
+        buttonClipPath.AddEllipse(clipX, clipY, (Gdiplus::REAL)diameter,
+                                  (Gdiplus::REAL)diameter);
+        graphics.SetClip(&buttonClipPath, Gdiplus::CombineModeReplace);
 
         if (g_batchEditAnimating) {
           Gdiplus::Image *imgFrom = g_batchEditAnimDirection
@@ -4192,7 +4375,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             graphics.DrawImage(img, x, y, drawW, drawH);
           }
         }
-        SelectClipRgn(hdc, NULL);
+        graphics.ResetClip();
+
+        Gdiplus::Pen edgePen(
+            Gdiplus::Color(120, GetRValue(bgColor), GetGValue(bgColor),
+                           GetBValue(bgColor)),
+            1.2f);
+        graphics.DrawEllipse(&edgePen, clipX, clipY, (Gdiplus::REAL)diameter,
+                             (Gdiplus::REAL)diameter);
         return TRUE;
       }
 
@@ -4342,6 +4532,125 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     }
 
     if (lpDIS->CtlID == ID_LISTBOX) {
+      // 密码列表绘制（表格式一行平铺）
+      if (g_currentTab == 5 && g_vaultUnlocked) {
+        HDC hdc = lpDIS->hDC;
+        RECT rcItem = lpDIS->rcItem;
+        int idx = (int)lpDIS->itemID;
+        int W = rcItem.right - rcItem.left;
+        int pad = 10;
+        // 列起始位置：名称22% | 网址30% | 账户23% | 密码25%
+        int col0 = rcItem.left + pad;
+        int col1 = rcItem.left + W * 22 / 100;
+        int col2 = rcItem.left + W * 52 / 100;
+        int col3 = rcItem.left + W * 75 / 100;
+        int colEnd = rcItem.right - pad;
+        int eyeW = 20;
+
+        SetBkMode(hdc, TRANSPARENT);
+
+        if (idx >= (int)g_displayIndexMap.size()) { return TRUE; }
+        int mapVal = g_displayIndexMap[idx];
+
+        if (mapVal == -2) {
+          // 标题行
+          HBRUSH hBr = CreateSolidBrush(g_isDarkMode ? RGB(38, 38, 42) : RGB(235, 235, 235));
+          FillRect(hdc, &rcItem, hBr);
+          DeleteObject(hBr);
+          HFONT hF = CreateFontW(g_fontSize + 5, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+          HFONT hOld = (HFONT)SelectObject(hdc, hF);
+          SetTextColor(hdc, g_isDarkMode ? RGB(160, 160, 165) : RGB(100, 100, 100));
+          RECT r0 = {col0, rcItem.top, col1 - 4, rcItem.bottom};
+          RECT r1 = {col1, rcItem.top, col2 - 4, rcItem.bottom};
+          RECT r2 = {col2, rcItem.top, col3 - 4, rcItem.bottom};
+          RECT r3 = {col3, rcItem.top, colEnd, rcItem.bottom};
+          DrawTextW(hdc, L"名称", -1, &r0, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+          DrawTextW(hdc, L"网址/应用", -1, &r1, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+          DrawTextW(hdc, L"账户", -1, &r2, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+          DrawTextW(hdc, L"密码", -1, &r3, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+          SelectObject(hdc, hOld);
+          DeleteObject(hF);
+          // 底线
+          HPEN hPen = CreatePen(PS_SOLID, 1, g_isDarkMode ? RGB(60, 60, 64) : RGB(210, 210, 210));
+          HPEN hOP = (HPEN)SelectObject(hdc, hPen);
+          MoveToEx(hdc, rcItem.left, rcItem.bottom - 1, NULL);
+          LineTo(hdc, rcItem.right, rcItem.bottom - 1);
+          SelectObject(hdc, hOP);
+          DeleteObject(hPen);
+        } else if (mapVal == -1) {
+          // 新增按钮
+          HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
+          FillRect(hdc, &rcItem, hBr);
+          DeleteObject(hBr);
+          SetTextColor(hdc, RGB(66, 133, 244));
+          HFONT hF = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+          HFONT hOld = (HFONT)SelectObject(hdc, hF);
+          RECT rcText = rcItem; rcText.left = col0;
+          DrawTextW(hdc, L"+ 新增密码", -1, &rcText, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+          SelectObject(hdc, hOld);
+          DeleteObject(hF);
+        } else if (mapVal >= 0 && mapVal < (int)g_passwords.size()) {
+          // 数据行
+          HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
+          FillRect(hdc, &rcItem, hBr);
+          DeleteObject(hBr);
+          const PasswordEntry &entry = g_passwords[mapVal];
+          HFONT hF = CreateFontW(g_fontSize + 5, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+          HFONT hOld = (HFONT)SelectObject(hdc, hF);
+          // 名称
+          SetTextColor(hdc, GetTextColor());
+          RECT r0 = {col0, rcItem.top, col1 - 4, rcItem.bottom};
+          DrawTextW(hdc, entry.name.c_str(), -1, &r0,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+          // 网址/应用
+          SetTextColor(hdc, entry.isUrl ? RGB(26, 115, 232) : GetTextColor());
+          RECT r1 = {col1, rcItem.top, col2 - 4, rcItem.bottom};
+          DrawTextW(hdc, entry.title.c_str(), -1, &r1,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+          // 账户
+          SetTextColor(hdc, GetTextColor());
+          RECT r2 = {col2, rcItem.top, col3 - 4, rcItem.bottom};
+          DrawTextW(hdc, entry.account.c_str(), -1, &r2,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+          // 密码 + 眼睛图标
+          bool visible = (g_pwVisibleSet.count(idx) > 0);
+          std::wstring pwText = visible ? entry.password : L"••••••••";
+          SetTextColor(hdc, GetTextColor());
+          RECT r3 = {col3, rcItem.top, colEnd - eyeW - 4, rcItem.bottom};
+          DrawTextW(hdc, pwText.c_str(), -1, &r3,
+                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
+          SelectObject(hdc, hOld);
+          DeleteObject(hF);
+          // 眼睛图标 (Segoe MDL2 Assets)
+          HFONT hEye = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                                    L"Segoe MDL2 Assets");
+          SelectObject(hdc, hEye);
+          SetTextColor(hdc, g_isDarkMode ? RGB(140, 140, 145) : RGB(130, 130, 130));
+          RECT rEye = {colEnd - eyeW, rcItem.top, colEnd, rcItem.bottom};
+          const wchar_t *eyeIcon = visible ? L"" : L"";
+          DrawTextW(hdc, eyeIcon, 1, &rEye, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+          SelectObject(hdc, hOld);
+          DeleteObject(hEye);
+          // 底线
+          HPEN hPen = CreatePen(PS_SOLID, 1, g_isDarkMode ? RGB(50, 50, 54) : RGB(230, 230, 230));
+          HPEN hOP = (HPEN)SelectObject(hdc, hPen);
+          MoveToEx(hdc, rcItem.left + pad, rcItem.bottom - 1, NULL);
+          LineTo(hdc, rcItem.right - pad, rcItem.bottom - 1);
+          SelectObject(hdc, hOP);
+          DeleteObject(hPen);
+        }
+
+        return TRUE;
+      }
+
       // 获取设备上下文
       HDC hdc = lpDIS->hDC;
       RECT rcItem = lpDIS->rcItem;
@@ -4994,6 +5303,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 处理列表框选择变化
     if (wID == ID_LISTBOX && wNotifyCode == LBN_SELCHANGE) {
+      // 密码列表单击处理
+      if (g_currentTab == 5 && g_vaultUnlocked) {
+        int index = SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0);
+        if (index != LB_ERR && index < (int)g_displayIndexMap.size()) {
+          int pwIdx = g_displayIndexMap[index];
+          if (pwIdx == -1) {
+            ShowPasswordEntryDialog(hwnd);
+          }
+          // -2 = 标题行，忽略；>=0 = 数据行，单击不操作（双击触发复制）
+        }
+        return 0;
+      }
+
       if (g_isBatchEditMode) {
         // 检查Ctrl键状态
         bool isCtrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -5065,16 +5387,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_currentFilterTagId = 0; // 重置为显示全部收藏
           filterChanged = true;
         }
+      } else if (wID == ID_FILTER_PASSWORD) {
+        if (g_currentTab != 5) {
+          if (!g_vaultUnlocked) {
+            if (g_vaultProtectionEnabled) {
+              if (!AuthenticateVaultAccess(hwnd)) goto pw_skip;
+            } else {
+              g_vaultUnlocked = true;
+            }
+            LoadVault();
+          }
+          g_currentTab = 5;
+          filterChanged = true;
+        }
+        pw_skip:;
       }
 
       if (filterChanged) {
+        // 离开密码页时自动锁定
+        if (g_currentTab != 5 && g_vaultUnlocked) {
+          g_vaultUnlocked = false;
+          g_passwords.clear();
+        }
         // 重绘所有筛选按钮以更新选中状态
         InvalidateRect(g_hwndFilterAll, NULL, TRUE);
         InvalidateRect(g_hwndFilterText, NULL, TRUE);
         InvalidateRect(g_hwndFilterImage, NULL, TRUE);
         InvalidateRect(g_hwndFilterFile, NULL, TRUE);
         InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
-        UpdateListBox();
+        InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
+        if (g_currentTab == 5) {
+          UpdatePasswordListBox();
+        } else {
+          UpdateListBox();
+        }
       }
     }
 
@@ -5082,6 +5428,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wID == ID_LISTBOX && wNotifyCode == LBN_DBLCLK) {
       int index = SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0);
       if (index != LB_ERR && index < (int)g_displayIndexMap.size()) {
+        // 密码列表双击处理
+        if (g_currentTab == 5 && g_vaultUnlocked) {
+          int pwIdx = g_displayIndexMap[index];
+          if (pwIdx == -1) {
+            // 新增密码
+            ShowPasswordEntryDialog(hwnd);
+          } else if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
+            // 连续复制账号→密码
+            StartPasswordBatchCopy(pwIdx, g_hwndMain);
+            if (!g_isTopmost) {
+              ShowWindow(hwnd, SW_HIDE);
+            }
+          }
+          return 0;
+        }
+
         // 批量编辑模式下，双击切换选择状态
         if (g_isBatchEditMode) {
           int actualIndex = g_displayIndexMap[index];
@@ -5262,6 +5624,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollListBox = g_hwndListBox;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
+          ShowScrollBar(g_hwndListBox, SB_VERT, FALSE);
           SendMessageW(g_hwndListBox, LB_SETTOPINDEX, topIndex, 0);
           g_listBoxTopIndex = topIndex;
           InvalidateRect(g_hwndListBox, NULL, FALSE);
@@ -5290,6 +5653,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollExpectedTop = expectedNextTop;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
+          ShowScrollBar(g_hwndListBox, SB_VERT, FALSE);
           SendMessageW(g_hwndListBox, LB_SETTOPINDEX, topIndex, 0);
           int actualTop =
               (int)SendMessageW(g_hwndListBox, LB_GETTOPINDEX, 0, 0);
@@ -5642,6 +6006,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
                 std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
                 DeleteFileW(imgFile.c_str());
+                std::wstring thumbFile = GetThumbsPath() + L"\\" + delItem.imageFileName;
+                DeleteFileW(thumbFile.c_str());
               }
               g_history.erase(g_history.begin() + actualIndex);
             }
@@ -5671,6 +6037,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
             std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
             DeleteFileW(imgFile.c_str());
+            std::wstring thumbFile = GetThumbsPath() + L"\\" + delItem.imageFileName;
+            DeleteFileW(thumbFile.c_str());
           }
           g_history.erase(g_history.begin() + actualIndex);
           SaveHistory();
@@ -5868,6 +6236,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       // 创建右键菜单
+      // 密码列表右键菜单
+      if (g_currentTab == 5 && g_vaultUnlocked) {
+        if (g_contextMenuIndex >= 0 &&
+            g_contextMenuIndex < (int)g_displayIndexMap.size()) {
+          int pwIdx = g_displayIndexMap[g_contextMenuIndex];
+          if (pwIdx >= 0) {
+            POINT menuPt = pt;
+            ScreenToClient(g_hwndListBox, &menuPt);
+            ShowPasswordContextMenu(g_hwndListBox, pwIdx, menuPt);
+          }
+        }
+        return 0;
+      }
+
       HMENU hMenu = CreatePopupMenu();
       if (g_isBatchEditMode && !g_selectedItems.empty()) {
         // 批量编辑模式下的右键菜单
@@ -6142,6 +6524,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       path.AddArc(borderRect.left, borderRect.bottom - radius * 2, radius * 2,
                   radius * 2, 90, 90);
       path.CloseFigure();
+
+      SolidBrush fillBrush(
+          Color(255, GetRValue(GetWhiteColor()), GetGValue(GetWhiteColor()),
+                GetBValue(GetWhiteColor())));
+      graphics.FillPath(&fillBrush, &path);
 
       if (g_isDarkMode) {
         // 暗黑模式：与背景一致的边框色
@@ -6650,6 +7037,8 @@ BOOL InitApplication(HINSTANCE hInstance, int nCmdShow) {
   DwmSetWindowAttribute(g_hwndMain, DWMWA_NCRENDERING_POLICY, &bEnable,
                         sizeof(bEnable));
 
+  ApplyTheme();
+
   ShowWindow(g_hwndMain, nCmdShow);
   UpdateWindow(g_hwndMain);
 
@@ -6799,6 +7188,553 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 
   DestroyWindow(hDialog);
   return resultValue;
+}
+
+// ==================== 密码库 UI 函数 ====================
+
+void UpdatePasswordListBox() {
+  SendMessageW(g_hwndListBox, LB_RESETCONTENT, 0, 0);
+  g_displayIndexMap.clear();
+  g_pwVisibleSet.clear();
+
+  if (!g_vaultUnlocked) return;
+
+  // 标题行
+  SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)L"");
+  g_displayIndexMap.push_back(-2); // -2 = 标题行
+
+  std::wstring keyword = g_searchKeyword;
+  for (int i = 0; i < (int)g_passwords.size(); i++) {
+    if (!keyword.empty()) {
+      std::wstring nameLower = g_passwords[i].name;
+      std::wstring kwLower = keyword;
+      for (auto &c : nameLower) c = towlower(c);
+      for (auto &c : kwLower) c = towlower(c);
+      if (nameLower.find(kwLower) == std::wstring::npos) continue;
+    }
+    SendMessageW(g_hwndListBox, LB_ADDSTRING, 0,
+                 (LPARAM)g_passwords[i].name.c_str());
+    g_displayIndexMap.push_back(i);
+  }
+  SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)L"+ 新增密码");
+  g_displayIndexMap.push_back(-1);
+}
+
+// PLACEHOLDER_PW_DIALOGS
+
+void ShowSetMasterPasswordDialog(HWND hwndParent) {
+  HINSTANCE hInst = GetModuleHandleW(NULL);
+  HWND hDlg = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, L"#32770", L"设置主密码",
+      WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+      CW_USEDEFAULT, CW_USEDEFAULT, 320, 200,
+      hwndParent, NULL, hInst, NULL);
+  if (!hDlg) return;
+
+  CreateWindowExW(0, L"STATIC", L"请设置主密码（至少6个字符）：",
+                  WS_CHILD | WS_VISIBLE, 15, 15, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  HWND hPw1 = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 40, 275, 25, hDlg, (HMENU)2001, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"确认密码：",
+                  WS_CHILD | WS_VISIBLE, 15, 75, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 100, 275, 25, hDlg, (HMENU)2002, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"确定",
+                  WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                  130, 140, 75, 28, hDlg, (HMENU)IDOK, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"取消",
+                  WS_CHILD | WS_VISIBLE,
+                  215, 140, 75, 28, hDlg, (HMENU)IDCANCEL, hInst, NULL);
+
+  HFONT hFont = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+  EnumChildWindows(hDlg, [](HWND h, LPARAM lp) -> BOOL {
+    SendMessageW(h, WM_SETFONT, (WPARAM)lp, TRUE);
+    return TRUE;
+  }, (LPARAM)hFont);
+  EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
+
+  RECT rcParent, rcDlg;
+  GetWindowRect(hwndParent, &rcParent);
+  GetWindowRect(hDlg, &rcDlg);
+  int x = rcParent.left + ((rcParent.right - rcParent.left) - (rcDlg.right - rcDlg.left)) / 2;
+  int y = rcParent.top + ((rcParent.bottom - rcParent.top) - (rcDlg.bottom - rcDlg.top)) / 2;
+  SetWindowPos(hDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+  ShowWindow(hDlg, SW_SHOW);
+  EnableWindow(hwndParent, FALSE);
+  SetFocus(hPw1);
+
+  // 子类化对话框以拦截按钮命令
+  static bool s_setMasterDone = false;
+  s_setMasterDone = false;
+
+  SetWindowLongPtrW(hDlg, GWLP_WNDPROC,
+    (LONG_PTR)+[](HWND hw, UINT m, WPARAM wp, LPARAM lp) -> LRESULT {
+      if (m == WM_COMMAND && LOWORD(wp) == IDOK) {
+        wchar_t pw1[256] = {}, pw2[256] = {};
+        GetDlgItemTextW(hw, 2001, pw1, 256);
+        GetDlgItemTextW(hw, 2002, pw2, 256);
+        if (wcslen(pw1) < 6) {
+          MessageBoxW(hw, L"密码至少需要6个字符", L"提示", MB_OK);
+          return 0;
+        }
+        if (wcscmp(pw1, pw2) != 0) {
+          MessageBoxW(hw, L"两次输入的密码不一致", L"提示", MB_OK);
+          return 0;
+        }
+        if (SetMasterPassword(pw1)) {
+          s_setMasterDone = true;
+          PostMessageW(hw, WM_CLOSE, 0, 0);
+        } else {
+          MessageBoxW(hw, L"设置密码失败", L"错误", MB_OK | MB_ICONERROR);
+        }
+        return 0;
+      }
+      if (m == WM_COMMAND && LOWORD(wp) == IDCANCEL) {
+        s_setMasterDone = true;
+        PostMessageW(hw, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      if (m == WM_CLOSE) {
+        s_setMasterDone = true;
+        return 0;
+      }
+      return DefDlgProcW(hw, m, wp, lp);
+    });
+
+  MSG msg;
+  while (!s_setMasterDone && GetMessageW(&msg, NULL, 0, 0)) {
+    if (!IsDialogMessageW(hDlg, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+
+  EnableWindow(hwndParent, TRUE);
+  SetForegroundWindow(hwndParent);
+  DestroyWindow(hDlg);
+}
+
+// PLACEHOLDER_PW_VERIFY2
+
+void ShowVerifyMasterPasswordDialog(HWND hwndParent) {
+  HINSTANCE hInst = GetModuleHandleW(NULL);
+  HWND hDlg = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, L"#32770", L"验证密码",
+      WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+      CW_USEDEFAULT, CW_USEDEFAULT, 320, 140,
+      hwndParent, NULL, hInst, NULL);
+  if (!hDlg) return;
+
+  CreateWindowExW(0, L"STATIC", L"请输入主密码：",
+                  WS_CHILD | WS_VISIBLE, 15, 15, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  HWND hPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 40, 275, 25, hDlg, (HMENU)2001, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"确定",
+                  WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                  130, 80, 75, 28, hDlg, (HMENU)IDOK, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"取消",
+                  WS_CHILD | WS_VISIBLE,
+                  215, 80, 75, 28, hDlg, (HMENU)IDCANCEL, hInst, NULL);
+
+  HFONT hFont = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+  EnumChildWindows(hDlg, [](HWND h, LPARAM lp) -> BOOL {
+    SendMessageW(h, WM_SETFONT, (WPARAM)lp, TRUE);
+    return TRUE;
+  }, (LPARAM)hFont);
+  EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
+
+  RECT rcParent, rcDlg;
+  GetWindowRect(hwndParent, &rcParent);
+  GetWindowRect(hDlg, &rcDlg);
+  int x = rcParent.left + ((rcParent.right - rcParent.left) - (rcDlg.right - rcDlg.left)) / 2;
+  int y = rcParent.top + ((rcParent.bottom - rcParent.top) - (rcDlg.bottom - rcDlg.top)) / 2;
+  SetWindowPos(hDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+  ShowWindow(hDlg, SW_SHOW);
+  EnableWindow(hwndParent, FALSE);
+  SetFocus(hPw);
+
+  static bool s_verifyDone = false;
+  s_verifyDone = false;
+
+  SetWindowLongPtrW(hDlg, GWLP_WNDPROC,
+    (LONG_PTR)+[](HWND hw, UINT m, WPARAM wp, LPARAM lp) -> LRESULT {
+      if (m == WM_COMMAND && LOWORD(wp) == IDOK) {
+        wchar_t pw[256] = {};
+        GetDlgItemTextW(hw, 2001, pw, 256);
+        if (VerifyMasterPassword(pw)) {
+          g_vaultUnlocked = true;
+          s_verifyDone = true;
+          PostMessageW(hw, WM_CLOSE, 0, 0);
+        } else {
+          MessageBoxW(hw, L"密码错误", L"提示", MB_OK | MB_ICONWARNING);
+        }
+        return 0;
+      }
+      if (m == WM_COMMAND && LOWORD(wp) == IDCANCEL) {
+        s_verifyDone = true;
+        PostMessageW(hw, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      if (m == WM_CLOSE) {
+        s_verifyDone = true;
+        return 0;
+      }
+      return DefDlgProcW(hw, m, wp, lp);
+    });
+
+  MSG msg;
+  while (!s_verifyDone && GetMessageW(&msg, NULL, 0, 0)) {
+    if (!IsDialogMessageW(hDlg, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+
+  EnableWindow(hwndParent, TRUE);
+  SetForegroundWindow(hwndParent);
+  DestroyWindow(hDlg);
+}
+
+static bool AuthenticateVaultAccess(HWND hwndParent) {
+  if (!IsMasterPasswordSet()) {
+    ShowSetMasterPasswordDialog(hwndParent);
+    if (!g_masterPasswordSet) return false;
+  }
+
+  g_vaultUnlocked = false;
+
+  if (g_vaultAuthMethod == 1) {
+    if (TryWindowsHelloAuth(hwndParent)) {
+      g_vaultUnlocked = true;
+      return true;
+    }
+
+    MessageBoxW(hwndParent,
+                L"Windows Hello 验证未通过，未解锁密码库。",
+                L"认证失败", MB_OK | MB_ICONWARNING);
+    return false;
+  }
+
+  ShowVerifyMasterPasswordDialog(hwndParent);
+  return g_vaultUnlocked;
+}
+
+void ShowPasswordEntryDialog(HWND hwndParent, int editId) {
+  wchar_t initName[256] = {}, initTitle[256] = {}, initAccount[256] = {}, initPassword[256] = {};
+  bool confirmed = false;
+
+  if (editId >= 0) {
+    for (const auto &e : g_passwords) {
+      if (e.id == editId) {
+        wcsncpy_s(initName, e.name.c_str(), 255);
+        wcsncpy_s(initTitle, e.title.c_str(), 255);
+        wcsncpy_s(initAccount, e.account.c_str(), 255);
+        wcsncpy_s(initPassword, e.password.c_str(), 255);
+        break;
+      }
+    }
+  }
+
+  HINSTANCE hInst = GetModuleHandleW(NULL);
+  const wchar_t *dlgTitle = (editId >= 0) ? L"编辑密码" : L"新增密码";
+  HWND hDlg = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, L"#32770", dlgTitle,
+      WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+      CW_USEDEFAULT, CW_USEDEFAULT, 350, 320,
+      hwndParent, NULL, hInst, NULL);
+  if (!hDlg) return;
+
+  CreateWindowExW(0, L"STATIC", L"名称：",
+                  WS_CHILD | WS_VISIBLE, 15, 15, 100, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initName,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  15, 38, 305, 25, hDlg, (HMENU)3000, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"网址/应用名：",
+                  WS_CHILD | WS_VISIBLE, 15, 70, 100, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initTitle,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  15, 93, 305, 25, hDlg, (HMENU)3001, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"账号：",
+                  WS_CHILD | WS_VISIBLE, 15, 125, 100, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initAccount,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  15, 148, 305, 25, hDlg, (HMENU)3002, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"密码：",
+                  WS_CHILD | WS_VISIBLE, 15, 180, 100, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initPassword,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  15, 203, 305, 25, hDlg, (HMENU)3003, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"确定",
+                  WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                  160, 242, 75, 28, hDlg, (HMENU)IDOK, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"取消",
+                  WS_CHILD | WS_VISIBLE,
+                  245, 242, 75, 28, hDlg, (HMENU)IDCANCEL, hInst, NULL);
+
+  HFONT hFont = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+  EnumChildWindows(hDlg, [](HWND h, LPARAM lp) -> BOOL {
+    SendMessageW(h, WM_SETFONT, (WPARAM)lp, TRUE);
+    return TRUE;
+  }, (LPARAM)hFont);
+  EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
+
+  RECT rcParent, rcDlg;
+  GetWindowRect(hwndParent, &rcParent);
+  GetWindowRect(hDlg, &rcDlg);
+  int x = rcParent.left + ((rcParent.right - rcParent.left) - (rcDlg.right - rcDlg.left)) / 2;
+  int y = rcParent.top + ((rcParent.bottom - rcParent.top) - (rcDlg.bottom - rcDlg.top)) / 2;
+  SetWindowPos(hDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+  ShowWindow(hDlg, SW_SHOW);
+  EnableWindow(hwndParent, FALSE);
+
+  static bool s_entryDone = false;
+  static bool s_entryOk = false;
+  static wchar_t s_entryName[256], s_entryTitle[256], s_entryAccount[256], s_entryPassword[256];
+  s_entryDone = false;
+  s_entryOk = false;
+
+  SetWindowLongPtrW(hDlg, GWLP_WNDPROC,
+    (LONG_PTR)+[](HWND hw, UINT m, WPARAM wp, LPARAM lp) -> LRESULT {
+      if (m == WM_COMMAND && LOWORD(wp) == IDOK) {
+        wchar_t n[256] = {};
+        GetDlgItemTextW(hw, 3000, n, 256);
+        if (wcslen(n) == 0) {
+          MessageBoxW(hw, L"名称不能为空", L"提示", MB_OK);
+          return 0;
+        }
+        GetDlgItemTextW(hw, 3000, s_entryName, 256);
+        GetDlgItemTextW(hw, 3001, s_entryTitle, 256);
+        GetDlgItemTextW(hw, 3002, s_entryAccount, 256);
+        GetDlgItemTextW(hw, 3003, s_entryPassword, 256);
+        s_entryOk = true;
+        s_entryDone = true;
+        PostMessageW(hw, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      if (m == WM_COMMAND && LOWORD(wp) == IDCANCEL) {
+        s_entryDone = true;
+        PostMessageW(hw, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      if (m == WM_CLOSE) {
+        s_entryDone = true;
+        return 0;
+      }
+      return DefDlgProcW(hw, m, wp, lp);
+    });
+
+  MSG msg;
+  while (!s_entryDone && GetMessageW(&msg, NULL, 0, 0)) {
+    if (!IsDialogMessageW(hDlg, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+
+  confirmed = s_entryOk;
+  if (confirmed) {
+    wcsncpy_s(initName, s_entryName, 255);
+    wcsncpy_s(initTitle, s_entryTitle, 255);
+    wcsncpy_s(initAccount, s_entryAccount, 255);
+    wcsncpy_s(initPassword, s_entryPassword, 255);
+  }
+
+  EnableWindow(hwndParent, TRUE);
+  SetForegroundWindow(hwndParent);
+  DestroyWindow(hDlg);
+
+  if (confirmed) {
+    if (editId >= 0) {
+      UpdatePasswordEntry(editId, initName, initTitle, initAccount, initPassword);
+    } else {
+      AddPasswordEntry(initName, initTitle, initAccount, initPassword);
+    }
+    UpdatePasswordListBox();
+  }
+}
+
+void ShowResetMasterPasswordDialog(HWND hwndParent) {
+  HINSTANCE hInst = GetModuleHandleW(NULL);
+  HWND hDlg = CreateWindowExW(
+      WS_EX_DLGMODALFRAME, L"#32770", L"重置主密码",
+      WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+      CW_USEDEFAULT, CW_USEDEFAULT, 320, 260,
+      hwndParent, NULL, hInst, NULL);
+  if (!hDlg) return;
+
+  CreateWindowExW(0, L"STATIC", L"旧密码：",
+                  WS_CHILD | WS_VISIBLE, 15, 15, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 38, 275, 25, hDlg, (HMENU)2001, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"新密码（至少6个字符）：",
+                  WS_CHILD | WS_VISIBLE, 15, 70, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 93, 275, 25, hDlg, (HMENU)2002, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", L"确认新密码：",
+                  WS_CHILD | WS_VISIBLE, 15, 125, 280, 20,
+                  hDlg, NULL, hInst, NULL);
+  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL,
+                  15, 148, 275, 25, hDlg, (HMENU)2003, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"确定",
+                  WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                  130, 185, 75, 28, hDlg, (HMENU)IDOK, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"取消",
+                  WS_CHILD | WS_VISIBLE,
+                  215, 185, 75, 28, hDlg, (HMENU)IDCANCEL, hInst, NULL);
+
+  HFONT hFont = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+  EnumChildWindows(hDlg, [](HWND h, LPARAM lp) -> BOOL {
+    SendMessageW(h, WM_SETFONT, (WPARAM)lp, TRUE);
+    return TRUE;
+  }, (LPARAM)hFont);
+  EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
+
+  RECT rcParent, rcDlg;
+  GetWindowRect(hwndParent, &rcParent);
+  GetWindowRect(hDlg, &rcDlg);
+  int x = rcParent.left + ((rcParent.right - rcParent.left) - (rcDlg.right - rcDlg.left)) / 2;
+  int y = rcParent.top + ((rcParent.bottom - rcParent.top) - (rcDlg.bottom - rcDlg.top)) / 2;
+  SetWindowPos(hDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+  ShowWindow(hDlg, SW_SHOW);
+  EnableWindow(hwndParent, FALSE);
+
+  static bool s_resetDone = false;
+  s_resetDone = false;
+
+  SetWindowLongPtrW(hDlg, GWLP_WNDPROC,
+    (LONG_PTR)+[](HWND hw, UINT m, WPARAM wp, LPARAM lp) -> LRESULT {
+      if (m == WM_COMMAND && LOWORD(wp) == IDOK) {
+        wchar_t oldPw[256] = {}, newPw[256] = {}, confirmPw[256] = {};
+        GetDlgItemTextW(hw, 2001, oldPw, 256);
+        GetDlgItemTextW(hw, 2002, newPw, 256);
+        GetDlgItemTextW(hw, 2003, confirmPw, 256);
+        if (wcslen(newPw) < 6) {
+          MessageBoxW(hw, L"新密码至少需要6个字符", L"提示", MB_OK);
+          return 0;
+        }
+        if (wcscmp(newPw, confirmPw) != 0) {
+          MessageBoxW(hw, L"两次输入的新密码不一致", L"提示", MB_OK);
+          return 0;
+        }
+        if (ResetMasterPassword(oldPw, newPw)) {
+          MessageBoxW(hw, L"主密码已重置", L"成功", MB_OK | MB_ICONINFORMATION);
+          s_resetDone = true;
+          PostMessageW(hw, WM_CLOSE, 0, 0);
+        } else {
+          MessageBoxW(hw, L"旧密码错误", L"提示", MB_OK | MB_ICONWARNING);
+        }
+        return 0;
+      }
+      if (m == WM_COMMAND && LOWORD(wp) == IDCANCEL) {
+        s_resetDone = true;
+        PostMessageW(hw, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      if (m == WM_CLOSE) {
+        s_resetDone = true;
+        return 0;
+      }
+      return DefDlgProcW(hw, m, wp, lp);
+    });
+
+  MSG msg;
+  while (!s_resetDone && GetMessageW(&msg, NULL, 0, 0)) {
+    if (!IsDialogMessageW(hDlg, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+
+  EnableWindow(hwndParent, TRUE);
+  SetForegroundWindow(hwndParent);
+  DestroyWindow(hDlg);
+}
+
+void ShowPasswordContextMenu(HWND hwnd, int index, POINT pt) {
+  if (index < 0 || index >= (int)g_passwords.size()) return;
+
+  HMENU hMenu = CreatePopupMenu();
+  HBITMAP hCopyIcon = CreateMenuIconBitmap(L"\uE8C8");
+  HBITMAP hEditIcon = CreateMenuIconBitmap(L"\uE70F");
+  HBITMAP hDeleteIcon = CreateMenuIconBitmap(L"\uE74D", RGB(200, 60, 60));
+
+  MENUITEMINFOW mii = {};
+  mii.cbSize = sizeof(MENUITEMINFOW);
+  mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
+
+  mii.wID = IDM_PW_COPY;
+  mii.dwTypeData = (LPWSTR)L"复制账号密码";
+  mii.hbmpItem = hCopyIcon;
+  InsertMenuItemW(hMenu, 0, TRUE, &mii);
+
+  mii.wID = IDM_PW_EDIT;
+  mii.dwTypeData = (LPWSTR)L"编辑";
+  mii.hbmpItem = hEditIcon;
+  InsertMenuItemW(hMenu, 1, TRUE, &mii);
+
+  AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+  mii.wID = IDM_PW_DELETE;
+  mii.dwTypeData = (LPWSTR)L"删除";
+  mii.hbmpItem = hDeleteIcon;
+  InsertMenuItemW(hMenu, 3, TRUE, &mii);
+
+  ClientToScreen(hwnd, &pt);
+  int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                            pt.x, pt.y, 0, hwnd, NULL);
+  DestroyMenu(hMenu);
+  DeleteObject(hCopyIcon);
+  DeleteObject(hEditIcon);
+  DeleteObject(hDeleteIcon);
+
+  if (cmd == IDM_PW_COPY) {
+    StartPasswordBatchCopy(index, g_hwndMain);
+    if (!g_isTopmost) {
+      ShowWindow(g_hwndMain, SW_HIDE);
+    }
+  } else if (cmd == IDM_PW_EDIT) {
+    ShowPasswordEntryDialog(hwnd, g_passwords[index].id);
+  } else if (cmd == IDM_PW_DELETE) {
+    wchar_t msg[512];
+    _snwprintf_s(msg, 512, L"确定删除 \"%s\" 的密码记录？",
+                 g_passwords[index].title.c_str());
+    if (MessageBoxW(hwnd, msg, L"确认删除",
+                    MB_YESNO | MB_ICONQUESTION) == IDYES) {
+      DeletePasswordEntry(g_passwords[index].id);
+      UpdatePasswordListBox();
+    }
+  }
 }
 
 // 入口函数

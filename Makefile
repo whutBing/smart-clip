@@ -42,7 +42,8 @@ SRCS := \
     $(SRCDIR)/search.cpp            \
     $(SRCDIR)/text_utils.cpp        \
     $(SRCDIR)/graphics_utils.cpp    \
-    $(SRCDIR)/smart_action.cpp
+    $(SRCDIR)/smart_action.cpp      \
+    $(SRCDIR)/password_vault.cpp
 
 RC   := $(RESDIR)/resource.rc
 RES  := $(BUILDDIR)/resource.res
@@ -55,7 +56,7 @@ CXXFLAGS := -std=c++11 -Wall -Wextra -MMD -MP -municode
 LDFLAGS  := -mwindows -municode -static-libgcc -static-libstdc++
 LDLIBS   := -luser32 -lgdi32 -lcomctl32 -lpsapi -lshell32 -lwinmm \
             -lole32 -loleaut32 -lgdiplus -ldwmapi -lshlwapi -luuid \
-            -lmsimg32
+            -lmsimg32 -lcrypt32 -lruntimeobject
 
 # ---- 构建模式 (release / debug) ----
 BUILD ?= release
