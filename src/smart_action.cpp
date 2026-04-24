@@ -116,8 +116,8 @@ void SaveSmartActions() {
     // format: name\tenabled\tisDefault\taction\tpattern\tcustomCmd
     // 用 tab 分隔，pattern/customCmd 放最后避免包含分隔符的问题
     content += a.name + L"\t" + std::to_wstring(a.enabled ? 1 : 0) + L"\t" +
-               std::to_wstring(a.isDefault ? 1 : 0) + L"\t" + a.action +
-               L"\t" + a.pattern + L"\t" + a.customCmd + L"\n";
+               std::to_wstring(a.isDefault ? 1 : 0) + L"\t" + a.action + L"\t" +
+               a.pattern + L"\t" + a.customCmd + L"\n";
   }
 
   int utf8Len =
@@ -260,8 +260,7 @@ bool MatchAndExecute(const std::wstring &text) {
       DWORD attrs = GetFileAttributesW(text.c_str());
       if (attrs != INVALID_FILE_ATTRIBUTES) {
         if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-          ShellExecuteW(NULL, L"open", text.c_str(), NULL, NULL,
-                        SW_SHOWNORMAL);
+          ShellExecuteW(NULL, L"open", text.c_str(), NULL, NULL, SW_SHOWNORMAL);
         } else {
           std::wstring cmd = L"/select,\"" + text + L"\"";
           ShellExecuteW(NULL, NULL, L"explorer.exe", cmd.c_str(), NULL,
@@ -298,12 +297,17 @@ bool MatchAndExecute(const std::wstring &text) {
       while ((pos = cmd.find(L"{0}")) != std::wstring::npos) {
         cmd.replace(pos, 3, text);
       }
+      // VS Code 的 code 命令需要特殊处理，直接执行而不是通过 cmd.exe
+      if (cmd.find(L"code ") == 0) {
+        ShellExecuteW(NULL, L"open", cmd.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        return true;
+      }
       // cmd /k 需要显示窗口，其他隐藏
       int showFlag = (cmd.find(L"cmd /k") == 0 || cmd.find(L"cmd /K") == 0)
                          ? SW_SHOWNORMAL
                          : SW_HIDE;
       ShellExecuteW(NULL, L"open", L"cmd.exe", (L"/c " + cmd).c_str(), NULL,
-                     showFlag);
+                    showFlag);
       return true;
     }
     // custom (旧格式兼容)
@@ -317,7 +321,7 @@ bool MatchAndExecute(const std::wstring &text) {
                          ? SW_SHOWNORMAL
                          : SW_HIDE;
       ShellExecuteW(NULL, L"open", L"cmd.exe", (L"/c " + cmd).c_str(), NULL,
-                     showFlag);
+                    showFlag);
       return true;
     }
   }
