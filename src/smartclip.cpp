@@ -9,6 +9,7 @@
 #include "smart_action.h"
 #include "text_utils.h"
 #include "tray.h"
+#include "password_manager.h"
 #include <algorithm> // 用于std::remove_if
 #include <cmath>     // 用于sin函数
 #include <commctrl.h>
@@ -81,6 +82,7 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define ID_FILTER_IMAGE 1103
 #define ID_FILTER_FILE 1104
 #define ID_FILTER_FAVORITE 1105
+#define ID_FILTER_PASSWORD 1106
 
 // 翻页按钮ID
 #define ID_PAGE_UP_BTN 1201
@@ -101,6 +103,7 @@ HWND g_hwndFilterText = NULL;
 HWND g_hwndFilterImage = NULL;
 HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
+HWND g_hwndFilterPassword = NULL;
 
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
@@ -566,6 +569,12 @@ std::vector<int> g_batchPasteQueue; // 待粘贴的历史记录索引队列
 int g_batchPasteIndex = 0;          // 当前粘贴到第几条
 static HHOOK g_hBatchPasteHook = NULL;
 
+// 密码连续粘贴模式
+static bool g_isPasswordPasteMode = false;
+static std::wstring g_passwordPasteAccount;
+static std::wstring g_passwordPastePassword;
+static int g_passwordPasteStep = 0; // 0=账号已复制, 1=密码已复制
+
 static void BatchPasteLoadNext() {
   if (!g_isBatchPasteMode) return;
   g_batchPasteIndex++;
@@ -595,13 +604,12 @@ static void BatchPasteLoadNext() {
 }
 
 static LRESULT CALLBACK BatchPasteKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-  if (nCode == HC_ACTION && g_isBatchPasteMode) {
+  if (nCode == HC_ACTION && (g_isBatchPasteMode || g_isPasswordPasteMode)) {
     KBDLLHOOKSTRUCT *pKb = (KBDLLHOOKSTRUCT *)lParam;
     if (wParam == WM_KEYUP && pKb->vkCode == 'V' &&
         (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
       PostMessageW(g_hwndMain, WM_USER + 200, 0, 0);
     }
-    // Esc 退出连续粘贴模式
     if (wParam == WM_KEYDOWN && pKb->vkCode == VK_ESCAPE) {
       PostMessageW(g_hwndMain, WM_USER + 201, 0, 0);
     }
@@ -623,6 +631,54 @@ static void StopBatchPasteHook() {
   g_isBatchPasteMode = false;
   g_batchPasteQueue.clear();
   g_batchPasteIndex = 0;
+}
+
+static void SetClipboardText(const std::wstring &text) {
+  if (OpenClipboard(NULL)) {
+    EmptyClipboard();
+    HGLOBAL hGlobal =
+        GlobalAlloc(GMEM_MOVEABLE, (text.length() + 1) * sizeof(wchar_t));
+    if (hGlobal) {
+      wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+      if (pData) {
+        wcscpy_s(pData, text.length() + 1, text.c_str());
+        GlobalUnlock(hGlobal);
+        SetClipboardData(CF_UNICODETEXT, hGlobal);
+      }
+    }
+    g_isRestoringClipboard = true;
+    CloseClipboard();
+  }
+}
+
+static void PasswordPasteLoadNext() {
+  if (!g_isPasswordPasteMode)
+    return;
+  g_passwordPasteStep++;
+  if (g_passwordPasteStep >= 2) {
+    g_passwordPasteStep = 1;
+    return;
+  }
+  SetClipboardText(g_passwordPastePassword);
+}
+
+static void StopPasswordPaste() {
+  g_isPasswordPasteMode = false;
+  g_passwordPasteAccount.clear();
+  g_passwordPastePassword.clear();
+  g_passwordPasteStep = 0;
+}
+
+static void StartPasswordPaste(const PasswordEntry &entry) {
+  StopBatchPasteHook();
+  g_isPasswordPasteMode = true;
+  g_passwordPasteAccount = entry.username;
+  g_passwordPastePassword = entry.password;
+  g_passwordPasteStep = 0;
+  SetClipboardText(entry.username);
+  StartBatchPasteHook();
+  ShowTrayBalloon(g_hwndMain, L"密码管理器",
+                  L"已复制账号，下次粘贴将粘贴密码 (Esc退出)");
 }
 
 // 按钮图片句柄
@@ -3531,6 +3587,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     g_hwndFilterFavorite = CreateWindowExW(
         0, L"BUTTON", L"收藏", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
+    g_hwndFilterPassword = CreateWindowExW(
+        0, L"BUTTON", L"密码", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        hwnd, (HMENU)ID_FILTER_PASSWORD, GetModuleHandleW(NULL), NULL);
 
     // 设置筛选按钮字体（比UI字体大4px）
     HFONT hFilterFont = CreateFontW(
@@ -3542,6 +3601,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SendMessageW(g_hwndFilterImage, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFile, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFavorite, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
+    SendMessageW(g_hwndFilterPassword, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
 
     // 创建剪贴板内容列表（使用 owner-drawn 模式，自绘滚动条）
     g_hwndListBox = CreateWindowExW(
@@ -3728,6 +3788,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     LoadCustomDataDir(); // 加载自定义数据目录配置
     LoadTags();          // 加载标签列表
     LoadHistory();
+    InitPasswordManager();
     UpdateListBox();
 
     // 强制重新计算所有列表项的高度
@@ -3842,6 +3903,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     MoveWindow(g_hwndFilterFavorite,
                margin + (filterBtnWidth + filterBtnSpacing) * 4, filterY,
                filterBtnWidth, tabHeight, TRUE);
+    MoveWindow(g_hwndFilterPassword,
+               margin + (filterBtnWidth + filterBtnSpacing) * 5, filterY,
+               filterBtnWidth, tabHeight, TRUE);
 
     // 调整列表框大小（右侧留出按钮空间）
     const int iconBtnSize = 32;   // 图标按钮大小
@@ -3951,7 +4015,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     LPDRAWITEMSTRUCT lpDIS = (LPDRAWITEMSTRUCT)lParam;
 
     // 处理筛选按钮绘制
-    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_FAVORITE) {
+    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_PASSWORD) {
       HDC hdc = lpDIS->hDC;
       RECT rc = lpDIS->rcItem;
 
@@ -3991,6 +4055,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       case ID_FILTER_FAVORITE:
         icon = L"\uE734";
         break; // FavoriteStar
+      case ID_FILTER_PASSWORD:
+        icon = L"\uE78E";
+        break; // Lock
       }
 
       // 创建图标字体
@@ -5065,6 +5132,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_currentFilterTagId = 0; // 重置为显示全部收藏
           filterChanged = true;
         }
+      } else if (wID == ID_FILTER_PASSWORD) {
+        g_currentTab = 5;
+        filterChanged = true;
       }
 
       if (filterChanged) {
@@ -5074,6 +5144,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(g_hwndFilterImage, NULL, TRUE);
         InvalidateRect(g_hwndFilterFile, NULL, TRUE);
         InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
+        InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
         UpdateListBox();
       }
     }
@@ -6198,22 +6269,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   }
   // 连续粘贴：Ctrl+V 后加载下一条
   case WM_USER + 200: {
-    BatchPasteLoadNext();
+    if (g_isPasswordPasteMode) {
+      PasswordPasteLoadNext();
+    } else {
+      BatchPasteLoadNext();
+    }
     IncrementPasteCount();
     return 0;
   }
-  // 连续粘贴：Esc 退出
   case WM_USER + 201: {
-    StopBatchPasteHook();
-    if (g_isNotificationEnabled) {
-      ShowTrayBalloon(hwnd, L"连续粘贴", L"已退出连续粘贴模式");
+    if (g_isPasswordPasteMode) {
+      StopPasswordPaste();
+      StopBatchPasteHook();
+      if (g_isNotificationEnabled) {
+        ShowTrayBalloon(hwnd, L"密码管理器", L"已退出密码粘贴模式");
+      }
+    } else {
+      StopBatchPasteHook();
+      if (g_isNotificationEnabled) {
+        ShowTrayBalloon(hwnd, L"连续粘贴", L"已退出连续粘贴模式");
+      }
     }
     return 0;
   }
 
   case WM_CLIPBOARDUPDATE: {
-    // 外部剪贴板变化，退出连续粘贴模式
-    if (g_isBatchPasteMode && !g_isRestoringClipboard && !g_isTransferStationPasting) {
+    if ((g_isBatchPasteMode || g_isPasswordPasteMode) && !g_isRestoringClipboard && !g_isTransferStationPasting) {
+      if (g_isPasswordPasteMode) StopPasswordPaste();
       StopBatchPasteHook();
     }
     if (!g_isRestoringClipboard && !g_isTransferStationPasting &&

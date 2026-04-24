@@ -5,8 +5,9 @@
 #include <algorithm>
 #include <ctime>
 #include "tray.h"
-#include "search.h"  // 添加这个头文件以访问 g_hwndTabControl
-#include "settings.h"  // 添加这个头文件以访问 g_isNotificationEnabled
+#include "search.h"
+#include "settings.h"
+#include "password_manager.h"
 
 // 全局变量定义
 std::vector<ClipboardItem> g_history;
@@ -944,6 +945,20 @@ void UpdateListBox() {
         SetWindowTextW(g_hwndFilterFavorite, favoriteTabText.c_str());
     }
 
+    if (g_currentTab == 5) {
+        // 密码标签页：显示密码条目
+        if (g_isPasswordUnlocked) {
+            for (int i = 0; i < (int)g_passwords.size(); i++) {
+                g_displayIndexMap.push_back(i);
+                std::wstring displayText = g_passwords[i].name + L"\n" + g_passwords[i].username;
+                SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
+            }
+            // 添加"新增"虚拟条目
+            g_displayIndexMap.push_back(-1);
+            SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)L"+ 新增密码");
+        }
+    } else {
+
     for (int i = 0; i < (int)g_history.size(); i++) {
         const auto& item = g_history[i];
 
@@ -997,6 +1012,8 @@ void UpdateListBox() {
 
         SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
     }
+
+    } // end else (non-password tabs)
 
     // 重新启用重绘并强制刷新
     SendMessageW(g_hwndListBox, WM_SETREDRAW, TRUE, 0);

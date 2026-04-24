@@ -42,7 +42,8 @@ SRCS := \
     $(SRCDIR)/search.cpp            \
     $(SRCDIR)/text_utils.cpp        \
     $(SRCDIR)/graphics_utils.cpp    \
-    $(SRCDIR)/smart_action.cpp
+    $(SRCDIR)/smart_action.cpp      \
+    $(SRCDIR)/password_manager.cpp
 
 RC   := $(RESDIR)/resource.rc
 RES  := $(BUILDDIR)/resource.res
