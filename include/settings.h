@@ -4,7 +4,6 @@
 #include <string>
 
 // 设置对话框控件ID
-#define IDC_STARTUP_CHECK 101
 #define IDC_HOTKEY_EDIT 102
 #define IDC_OPEN_DATA_FOLDER 103
 #define IDC_SEARCH_HOTKEY_EDIT 105
@@ -23,6 +22,9 @@
 #define IDC_SEARCH_HOTKEY_BTN 125
 #define IDC_SMART_ACTION_ADD 126
 #define IDC_CLEAN_INVALID_IMAGES 127
+#define IDC_SCROLLBAR_CHECK 128
+#define IDC_SCROLLBAR_TIMEOUT_EDIT 129
+#define IDC_COLOR_DOT_CHECK 130
 #define IDC_SMART_ACTION_TOGGLE_BASE 200
 #define IDC_SMART_ACTION_DEL_BASE 300
 
@@ -35,19 +37,19 @@ enum ImagePreviewQuality {
 };
 
 // 全局变量
-extern bool g_isStartupEnabled;
 extern bool g_isNotificationEnabled;
 extern bool g_isCollapseAfterPaste;
 extern bool g_isSmoothScrollEnabled;
+extern bool g_isCustomScrollbarEnabled;
+extern bool g_isColorDotEnabled;
 extern ImagePreviewQuality g_imagePreviewQuality;
 extern int g_maxHistoryCount;
+extern int g_customScrollbarHideDelayMs;
 extern std::wstring g_fontName;
 extern int g_fontSize;
 extern bool g_isSettingsDialogOpen;
 extern HWND g_hwndSettingsDlg;
 
 // 函数声明
-extern void ToggleStartup();
-extern bool CheckStartup();
 extern void ShowSettingsDialog(HWND hwndParent);
 extern void ShowHotkeySettingsDialog(HWND hwndParent);

@@ -55,7 +55,7 @@ CPPFLAGS := -DUNICODE -D_UNICODE -D_WIN32_IE=0x0500 -I$(INCDIR)
 CXXFLAGS := -std=c++11 -Wall -Wextra -MMD -MP -municode
 LDFLAGS  := -mwindows -municode -static-libgcc -static-libstdc++
 LDLIBS   := -luser32 -lgdi32 -lcomctl32 -lpsapi -lshell32 -lwinmm \
-            -lole32 -loleaut32 -lgdiplus -ldwmapi -lshlwapi -luuid \
+            -lole32 -loleaut32 -lgdiplus -ldwmapi -lshlwapi -luxtheme -luuid \
             -lmsimg32 -lcrypt32 -lruntimeobject
 
 # ---- 构建模式 (release / debug) ----

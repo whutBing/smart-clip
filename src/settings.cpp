@@ -9,6 +9,7 @@
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <shlobj.h>
+#include <uxtheme.h>
 #include <windowsx.h>
 
 
@@ -59,14 +60,16 @@ inline COLORREF GetSettingsEditBg() {
 inline COLORREF GetTitlebarBgColor() {
   return g_isDarkMode ? RGB(24, 24, 28) : RGB(245, 245, 245);
 }
-#define COLOR_ACCENT RGB(0, 120, 215)
+#define COLOR_ACCENT (g_isDarkMode ? RGB(104, 142, 196) : RGB(0, 120, 215))
 
 // ==================== 全局变量 ====================
-bool g_isStartupEnabled = false;
 bool g_isSettingsDialogOpen = false;
 bool g_isNotificationEnabled = false;
 bool g_isSmoothScrollEnabled = false;
+bool g_isCustomScrollbarEnabled = true;
+bool g_isColorDotEnabled = true;
 ImagePreviewQuality g_imagePreviewQuality = PREVIEW_HD;
+int g_customScrollbarHideDelayMs = 1500;
 std::wstring g_fontName = L"Microsoft YaHei";
 int g_fontSize = 16;
 int g_fontWeight = FW_NORMAL;
@@ -94,15 +97,17 @@ static float g_dataDirUnderlineProgress = 0.0f;
 
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
-static HWND g_hwndToggleStartup = NULL;
 static HWND g_hwndToggleNotification = NULL;
 static HWND g_hwndToggleSmoothScroll = NULL;
+static HWND g_hwndToggleScrollbar = NULL;
+static HWND g_hwndToggleColorDot = NULL;
 static HWND g_hwndThemeCombo = NULL;
 static HWND g_hwndImagePreviewCombo = NULL;
 static HWND g_hwndHotkeyEdit = NULL;
 static HWND g_hwndSearchHotkeyEdit = NULL;
 static HWND g_hwndToggleQuickPaste = NULL;
 static HWND g_hwndQuickPasteCombo = NULL;
+static HWND g_hwndScrollbarTimeoutEdit = NULL;
 static HWND g_hwndHistoryLimitEdit = NULL;
 
 // === 数据分类控件 ===
@@ -123,6 +128,20 @@ static HWND g_hwndResetPasswordBtn = NULL;
 #define IDC_VAULT_PROTECTION_TOGGLE 400
 #define IDC_AUTH_METHOD_COMBO 401
 #define IDC_RESET_PASSWORD_BTN 402
+
+static void UpdateScrollbarSettingsControls();
+
+static int GetSmartSettingsTopY() {
+  return SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+}
+
+static int GetSmartColorDotRowY() {
+  return GetSmartSettingsTopY() + 18;
+}
+
+static int GetSmartActionListStartY() {
+  return GetSmartColorDotRowY() + ROW_HEIGHT + 30;
+}
 
 static void DestroySmartActionControls() {
   for (auto h : g_smartToggleHwnds)
@@ -161,38 +180,6 @@ static HBRUSH g_hEditBgBrush = NULL;
 
 // ==================== 辅助函数 ====================
 
-void ToggleStartup() {
-  g_isStartupEnabled = !g_isStartupEnabled;
-  HKEY hKey;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
-                    KEY_WRITE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
-    if (g_isStartupEnabled) {
-      WCHAR szPath[MAX_PATH];
-      GetModuleFileNameW(NULL, szPath, MAX_PATH);
-      RegSetValueExW(hKey, L"SmartClip", 0, REG_SZ, (LPBYTE)szPath,
-                     (wcslen(szPath) + 1) * sizeof(wchar_t));
-    } else {
-      RegDeleteValueW(hKey, L"SmartClip");
-    }
-    RegCloseKey(hKey);
-  }
-}
-
-bool CheckStartup() {
-  HKEY hKey;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER,
-                    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0,
-                    KEY_READ, &hKey) == ERROR_SUCCESS) {
-    DWORD dwType = REG_SZ, dwSize = 0;
-    bool exists = (RegQueryValueExW(hKey, L"SmartClip", NULL, &dwType, NULL,
-                                    &dwSize) == ERROR_SUCCESS);
-    RegCloseKey(hKey);
-    return exists;
-  }
-  return false;
-}
-
 // 获取设置行控件的 Y 坐标
 static int GetRowY(int rowIndex) {
   return SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H + rowIndex * ROW_HEIGHT;
@@ -201,6 +188,37 @@ static int GetRowY(int rowIndex) {
 // 获取控件右对齐 X 坐标
 static int GetControlX(int controlWidth) {
   return SETTINGS_WIDTH - CONTENT_PADDING - controlWidth;
+}
+
+static std::wstring FormatHotkeyText(UINT mod, UINT vk,
+                                     const wchar_t *fallbackKeyName) {
+  std::wstring text;
+  if (mod & MOD_CONTROL)
+    text += L"Ctrl+";
+  if (mod & MOD_ALT)
+    text += L"Alt+";
+  if (mod & MOD_SHIFT)
+    text += L"Shift+";
+  if (mod & MOD_WIN)
+    text += L"Win+";
+
+  wchar_t keyName[32] = {};
+  if (vk != 0 &&
+      GetKeyNameTextW(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16, keyName,
+                      _countof(keyName))) {
+    text += keyName;
+  } else if (fallbackKeyName && *fallbackKeyName) {
+    text += fallbackKeyName;
+  }
+  return text;
+}
+
+static void SyncHotkeyEditTextRect(HWND hwnd) {
+  if (!hwnd)
+    return;
+  SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+               MAKELONG(8, 8));
+  InvalidateRect(hwnd, NULL, TRUE);
 }
 
 // PLACEHOLDER_SETTINGS_PART3
@@ -233,6 +251,13 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   }
 
   switch (uMsg) {
+  case WM_SETFONT:
+  case WM_SIZE: {
+    LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
+    if (hwnd == g_hwndHotkeyEdit || hwnd == g_hwndSearchHotkeyEdit)
+      SyncHotkeyEditTextRect(hwnd);
+    return result;
+  }
   case WM_NCPAINT: {
     // 用背景色填充非客户区（避免暗黑模式下白色残留）
     HDC hdc = GetWindowDC(hwnd);
@@ -265,18 +290,6 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       return TRUE;
     }
     break;
-  case WM_NCCALCSIZE: {
-    // 添加内边距让文本垂直居中
-    LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
-    if (wParam) {
-      NCCALCSIZE_PARAMS *pParams = (NCCALCSIZE_PARAMS *)lParam;
-      pParams->rgrc[0].top += 4;
-      pParams->rgrc[0].bottom -= 4;
-      pParams->rgrc[0].left += 6;
-      pParams->rgrc[0].right -= 6;
-    }
-    return result;
-  }
   case WM_PAINT: {
     // 先让默认绘制完成
     LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
@@ -380,6 +393,32 @@ static void UpdateHotkeyConflictState() {
       CheckHotkeyConflict(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, 1);
 }
 
+static void ClearRecordedHotkey(HWND hwnd, bool isSearchHotkey) {
+  if (isSearchHotkey) {
+    g_isRecordingSearchHotkey = false;
+    g_isSearchHotkeyEnabled = false;
+    g_searchHotkeyModifiers = 0;
+    g_searchHotkeyVirtualKey = 0;
+    SetWindowTextW(hwnd, L"");
+  } else {
+    g_isRecordingHotkey = false;
+    g_isHotkeyEnabled = false;
+    g_hotkeyModifiers = 0;
+    g_hotkeyVirtualKey = 0;
+    UnregisterHotkey(g_hwndMain);
+    SetWindowTextW(hwnd, L"");
+  }
+  SaveHotkeySettings();
+  UpdateHotkeyConflictState();
+  InvalidateRect(hwnd, NULL, TRUE);
+  if (g_hwndHotkeyEdit)
+    InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
+  if (g_hwndSearchHotkeyEdit)
+    InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
+  if (g_hwndSettingsDlg)
+    SetFocus(g_hwndSettingsDlg);
+}
+
 // ==================== 快捷键编辑框子类 ====================
 
 LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
@@ -389,6 +428,10 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   case WM_SYSKEYDOWN: {
     if (g_isRecordingHotkey) {
       UINT vk = (UINT)wParam;
+      if (vk == VK_ESCAPE) {
+        ClearRecordedHotkey(hwnd, false);
+        return 0;
+      }
       if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT ||
           vk == VK_LWIN || vk == VK_RWIN)
         return 0;
@@ -403,21 +446,8 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
         mod |= MOD_WIN;
       g_hotkeyModifiers = mod;
       g_hotkeyVirtualKey = vk;
-      wchar_t text[128] = L"";
-      if (mod & MOD_CONTROL)
-        wcscat_s(text, L"Ctrl+");
-      if (mod & MOD_ALT)
-        wcscat_s(text, L"Alt+");
-      if (mod & MOD_SHIFT)
-        wcscat_s(text, L"Shift+");
-      if (mod & MOD_WIN)
-        wcscat_s(text, L"Win+");
-      wchar_t kn[32];
-      if (GetKeyNameTextW(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16, kn, 32))
-        wcscat_s(text, kn);
-      else
-        wcscat_s(text, L"?");
-      SetWindowTextW(hwnd, text);
+      std::wstring text = FormatHotkeyText(mod, vk, L"?");
+      SetWindowTextW(hwnd, text.c_str());
       g_isHotkeyEnabled = true;
       SaveHotkeySettings();
       bool regOk = RegisterHotkey(g_hwndMain);
@@ -455,6 +485,10 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   case WM_SYSKEYDOWN: {
     if (g_isRecordingSearchHotkey) {
       UINT vk = (UINT)wParam;
+      if (vk == VK_ESCAPE) {
+        ClearRecordedHotkey(hwnd, true);
+        return 0;
+      }
       if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT ||
           vk == VK_LWIN || vk == VK_RWIN)
         return 0;
@@ -536,12 +570,16 @@ static void SwitchSettingsTab(int tab) {
   int showHk = (tab == 1) ? SW_SHOW : SW_HIDE;
   int showDt = (tab == 2) ? SW_SHOW : SW_HIDE;
 
-  if (g_hwndToggleStartup)
-    ShowWindow(g_hwndToggleStartup, showGen);
   if (g_hwndToggleNotification)
     ShowWindow(g_hwndToggleNotification, showGen);
   if (g_hwndToggleSmoothScroll)
     ShowWindow(g_hwndToggleSmoothScroll, showGen);
+  if (g_hwndToggleScrollbar)
+    ShowWindow(g_hwndToggleScrollbar, showGen);
+  if (g_hwndToggleColorDot)
+    ShowWindow(g_hwndToggleColorDot, (tab == 3) ? SW_SHOW : SW_HIDE);
+  if (g_hwndScrollbarTimeoutEdit)
+    ShowWindow(g_hwndScrollbarTimeoutEdit, showGen);
   if (g_hwndThemeCombo)
     ShowWindow(g_hwndThemeCombo, showGen);
   if (g_hwndImagePreviewCombo)
@@ -604,6 +642,7 @@ static void SwitchSettingsTab(int tab) {
 
   if (g_hwndSettingsDlg)
     InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
+  UpdateScrollbarSettingsControls();
 }
 
 // PLACEHOLDER_SETTINGS_PART4
@@ -630,9 +669,10 @@ struct SettingRowInfo {
 };
 
 static const SettingRowInfo g_generalRows[] = {
-    {L"开机自启", L"开机时自动启动 Smart Clip"},
     {L"消息通知", L"操作时显示系统通知"},
     {L"平滑滚动", L"列表滚动时使用平滑动画"},
+    {L"显示滚动条", L"显示右侧悬浮滚动条并支持拖拽"},
+    {L"停留时间", L"设置滚动条停止后的停留时长"},
     {L"主题模式", L"切换日间、夜间或跟随系统"},
     {L"图片预览质量", L"设置剪贴板图片的预览清晰度"},
     {L"历史记录数量", L"最多保存的剪贴板记录条数"},
@@ -664,7 +704,7 @@ struct CategoryHeader {
   int rowCount;
 };
 static const CategoryHeader g_categories[] = {
-    {L"通用", L"基本设置和外观", g_generalRows, 6},
+    {L"通用", L"基本设置和外观", g_generalRows, 7},
     {L"快捷键", L"快捷键配置", g_hotkeyRows, 4},
     {L"数据", L"", g_dataRows, 5},
     {L"智能操作", L"根据内容自动执行操作", NULL, 0},
@@ -699,6 +739,13 @@ static void UpdateSettingsBrushes() {
   if (g_hEditBgBrush)
     DeleteObject(g_hEditBgBrush);
   g_hEditBgBrush = CreateSolidBrush(GetSettingsEditBg());
+}
+
+static void UpdateScrollbarSettingsControls() {
+  if (g_hwndScrollbarTimeoutEdit) {
+    EnableWindow(g_hwndScrollbarTimeoutEdit, g_isCustomScrollbarEnabled);
+    InvalidateRect(g_hwndScrollbarTimeoutEdit, NULL, TRUE);
+  }
 }
 
 // ==================== 自定义下拉选择器 ====================
@@ -1181,9 +1228,8 @@ LRESULT CALLBACK SmartDropdownProc(HWND hwnd, UINT msg, WPARAM wParam,
               g_hwndSmartEditPattern = NULL;
             }
             // 在动作区域创建临时编辑框
-            int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
             int ruleRowH = 50;
-            int startY = headerY + 24;
+            int startY = GetSmartActionListStartY();
             int rowY = startY + g_smartActionEditIndex * ruleRowH;
             int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
             int editX = contentRight - 170;
@@ -1269,9 +1315,8 @@ static void ShowSmartActionDropdown(int ruleIndex) {
   RegisterSmartDropdownClass();
 
   // 计算弹窗位置（在动作文字右侧下方）
-  int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
   int ruleRowH = 50;
-  int startY = headerY + 24;
+  int startY = GetSmartActionListStartY();
   int rowY = startY + ruleIndex * ruleRowH;
   int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
 
@@ -1346,9 +1391,8 @@ static void ShowSmartEditField(int ruleIndex, int field) {
     return;
   g_smartEditFieldIndex = ruleIndex;
 
-  int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
   int ruleRowH = 50;
-  int startY = headerY + 24;
+  int startY = GetSmartActionListStartY();
   int rowY = startY + ruleIndex * ruleRowH;
   int editX = SIDEBAR_W + CONTENT_PADDING + 50;
   int editW = SETTINGS_WIDTH - CONTENT_PADDING * 2 - SIDEBAR_W - 200;
@@ -1557,7 +1601,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
 
       // 分隔线
-      if (i < cat.rowCount - 1) {
+      bool skipSeparator = (g_currentSettingsTab == 0 && i == 2);
+      if (i < cat.rowCount - 1 && !skipSeparator) {
         HPEN hPen = CreatePen(PS_SOLID, 1, GetSeparatorColor());
         HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
         MoveToEx(hdc, contentLeft, rowY + ROW_HEIGHT - 1, NULL);
@@ -1626,19 +1671,44 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // 智能操作分类：动态绘制规则列表
     if (g_currentSettingsTab == 3) {
-      // 列标题
-      int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+      int smartRowY = GetSmartColorDotRowY();
+
+      SelectObject(hdc, g_hTitleFont);
+      SetTextColor(hdc, GetSettingsTextColor());
+      RECT rcColorDotTitle = {contentLeft, smartRowY + 10, contentRight - 90,
+                              smartRowY + 30};
+      DrawTextW(hdc, L"颜色点提示", -1, &rcColorDotTitle,
+                DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
       SelectObject(hdc, g_hDescFont);
       SetTextColor(hdc, GetDescTextColor());
+      RECT rcColorDotDesc = {contentLeft, smartRowY + 32, contentRight - 90,
+                             smartRowY + 50};
+      DrawTextW(hdc, L"识别颜色代码后显示对应颜色圆点", -1, &rcColorDotDesc,
+                DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+      HPEN hSmartTopPen = CreatePen(PS_SOLID, 1, GetSeparatorColor());
+      HPEN hOldSmartTopPen = (HPEN)SelectObject(hdc, hSmartTopPen);
+      MoveToEx(hdc, contentLeft, smartRowY + ROW_HEIGHT, NULL);
+      LineTo(hdc, contentRight, smartRowY + ROW_HEIGHT);
+      SelectObject(hdc, hOldSmartTopPen);
+      DeleteObject(hSmartTopPen);
+
+      // 列标题
+      int headerY = GetSmartActionListStartY() - 30;
+      SelectObject(hdc, g_hTitleFont);
+      SetTextColor(hdc, g_isDarkMode ? RGB(188, 191, 198) : RGB(92, 98, 108));
       RECT rcColLeft = {contentLeft + 50, headerY, contentLeft + 200,
-                        headerY + 20};
-      DrawTextW(hdc, L"匹配规则", -1, &rcColLeft, DT_LEFT | DT_SINGLELINE);
+                        headerY + 24};
+      DrawTextW(hdc, L"匹配规则", -1, &rcColLeft,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
       RECT rcColRight = {contentRight - 160, headerY, contentRight,
-                         headerY + 20};
-      DrawTextW(hdc, L"执行动作", -1, &rcColRight, DT_LEFT | DT_SINGLELINE);
+                         headerY + 24};
+      DrawTextW(hdc, L"执行动作", -1, &rcColRight,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
       int ruleRowH = 50;
-      int startY = headerY + 24;
+      int startY = GetSmartActionListStartY();
       for (int i = 0; i < (int)g_smartActions.size(); i++) {
         const auto &a = g_smartActions[i];
         int rowY = startY + i * ruleRowH;
@@ -1754,9 +1824,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     }
 
     // Toggle 开关
-    if (lpDIS->CtlID == IDC_STARTUP_CHECK ||
-        lpDIS->CtlID == IDC_NOTIFICATION_CHECK ||
+    if (lpDIS->CtlID == IDC_NOTIFICATION_CHECK ||
         lpDIS->CtlID == IDC_SMOOTH_SCROLL_CHECK ||
+        lpDIS->CtlID == IDC_SCROLLBAR_CHECK ||
+        lpDIS->CtlID == IDC_COLOR_DOT_CHECK ||
         lpDIS->CtlID == IDC_QUICK_PASTE_CHECK ||
         lpDIS->CtlID == IDC_VAULT_PROTECTION_TOGGLE) {
 
@@ -1767,14 +1838,17 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
       bool isOn = false;
       switch (lpDIS->CtlID) {
-      case IDC_STARTUP_CHECK:
-        isOn = g_isStartupEnabled;
-        break;
       case IDC_NOTIFICATION_CHECK:
         isOn = g_isNotificationEnabled;
         break;
       case IDC_SMOOTH_SCROLL_CHECK:
         isOn = g_isSmoothScrollEnabled;
+        break;
+      case IDC_SCROLLBAR_CHECK:
+        isOn = g_isCustomScrollbarEnabled;
+        break;
+      case IDC_COLOR_DOT_CHECK:
+        isOn = g_isColorDotEnabled;
         break;
       case IDC_QUICK_PASTE_CHECK:
         isOn = g_isQuickPasteEnabled;
@@ -2015,9 +2089,20 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     }
     // 智能操作面板点击
     if (g_currentSettingsTab == 3 && pt.x > SIDEBAR_W) {
-      int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
+      int smartRowY = GetSmartColorDotRowY();
+      if (pt.y >= smartRowY && pt.y < smartRowY + ROW_HEIGHT) {
+        if (pt.x >= GetControlX(TOGGLE_W) && pt.x < GetControlX(TOGGLE_W) + TOGGLE_W) {
+          g_isColorDotEnabled = !g_isColorDotEnabled;
+          InvalidateRect(g_hwndToggleColorDot, NULL, TRUE);
+          SaveHotkeySettings();
+          if (g_hwndListBox)
+            InvalidateRect(g_hwndListBox, NULL, TRUE);
+        }
+        break;
+      }
+
       int ruleRowH = 50;
-      int startY = headerY + 24;
+      int startY = GetSmartActionListStartY();
       int contentLeft = SIDEBAR_W + CONTENT_PADDING;
       int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
 
@@ -2089,15 +2174,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // Toggle 开关
     if (wNotify == BN_CLICKED) {
-      if (wID == IDC_STARTUP_CHECK) {
-        ToggleStartup();
-        InvalidateRect(g_hwndToggleStartup, NULL, TRUE);
-        if (g_isNotificationEnabled)
-          ShowTrayBalloon(g_hwndMain, L"设置已更新",
-                          g_isStartupEnabled ? L"开机自启已启用"
-                                             : L"开机自启已禁用");
-        return 0;
-      }
       if (wID == IDC_NOTIFICATION_CHECK) {
         g_isNotificationEnabled = !g_isNotificationEnabled;
         InvalidateRect(g_hwndToggleNotification, NULL, TRUE);
@@ -2110,6 +2186,23 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         g_isSmoothScrollEnabled = !g_isSmoothScrollEnabled;
         InvalidateRect(g_hwndToggleSmoothScroll, NULL, TRUE);
         SaveHotkeySettings();
+        return 0;
+      }
+      if (wID == IDC_SCROLLBAR_CHECK) {
+        g_isCustomScrollbarEnabled = !g_isCustomScrollbarEnabled;
+        InvalidateRect(g_hwndToggleScrollbar, NULL, TRUE);
+        UpdateScrollbarSettingsControls();
+        SaveHotkeySettings();
+        if (g_hwndMain)
+          InvalidateRect(g_hwndMain, NULL, FALSE);
+        return 0;
+      }
+      if (wID == IDC_COLOR_DOT_CHECK) {
+        g_isColorDotEnabled = !g_isColorDotEnabled;
+        InvalidateRect(g_hwndToggleColorDot, NULL, TRUE);
+        SaveHotkeySettings();
+        if (g_hwndListBox)
+          InvalidateRect(g_hwndListBox, NULL, TRUE);
         return 0;
       }
       if (wID == IDC_QUICK_PASTE_CHECK) {
@@ -2303,23 +2396,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         g_isRecordingHotkey = false;
         if (g_isHotkeyEnabled)
           RegisterHotkey(g_hwndMain);
-        wchar_t t[128] = L"";
-        if (g_hotkeyModifiers & MOD_CONTROL)
-          wcscat_s(t, L"Ctrl+");
-        if (g_hotkeyModifiers & MOD_ALT)
-          wcscat_s(t, L"Alt+");
-        if (g_hotkeyModifiers & MOD_SHIFT)
-          wcscat_s(t, L"Shift+");
-        if (g_hotkeyModifiers & MOD_WIN)
-          wcscat_s(t, L"Win+");
-        wchar_t kn[32];
-        if (GetKeyNameTextW(MapVirtualKeyW(g_hotkeyVirtualKey, MAPVK_VK_TO_VSC)
-                                << 16,
-                            kn, 32))
-          wcscat_s(t, kn);
-        else
-          wcscat_s(t, L"Space");
-        SetWindowTextW(g_hwndHotkeyEdit, t);
+        std::wstring text = FormatHotkeyText(g_hotkeyModifiers,
+                                             g_hotkeyVirtualKey, L"Z");
+        SetWindowTextW(g_hwndHotkeyEdit, text.c_str());
       }
     }
     if (wID == IDC_SEARCH_HOTKEY_EDIT) {
@@ -2332,23 +2411,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         g_isRecordingSearchHotkey = false;
         if (g_isHotkeyEnabled)
           RegisterHotkey(g_hwndMain);
-        wchar_t t[128] = L"";
-        if (g_searchHotkeyModifiers & MOD_CONTROL)
-          wcscat_s(t, L"Ctrl+");
-        if (g_searchHotkeyModifiers & MOD_ALT)
-          wcscat_s(t, L"Alt+");
-        if (g_searchHotkeyModifiers & MOD_SHIFT)
-          wcscat_s(t, L"Shift+");
-        if (g_searchHotkeyModifiers & MOD_WIN)
-          wcscat_s(t, L"Win+");
-        wchar_t kn[32];
-        if (GetKeyNameTextW(
-                MapVirtualKeyW(g_searchHotkeyVirtualKey, MAPVK_VK_TO_VSC) << 16,
-                kn, 32))
-          wcscat_s(t, kn);
-        else
-          wcscat_s(t, L"F");
-        SetWindowTextW(g_hwndSearchHotkeyEdit, t);
+        std::wstring text = FormatHotkeyText(g_searchHotkeyModifiers,
+                                             g_searchHotkeyVirtualKey, L"F");
+        SetWindowTextW(g_hwndSearchHotkeyEdit, text.c_str());
       }
     }
 
@@ -2359,6 +2424,17 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       int val = _wtoi(buf);
       if (val >= 10 && val <= 10000) {
         g_maxHistoryCount = val;
+        SaveHotkeySettings();
+      }
+      return 0;
+    }
+
+    if (wID == IDC_SCROLLBAR_TIMEOUT_EDIT && wNotify == EN_CHANGE) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndScrollbarTimeoutEdit, buf, 16);
+      int val = _wtoi(buf);
+      if (val >= 600 && val <= 2000) {
+        g_customScrollbarHideDelayMs = val;
         SaveHotkeySettings();
       }
       return 0;
@@ -2558,11 +2634,26 @@ static HWND CreateSettingsCombo(HWND parent, int rowIndex, int ctlId,
                          GetModuleHandleW(NULL), NULL);
 }
 
+static void ConfigureSettingsEdit(HWND hwnd) {
+  if (!hwnd)
+    return;
+  SetWindowTheme(hwnd, L"", L"");
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  style &= ~WS_BORDER;
+  SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+  LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  exStyle &= ~WS_EX_CLIENTEDGE;
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
+  SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
 static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
   int y = GetRowY(rowIndex) + (ROW_HEIGHT - 28) / 2;
   int x = GetControlX(180);
-  return CreateWindowExW(0, L"EDIT", NULL, WS_CHILD | WS_TABSTOP | ES_CENTER, x,
-                         y, 180, 28, parent, (HMENU)(INT_PTR)ctlId,
+  return CreateWindowExW(0, L"EDIT", NULL,
+                         WS_CHILD | WS_TABSTOP | ES_CENTER | ES_AUTOHSCROLL,
+                         x, y, 180, 28, parent, (HMENU)(INT_PTR)ctlId,
                          GetModuleHandleW(NULL), NULL);
 }
 
@@ -2571,9 +2662,8 @@ static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
 static void CreateSmartActionControls(HWND hwndDlg) {
   DestroySmartActionControls();
 
-  int headerY = SETTINGS_TITLEBAR_H + CATEGORY_HEADER_H;
   int ruleRowH = 50;
-  int startY = headerY + 24;
+  int startY = GetSmartActionListStartY();
   int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
 
   for (int i = 0; i < (int)g_smartActions.size(); i++) {
@@ -2675,29 +2765,49 @@ void ShowSettingsDialog(HWND hwndParent) {
                       (HMENU)IDC_SETTINGS_CLOSE, GetModuleHandleW(NULL), NULL);
 
   // ===== 通用分类控件 =====
-  g_hwndToggleStartup = CreateToggle(hwndDlg, 0, IDC_STARTUP_CHECK);
-  g_hwndToggleNotification = CreateToggle(hwndDlg, 1, IDC_NOTIFICATION_CHECK);
-  g_hwndToggleSmoothScroll = CreateToggle(hwndDlg, 2, IDC_SMOOTH_SCROLL_CHECK);
-
-  g_hwndThemeCombo = CreateSettingsCombo(hwndDlg, 3, IDC_THEME_COMBO, 120);
-
-  g_hwndImagePreviewCombo =
-      CreateSettingsCombo(hwndDlg, 4, IDC_IMAGE_PREVIEW_COMBO, 100);
+  g_hwndToggleNotification = CreateToggle(hwndDlg, 0, IDC_NOTIFICATION_CHECK);
+  g_hwndToggleSmoothScroll = CreateToggle(hwndDlg, 1, IDC_SMOOTH_SCROLL_CHECK);
+  g_hwndToggleScrollbar = CreateToggle(hwndDlg, 2, IDC_SCROLLBAR_CHECK);
+  g_hwndToggleColorDot = CreateWindowExW(
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, GetControlX(TOGGLE_W),
+      GetSmartColorDotRowY() + (ROW_HEIGHT - TOGGLE_H) / 2, TOGGLE_W, TOGGLE_H,
+      hwndDlg, (HMENU)IDC_COLOR_DOT_CHECK, GetModuleHandleW(NULL), NULL);
 
   {
-    int limitY = GetRowY(5) + (ROW_HEIGHT - 28) / 2;
+    int timeoutY = GetRowY(3) + (ROW_HEIGHT - 28) / 2;
+    wchar_t timeoutBuf[16];
+    _snwprintf_s(timeoutBuf, _countof(timeoutBuf), L"%d",
+                 g_customScrollbarHideDelayMs);
+    g_hwndScrollbarTimeoutEdit = CreateWindowExW(
+        0, L"EDIT", timeoutBuf,
+        WS_CHILD | WS_TABSTOP | ES_CENTER | ES_NUMBER,
+        GetControlX(80), timeoutY, 80, 28, hwndDlg,
+        (HMENU)IDC_SCROLLBAR_TIMEOUT_EDIT, GetModuleHandleW(NULL), NULL);
+    ConfigureSettingsEdit(g_hwndScrollbarTimeoutEdit);
+    SendMessageW(g_hwndScrollbarTimeoutEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
+    g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(
+        g_hwndScrollbarTimeoutEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+  }
+
+  g_hwndThemeCombo = CreateSettingsCombo(hwndDlg, 4, IDC_THEME_COMBO, 120);
+
+  g_hwndImagePreviewCombo =
+      CreateSettingsCombo(hwndDlg, 5, IDC_IMAGE_PREVIEW_COMBO, 120);
+
+  {
+    int limitY = GetRowY(6) + (ROW_HEIGHT - 28) / 2;
     wchar_t limitBuf[16];
     _snwprintf_s(limitBuf, _countof(limitBuf), L"%d", g_maxHistoryCount);
     g_hwndHistoryLimitEdit = CreateWindowExW(
         0, L"EDIT", limitBuf, WS_CHILD | WS_TABSTOP | ES_CENTER | ES_NUMBER,
         GetControlX(80), limitY, 80, 28, hwndDlg, (HMENU)IDC_HISTORY_LIMIT_EDIT,
         GetModuleHandleW(NULL), NULL);
+    ConfigureSettingsEdit(g_hwndHistoryLimitEdit);
     SendMessageW(g_hwndHistoryLimitEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
     g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndHistoryLimitEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
-    SetWindowPos(g_hwndHistoryLimitEdit, NULL, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
   }
+  UpdateScrollbarSettingsControls();
 
   // ===== 数据分类控件 =====
   auto CreateIosButton = [&](int rowIndex, int ctlId, int width) -> HWND {
@@ -2714,51 +2824,22 @@ void ShowSettingsDialog(HWND hwndParent) {
 
   // ===== 快捷键分类控件 =====
   g_hwndHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 0, IDC_HOTKEY_EDIT);
+  ConfigureSettingsEdit(g_hwndHotkeyEdit);
   SendMessageW(g_hwndHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
   g_oldEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndHotkeyEdit, GWLP_WNDPROC,
                                              (LONG_PTR)IosEditProc);
-  SetWindowPos(g_hwndHotkeyEdit, NULL, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-  wchar_t hkText[128] = L"";
-  if (oldMod & MOD_CONTROL)
-    wcscat_s(hkText, L"Ctrl+");
-  if (oldMod & MOD_ALT)
-    wcscat_s(hkText, L"Alt+");
-  if (oldMod & MOD_SHIFT)
-    wcscat_s(hkText, L"Shift+");
-  if (oldMod & MOD_WIN)
-    wcscat_s(hkText, L"Win+");
-  wchar_t kn[32];
-  if (GetKeyNameTextW(MapVirtualKeyW(oldVk, MAPVK_VK_TO_VSC) << 16, kn, 32))
-    wcscat_s(hkText, kn);
-  else
-    wcscat_s(hkText, L"Space");
-  SetWindowTextW(g_hwndHotkeyEdit, hkText);
+  std::wstring hkText = FormatHotkeyText(oldMod, oldVk, L"");
+  SetWindowTextW(g_hwndHotkeyEdit, hkText.c_str());
 
   g_hwndSearchHotkeyEdit =
       CreateHotkeyEditBox(hwndDlg, 1, IDC_SEARCH_HOTKEY_EDIT);
+  ConfigureSettingsEdit(g_hwndSearchHotkeyEdit);
   SendMessageW(g_hwndSearchHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
   g_oldSearchEditProc = (WNDPROC)SetWindowLongPtrW(
       g_hwndSearchHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
-  SetWindowPos(g_hwndSearchHotkeyEdit, NULL, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-  wchar_t shText[128] = L"";
-  if (g_searchHotkeyModifiers & MOD_CONTROL)
-    wcscat_s(shText, L"Ctrl+");
-  if (g_searchHotkeyModifiers & MOD_ALT)
-    wcscat_s(shText, L"Alt+");
-  if (g_searchHotkeyModifiers & MOD_SHIFT)
-    wcscat_s(shText, L"Shift+");
-  if (g_searchHotkeyModifiers & MOD_WIN)
-    wcscat_s(shText, L"Win+");
-  wchar_t skn[32];
-  if (GetKeyNameTextW(MapVirtualKeyW(g_searchHotkeyVirtualKey, MAPVK_VK_TO_VSC)
-                          << 16,
-                      skn, 32))
-    wcscat_s(shText, skn);
-  else
-    wcscat_s(shText, L"F");
-  SetWindowTextW(g_hwndSearchHotkeyEdit, shText);
+  std::wstring shText =
+      FormatHotkeyText(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, L"F");
+  SetWindowTextW(g_hwndSearchHotkeyEdit, shText.c_str());
 
   g_hwndToggleQuickPaste = CreateToggle(hwndDlg, 2, IDC_QUICK_PASTE_CHECK);
 

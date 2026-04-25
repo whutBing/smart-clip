@@ -31,6 +31,9 @@ extern UINT g_searchHotkeyModifiers;
 // 快捷粘贴修饰键相关全局变量
 extern bool g_isQuickPasteEnabled;
 extern UINT g_quickPasteModifiers; // 快捷粘贴的修饰键（如 MOD_ALT）
+extern bool g_isCustomScrollbarEnabled;
+extern int g_customScrollbarHideDelayMs;
+extern bool g_isColorDotEnabled;
 
 // 主题模式枚举
 enum ThemeMode {

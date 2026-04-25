@@ -7,8 +7,8 @@
 // 全局变量定义
 int g_hotkeyId = 1;
 bool g_isHotkeyEnabled = false;
-UINT g_hotkeyVirtualKey = VK_SPACE;             // 默认空格键
-UINT g_hotkeyModifiers = MOD_CONTROL | MOD_ALT; // 默认Ctrl+Alt
+UINT g_hotkeyVirtualKey = 0;                    // 默认未设置
+UINT g_hotkeyModifiers = 0;                     // 默认未设置
 
 // 搜索框快捷键全局变量定义
 bool g_isSearchHotkeyEnabled = true;        // 默认启用
@@ -37,7 +37,7 @@ void SaveHotkeySettings() {
   if (hFile != INVALID_HANDLE_VALUE) {
     DWORD dwBytesWritten = 0;
 
-    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality
+    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled
     std::wstring content = std::to_wstring(g_isHotkeyEnabled) + L"|" +
                            std::to_wstring(g_hotkeyModifiers) + L"|" +
                            std::to_wstring(g_hotkeyVirtualKey) + L"\n" +
@@ -49,7 +49,10 @@ void SaveHotkeySettings() {
                            std::to_wstring((int)g_themeMode) + L"\n" +
                            std::to_wstring(g_isSmoothScrollEnabled) + L"\n" +
                            std::to_wstring((int)g_imagePreviewQuality) + L"\n" +
-                           std::to_wstring(g_maxHistoryCount) + L"\n";
+                           std::to_wstring(g_maxHistoryCount) + L"\n" +
+                           std::to_wstring(g_isCustomScrollbarEnabled) + L"\n" +
+                           std::to_wstring(g_customScrollbarHideDelayMs) + L"\n" +
+                           std::to_wstring(g_isColorDotEnabled) + L"\n";
 
     // 转换为UTF-8
     int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, NULL,
@@ -180,8 +183,12 @@ void LoadHotkeySettings() {
             pLine = pNextLine;
             // 去除可能的换行符
             wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL)
+            if (pEnd != NULL) {
               *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
@@ -189,12 +196,6 @@ void LoadHotkeySettings() {
             int themeValue = (int)wcstol(pLine, NULL, 10);
             if (themeValue >= 0 && themeValue <= 2) {
               g_themeMode = (ThemeMode)themeValue;
-            }
-
-            // 移动到下一行
-            pNextLine = wcsstr(pLine, L"\n");
-            if (pNextLine != NULL) {
-              pNextLine++;
             }
           }
 
@@ -241,8 +242,12 @@ void LoadHotkeySettings() {
           if (pNextLine != NULL && *pNextLine != L'\0') {
             pLine = pNextLine;
             wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL)
+            if (pEnd != NULL) {
               *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
@@ -251,6 +256,55 @@ void LoadHotkeySettings() {
             if (historyCount >= 10 && historyCount <= 10000) {
               g_maxHistoryCount = historyCount;
             }
+          }
+
+          // 解析第八行：customScrollbarEnabled
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL) {
+              *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+
+            g_isCustomScrollbarEnabled = (wcstol(pLine, NULL, 10) != 0);
+          }
+
+          // 解析第九行：customScrollbarHideDelayMs
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL) {
+              *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+
+            int hideDelay = (int)wcstol(pLine, NULL, 10);
+            if (hideDelay >= 600 && hideDelay <= 2000) {
+              g_customScrollbarHideDelayMs = hideDelay;
+            }
+          }
+
+          // 解析第十行：colorDotEnabled
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            g_isColorDotEnabled = (wcstol(pLine, NULL, 10) != 0);
           }
         }
       }
@@ -261,9 +315,9 @@ void LoadHotkeySettings() {
 
   // 如果没有加载到设置，使用默认值
   if (!settingsLoaded) {
-    g_isHotkeyEnabled = true; // 默认启用
-    g_hotkeyModifiers = MOD_CONTROL | MOD_ALT;
-    g_hotkeyVirtualKey = VK_SPACE;
+    g_isHotkeyEnabled = false; // 默认关闭，用户手动开启
+    g_hotkeyModifiers = 0;
+    g_hotkeyVirtualKey = 0;
   }
 
   if (!searchSettingsLoaded) {
