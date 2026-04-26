@@ -119,6 +119,12 @@ void LoadHotkeySettings() {
 
               pLine = pDelim + 1;
               g_hotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
+              if (!g_isHotkeyEnabled || g_hotkeyModifiers == 0 ||
+                  g_hotkeyVirtualKey == 0) {
+                g_isHotkeyEnabled = false;
+                g_hotkeyModifiers = 0;
+                g_hotkeyVirtualKey = 0;
+              }
               settingsLoaded = true;
             }
           }

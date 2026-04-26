@@ -1026,6 +1026,60 @@ void UpdateListBox() {
     }
 }
 
+void ApplyImagePreviewQualityChange() {
+    if (g_currentTab == 5 || g_hwndListBox == NULL) {
+        return;
+    }
+
+    int oldTopDisplayIndex =
+        (int)SendMessageW(g_hwndListBox, LB_GETTOPINDEX, 0, 0);
+    int oldSelDisplayIndex =
+        (int)SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0);
+
+    int oldTopActualIndex = -1;
+    int oldSelActualIndex = -1;
+    if (oldTopDisplayIndex >= 0 &&
+        oldTopDisplayIndex < (int)g_displayIndexMap.size()) {
+        oldTopActualIndex = g_displayIndexMap[oldTopDisplayIndex];
+    }
+    if (oldSelDisplayIndex >= 0 &&
+        oldSelDisplayIndex < (int)g_displayIndexMap.size()) {
+        oldSelActualIndex = g_displayIndexMap[oldSelDisplayIndex];
+    }
+
+    UpdateListBox();
+
+    int newTopDisplayIndex = 0;
+    int newSelDisplayIndex = LB_ERR;
+    for (int i = 0; i < (int)g_displayIndexMap.size(); ++i) {
+        if (g_displayIndexMap[i] == oldTopActualIndex && oldTopActualIndex >= 0) {
+            newTopDisplayIndex = i;
+        }
+        if (g_displayIndexMap[i] == oldSelActualIndex && oldSelActualIndex >= 0) {
+            newSelDisplayIndex = i;
+        }
+    }
+
+    SendMessageW(g_hwndListBox, LB_SETTOPINDEX, newTopDisplayIndex, 0);
+    g_listBoxTopIndex = newTopDisplayIndex;
+    if (newSelDisplayIndex != LB_ERR) {
+        SendMessageW(g_hwndListBox, LB_SETCURSEL, newSelDisplayIndex, 0);
+    }
+
+    int itemCount = (int)SendMessageW(g_hwndListBox, LB_GETCOUNT, 0, 0);
+    for (int i = 0; i < itemCount; ++i) {
+        SendMessageW(g_hwndListBox, LB_SETITEMHEIGHT, i, 0);
+    }
+
+    RedrawWindow(g_hwndListBox, NULL, NULL,
+                 RDW_ERASE | RDW_INVALIDATE | RDW_UPDATENOW |
+                     RDW_ALLCHILDREN);
+    if (g_hwndMain != NULL) {
+        RedrawWindow(g_hwndMain, NULL, NULL,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    }
+}
+
 // 添加内容到历史记录
 void AddToHistory(const std::wstring& content) {
     // 检查是否已存在相同内容

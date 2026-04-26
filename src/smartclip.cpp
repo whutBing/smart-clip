@@ -141,6 +141,10 @@ bool g_isDarkMode = false;
 // 主题模式设置
 ThemeMode g_themeMode = THEME_LIGHT;
 HWND g_hwndActiveThemedDialog = NULL;
+static HWND g_hwndThemedDialogCloseBtn = NULL;
+static WNDPROC g_oldThemedDialogCloseProc = NULL;
+static bool g_themedDialogCloseHover = false;
+static bool g_themedDialogClosePressed = false;
 
 // 标题栏按钮句柄
 HWND g_hwndTitleTopmost = NULL;
@@ -292,6 +296,7 @@ int g_folderCollapseAnimIndex = -1;     // 正在收起动画的项目索引
 // 链接文本（URL/路径）颜色动画
 #define ID_LINK_COLOR_EXPAND_TIMER 205     // 链接文本颜色展开动画
 #define ID_LINK_COLOR_COLLAPSE_TIMER 206   // 链接文本颜色收起动画
+#define ID_PASSWORD_FILTER_LOCK_TIMER 207  // 密码标签开/闭锁动画
 int g_hoverLinkIndex = -1;                 // 鼠标悬浮的链接所在项目索引
 bool g_isHoveringLink = false;             // 鼠标是否悬浮在链接文本上
 float g_linkColorExpandProgress = 0.0f;    // 颜色展开动画进度 0.0-1.0
@@ -300,6 +305,11 @@ int g_linkColorExpandAnimIndex = -1;       // 正在展开动画的项目索引
 float g_linkColorCollapseProgress = 0.0f;  // 颜色收起动画进度 0.0-1.0
 bool g_linkColorCollapseAnimating = false; // 是否正在收起动画
 int g_linkColorCollapseAnimIndex = -1;     // 正在收起动画的项目索引
+bool g_passwordFilterOpenState = true;
+bool g_passwordFilterAnimFromOpen = true;
+bool g_passwordFilterAnimToOpen = true;
+bool g_passwordFilterAnimating = false;
+float g_passwordFilterAnimProgress = 1.0f;
 
 // 文件拖放相关
 bool g_isDragging = false;       // 是否正在拖拽
@@ -1033,6 +1043,14 @@ static void InvalidateCustomScrollbarArea(HWND hwnd, BOOL erase = FALSE) {
     InvalidateRect(hwnd, &rcTrack, erase);
 }
 
+static void RedrawCustomScrollbarArea(HWND hwnd, BOOL erase = FALSE) {
+  RECT rcTrack = {};
+  if (GetCustomScrollbarTrackRect(hwnd, &rcTrack)) {
+    RedrawWindow(hwnd, &rcTrack, NULL,
+                 RDW_INVALIDATE | RDW_UPDATENOW | (erase ? RDW_ERASE : 0));
+  }
+}
+
 static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
   if (!hwnd || !hdc)
     return;
@@ -1214,6 +1232,35 @@ static void InvalidateMainFilterButtons() {
     InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
 }
 
+static bool ShouldShowPasswordFilterOpenState() {
+  if (!g_vaultProtectionEnabled)
+    return true;
+  if (g_vaultAuthMethod == 1)
+    return true;
+  if (!IsMasterPasswordSet())
+    return true;
+  return g_vaultUnlocked;
+}
+
+static void UpdatePasswordFilterLockVisual(HWND hwnd, bool animate) {
+  bool targetOpen = ShouldShowPasswordFilterOpenState();
+  if (animate && targetOpen != g_passwordFilterOpenState) {
+    g_passwordFilterAnimFromOpen = g_passwordFilterOpenState;
+    g_passwordFilterAnimToOpen = targetOpen;
+    g_passwordFilterAnimating = true;
+    g_passwordFilterAnimProgress = 0.0f;
+    SetTimer(hwnd, ID_PASSWORD_FILTER_LOCK_TIMER, 16, NULL);
+  } else {
+    g_passwordFilterAnimating = false;
+    g_passwordFilterAnimProgress = 1.0f;
+    g_passwordFilterAnimFromOpen = targetOpen;
+    g_passwordFilterAnimToOpen = targetOpen;
+  }
+  g_passwordFilterOpenState = targetOpen;
+  if (g_hwndFilterPassword)
+    InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
+}
+
 static bool SwitchMainPanel(HWND hwnd, int newTab, bool resetFavoriteFilter) {
   if (newTab < 0 || newTab > 5)
     return false;
@@ -1240,6 +1287,7 @@ static bool SwitchMainPanel(HWND hwnd, int newTab, bool resetFavoriteFilter) {
     g_passwords.clear();
   }
 
+  UpdatePasswordFilterLockVisual(hwnd, oldTab == 5 || newTab == 5);
   InvalidateMainFilterButtons();
   if (g_currentTab == 5) {
     UpdatePasswordListBox();
@@ -1736,6 +1784,8 @@ static PasswordHoverField HitTestPasswordInteractiveField(
 }
 
 static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
+  RECT rcOldThumb = {};
+  bool hadOldThumb = GetCustomScrollbarThumbRect(hwnd, &rcOldThumb);
   RECT rcTrack;
   RECT rcThumb;
   if (!GetCustomScrollbarTrackRect(hwnd, &rcTrack) ||
@@ -1764,7 +1814,11 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
   int newTop = GetTopIndexForContentOffset(contentOffset);
   ApplyListBoxTopIndex(hwnd, newTop);
   ShowCustomScrollbar(hwnd);
-  InvalidateRect(hwnd, NULL, FALSE);
+  if (hadOldThumb) {
+    InvalidateRect(hwnd, &rcOldThumb, FALSE);
+  }
+  InvalidateCustomScrollbarArea(hwnd, FALSE);
+  RedrawCustomScrollbarArea(hwnd, FALSE);
 }
 
 static void HideNativeListBoxScrollbar(HWND hwnd) {
@@ -1830,7 +1884,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       ApplyListBoxTopIndex(hwnd, newTop);
     }
 
-    InvalidateRect(hwnd, NULL, FALSE);
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
+    RedrawCustomScrollbarArea(hwnd, FALSE);
     return 0;                          // 已处理，不再传递给默认处理
   }
 
@@ -1864,7 +1919,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       ShowCustomScrollbar(hwnd);
-      InvalidateRect(hwnd, NULL, FALSE);
+      InvalidateCustomScrollbarArea(hwnd, FALSE);
+      RedrawCustomScrollbarArea(hwnd, FALSE);
     }
     return 0;
   }
@@ -1883,7 +1939,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       if (s_lastScrollPos != g_listBoxTopIndex || oldTop != g_listBoxTopIndex) {
         s_lastScrollPos = g_listBoxTopIndex;
         ShowCustomScrollbar(hwnd);
-        InvalidateRect(hwnd, NULL, FALSE);
+        InvalidateCustomScrollbarArea(hwnd, FALSE);
+        RedrawCustomScrollbarArea(hwnd, FALSE);
       }
     }
     if (!g_smoothScrollActive)
@@ -1909,7 +1966,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     g_scrollbarVisible = false;
     g_quickPasteHintVisible = false;
     HideNativeListBoxScrollbar(hwnd);
-    InvalidateRect(hwnd, NULL, FALSE);
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
+    RedrawCustomScrollbarArea(hwnd, FALSE);
     return 0;
   }
 
@@ -1927,7 +1985,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
   // 处理光标设置，防止手指光标闪烁
   if (message == WM_SETCURSOR) {
     if (g_isScrollbarDragging) {
-      SetCursor(LoadCursor(NULL, IDC_HAND));
+      SetCursor(LoadCursor(NULL, IDC_ARROW));
       return TRUE;
     }
     POINT pt;
@@ -1937,7 +1995,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     RECT rcThumb;
     if ((GetCustomScrollbarThumbRect(hwnd, &rcThumb) && PtInRect(&rcThumb, pt)) ||
         (GetCustomScrollbarTrackRect(hwnd, &rcTrack) && PtInRect(&rcTrack, pt))) {
-      SetCursor(LoadCursor(NULL, IDC_HAND));
+      SetCursor(LoadCursor(NULL, IDC_ARROW));
       return TRUE;
     }
     if (g_isHoveringLink || g_isHoveringFolder || g_isHoveringIcon) {
@@ -2782,6 +2840,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_isScrollbarDragging = false;
       StartScrollbarHideTimer(hwnd);
       InvalidateCustomScrollbarArea(hwnd, FALSE);
+      RedrawCustomScrollbarArea(hwnd, FALSE);
     }
   }
 
@@ -3504,23 +3563,38 @@ static void SyncDialogEditTextRect(HWND hwnd) {
 
   TEXTMETRICW tm = {};
   GetTextMetricsW(hdc, &tm);
+  LOGFONTW lf = {};
+  if (hFont) {
+    GetObjectW(hFont, sizeof(lf), &lf);
+  }
   if (hOldFont) {
     SelectObject(hdc, hOldFont);
   }
   ReleaseDC(hwnd, hdc);
 
   const int horizontalPadding = 12;
-  const int textHeight = std::max(1, (int)tm.tmHeight);
+  int fontHeight = lf.lfHeight != 0 ? abs(lf.lfHeight) : 0;
+  if (fontHeight <= 0) {
+    fontHeight = (int)tm.tmHeight;
+  }
+  const int textHeight = std::max(1, fontHeight + (int)tm.tmExternalLeading);
   const int availableHeight = rcClient.bottom - rcClient.top;
-  int topPadding = std::max(3, (availableHeight - textHeight) / 2);
-  int bottomPadding = std::max(3, availableHeight - textHeight - topPadding);
+  int topPadding = (availableHeight - textHeight) / 2;
+  if (topPadding < 3)
+    topPadding = 3;
+  topPadding += 1;
+  int bottomPadding = availableHeight - textHeight - topPadding;
+  if (bottomPadding < 3) {
+    bottomPadding = 3;
+    topPadding = std::max(3, availableHeight - textHeight - bottomPadding);
+  }
   RECT rcText = {horizontalPadding,
                  topPadding,
                  std::max(horizontalPadding + 1,
                           (int)rcClient.right - horizontalPadding),
                  std::max(topPadding + textHeight + 1,
                           (int)rcClient.bottom - bottomPadding)};
-  SendMessageW(hwnd, EM_SETRECTNP, 0, (LPARAM)&rcText);
+  SendMessageW(hwnd, EM_SETRECT, 0, (LPARAM)&rcText);
 }
 
 LRESULT CALLBACK DialogEditProc(HWND hwnd, UINT message, WPARAM wParam,
@@ -3625,7 +3699,9 @@ static BOOL CALLBACK StyleDialogEditChildren(HWND hwnd, LPARAM) {
 
   SetWindowTheme(hwnd, L"", L"");
   LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-  style |= ES_MULTILINE;
+  bool isPasswordEdit = (style & ES_PASSWORD) != 0;
+  if (!isPasswordEdit)
+    style |= ES_MULTILINE;
   style &= ~WS_BORDER;
   SetWindowLongPtrW(hwnd, GWL_STYLE, style);
   LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -3646,9 +3722,14 @@ static BOOL CALLBACK StyleDialogEditChildren(HWND hwnd, LPARAM) {
 
   g_oldDialogEditProc =
       (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)DialogEditProc);
-  SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-               MAKELONG(0, 0));
-  SyncDialogEditTextRect(hwnd);
+  if (isPasswordEdit) {
+    SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELONG(12, 34));
+  } else {
+    SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELONG(0, 0));
+    SyncDialogEditTextRect(hwnd);
+  }
   return TRUE;
 }
 
@@ -3659,6 +3740,7 @@ struct ThemedDialogConfig {
   int dlgW;
   int dlgH;
   int closeBtnId;
+  int bodyFontDelta;
   RECT cardRect;
   const int *fieldLabelIds;
   int fieldLabelCount;
@@ -3669,6 +3751,12 @@ struct ThemedDialogConfig {
   HFONT hFont;
   HFONT hTitleFont;
   HFONT hCloseFont;
+};
+
+struct PasswordToggleBinding {
+  int editId;
+  int buttonId;
+  bool revealed;
 };
 
 static bool IsThemedDialogFieldLabel(const ThemedDialogConfig *config,
@@ -3743,7 +3831,8 @@ static void CenterDialogToParent(HWND hDlg, HWND hwndParent) {
 
 static void InitThemedDialogFonts(HWND hDlg, ThemedDialogConfig *config) {
   config->hFont = CreateFontW(
-      g_fontSize + 4, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+      g_fontSize + (config ? config->bodyFontDelta : 4), 0, 0, 0, FW_NORMAL,
+      FALSE, FALSE, FALSE,
       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
   EnumChildWindows(
@@ -3790,6 +3879,89 @@ static void CleanupThemedDialogFonts(ThemedDialogConfig *config) {
     DeleteObject(config->hCloseFont);
     config->hCloseFont = NULL;
   }
+}
+
+static void ApplyDialogPasswordMask(HWND hEdit, bool revealed) {
+  if (!hEdit)
+    return;
+  SendMessageW(hEdit, EM_SETPASSWORDCHAR, revealed ? 0 : (WPARAM)L'*', 0);
+  RedrawWindow(hEdit, NULL, NULL,
+               RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+}
+
+static PasswordToggleBinding *FindDialogPasswordToggleBinding(
+    ThemedDialogConfig *config, int controlId) {
+  if (!config || !config->userData)
+    return NULL;
+
+  auto *bindings =
+      reinterpret_cast<std::vector<PasswordToggleBinding> *>(config->userData);
+  for (auto &binding : *bindings) {
+    if (binding.buttonId == controlId)
+      return &binding;
+  }
+  return NULL;
+}
+
+static HWND CreateDialogPasswordToggleButton(HWND hDlg, HINSTANCE hInst, int x,
+                                             int y, int buttonId) {
+  return CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                         x, y, 28, 32, hDlg, (HMENU)(INT_PTR)buttonId, hInst,
+                         NULL);
+}
+
+static LRESULT CALLBACK ThemedDialogCloseBtnProc(HWND hwnd, UINT message,
+                                                 WPARAM wParam,
+                                                 LPARAM lParam) {
+  switch (message) {
+  case WM_MOUSEMOVE: {
+    if (!g_themedDialogCloseHover) {
+      g_themedDialogCloseHover = true;
+      InvalidateRect(hwnd, NULL, TRUE);
+    }
+    TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
+    TrackMouseEvent(&tme);
+    return 0;
+  }
+  case WM_MOUSELEAVE:
+    g_themedDialogCloseHover = false;
+    g_themedDialogClosePressed = false;
+    InvalidateRect(hwnd, NULL, TRUE);
+    return 0;
+  case WM_LBUTTONDOWN:
+    g_themedDialogClosePressed = true;
+    SetCapture(hwnd);
+    InvalidateRect(hwnd, NULL, TRUE);
+    return 0;
+  case WM_LBUTTONUP: {
+    bool wasPressed = g_themedDialogClosePressed;
+    g_themedDialogClosePressed = false;
+    if (GetCapture() == hwnd)
+      ReleaseCapture();
+    InvalidateRect(hwnd, NULL, TRUE);
+
+    RECT rc = {};
+    POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+    GetClientRect(hwnd, &rc);
+    if (wasPressed && PtInRect(&rc, pt)) {
+      SendMessageW(GetParent(hwnd), WM_COMMAND,
+                   MAKEWPARAM(GetDlgCtrlID(hwnd), BN_CLICKED), (LPARAM)hwnd);
+    }
+    return 0;
+  }
+  case WM_CAPTURECHANGED:
+    if (g_themedDialogClosePressed) {
+      g_themedDialogClosePressed = false;
+      InvalidateRect(hwnd, NULL, TRUE);
+    }
+    return 0;
+  case WM_SETCURSOR:
+    SetCursor(LoadCursorW(NULL, IDC_ARROW));
+    return TRUE;
+  }
+
+  return CallWindowProcW(g_oldThemedDialogCloseProc, hwnd, message, wParam,
+                         lParam);
 }
 
 static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
@@ -3853,25 +4025,87 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
     RECT rc = dis->rcItem;
 
     if ((int)dis->CtlID == config->closeBtnId) {
-      bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
-      bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-      COLORREF bgColor = g_isDarkMode ? RGB(30, 31, 35) : RGB(247, 248, 250);
-      if (hover) {
-        bgColor = pressed ? RGB(200, 28, 46) : RGB(232, 17, 35);
+      bool hover = g_themedDialogCloseHover;
+      bool pressed = g_themedDialogClosePressed;
+      FillRect(hdc, &rc, GetThemedDialogBackgroundBrush());
+
+      Gdiplus::Graphics g(hdc);
+      g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      if (hover || pressed) {
+        COLORREF fill = pressed ? RGB(200, 28, 46) : RGB(232, 17, 35);
+        Gdiplus::GraphicsPath closePath;
+        CreateRoundRectPath(&closePath, rc.left + 1, rc.top + 1,
+                            rc.right - rc.left - 2, rc.bottom - rc.top - 2, 8);
+        Gdiplus::SolidBrush closeBrush(
+            Gdiplus::Color(255, GetRValue(fill), GetGValue(fill),
+                           GetBValue(fill)));
+        g.FillPath(&closeBrush, &closePath);
       }
-      HBRUSH hBrush = CreateSolidBrush(bgColor);
-      FillRect(hdc, &rc, hBrush);
-      DeleteObject(hBrush);
+
       SetBkMode(hdc, TRANSPARENT);
       SetTextColor(hdc,
-                   hover ? RGB(255, 255, 255)
-                         : (g_isDarkMode ? RGB(220, 223, 228)
-                                         : RGB(90, 96, 108)));
+                   (hover || pressed) ? RGB(255, 255, 255)
+                                      : (g_isDarkMode ? RGB(220, 223, 228)
+                                                      : RGB(90, 96, 108)));
       HFONT hOldFont =
           (HFONT)SelectObject(hdc, (HFONT)SendMessageW((HWND)dis->hwndItem,
                                                        WM_GETFONT, 0, 0));
       DrawTextW(hdc, L"\uE8BB", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       SelectObject(hdc, hOldFont);
+      return TRUE;
+    }
+
+    if (FindDialogPasswordToggleBinding(config, (int)dis->CtlID)) {
+      FillRect(hdc, &rc, GetThemedDialogEditBrush());
+
+      Gdiplus::Graphics g(hdc);
+      g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+      Gdiplus::GraphicsPath path;
+      CreateRoundRectPath(&path, rc.left + 1, rc.top + 1,
+                          rc.right - rc.left - 2, rc.bottom - rc.top - 2, 8);
+      COLORREF border = g_isDarkMode ? RGB(86, 90, 98) : RGB(210, 214, 220);
+      Gdiplus::Pen pen(Gdiplus::Color(255, GetRValue(border), GetGValue(border),
+                                      GetBValue(border)),
+                       1.0f);
+      g.DrawPath(&pen, &path);
+
+      PasswordToggleBinding *binding =
+          FindDialogPasswordToggleBinding(config, (int)dis->CtlID);
+      COLORREF iconColor =
+          g_isDarkMode ? RGB(188, 194, 204) : RGB(98, 104, 116);
+      Gdiplus::Pen eyePen(
+          Gdiplus::Color(255, GetRValue(iconColor), GetGValue(iconColor),
+                         GetBValue(iconColor)),
+          1.5f);
+      eyePen.SetLineJoin(Gdiplus::LineJoinRound);
+      Gdiplus::SolidBrush eyeBrush(
+          Gdiplus::Color(255, GetRValue(iconColor), GetGValue(iconColor),
+                         GetBValue(iconColor)));
+
+      const int width = rc.right - rc.left;
+      const int height = rc.bottom - rc.top;
+      const int cx = rc.left + width / 2;
+      const int cy = rc.top + height / 2;
+      const int eyeW = 12;
+      const int eyeH = 7;
+
+      Gdiplus::GraphicsPath eyePath;
+      eyePath.AddBezier((Gdiplus::REAL)(cx - eyeW / 2), (Gdiplus::REAL)cy,
+                        (Gdiplus::REAL)(cx - eyeW / 3), (Gdiplus::REAL)(cy - eyeH),
+                        (Gdiplus::REAL)(cx + eyeW / 3), (Gdiplus::REAL)(cy - eyeH),
+                        (Gdiplus::REAL)(cx + eyeW / 2), (Gdiplus::REAL)cy);
+      eyePath.AddBezier((Gdiplus::REAL)(cx + eyeW / 2), (Gdiplus::REAL)cy,
+                        (Gdiplus::REAL)(cx + eyeW / 3), (Gdiplus::REAL)(cy + eyeH),
+                        (Gdiplus::REAL)(cx - eyeW / 3), (Gdiplus::REAL)(cy + eyeH),
+                        (Gdiplus::REAL)(cx - eyeW / 2), (Gdiplus::REAL)cy);
+      g.DrawPath(&eyePen, &eyePath);
+      g.FillEllipse(&eyeBrush, cx - 2, cy - 2, 4, 4);
+
+      if (binding && !binding->revealed) {
+        g.DrawLine(&eyePen, (Gdiplus::REAL)(cx - eyeW / 2 - 1),
+                   (Gdiplus::REAL)(cy + eyeH), (Gdiplus::REAL)(cx + eyeW / 2 + 1),
+                   (Gdiplus::REAL)(cy - eyeH));
+      }
       return TRUE;
     }
 
@@ -3978,6 +4212,19 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
       PostMessageW(hwnd, WM_CLOSE, 0, 0);
       return 0;
     }
+    if (config) {
+      PasswordToggleBinding *binding =
+          FindDialogPasswordToggleBinding(config, LOWORD(wParam));
+      if (binding) {
+        binding->revealed = !binding->revealed;
+        HWND hEdit = GetDlgItem(hwnd, binding->editId);
+        HWND hBtn = GetDlgItem(hwnd, binding->buttonId);
+        ApplyDialogPasswordMask(hEdit, binding->revealed);
+        if (hBtn)
+          InvalidateRect(hBtn, NULL, TRUE);
+        return 0;
+      }
+    }
     break;
   case WM_KEYDOWN:
     if (wParam == VK_ESCAPE) {
@@ -4020,10 +4267,17 @@ static HWND CreateThemedDialog(HWND hwndParent, HINSTANCE hInst,
                   260, 28, hDlg, (HMENU)IDC_THEMED_DIALOG_TITLE, hInst, NULL);
   CreateWindowExW(0, L"STATIC", config->subtitle, WS_CHILD | WS_VISIBLE, 22, 46,
                   320, 18, hDlg, (HMENU)IDC_THEMED_DIALOG_SUBTITLE, hInst, NULL);
-  CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                  config->dlgW - 46, 0, 46, 30, hDlg,
-                  (HMENU)(INT_PTR)config->closeBtnId,
-                  hInst, NULL);
+  g_themedDialogCloseHover = false;
+  g_themedDialogClosePressed = false;
+  g_hwndThemedDialogCloseBtn =
+      CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                      config->dlgW - 44, 4, 40, 24, hDlg,
+                      (HMENU)(INT_PTR)config->closeBtnId, hInst, NULL);
+  if (g_hwndThemedDialogCloseBtn) {
+    g_oldThemedDialogCloseProc = (WNDPROC)SetWindowLongPtrW(
+        g_hwndThemedDialogCloseBtn, GWLP_WNDPROC,
+        (LONG_PTR)ThemedDialogCloseBtnProc);
+  }
 
   SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)config);
   SetWindowLongPtrW(hDlg, GWLP_WNDPROC, (LONG_PTR)ThemedDialogProc);
@@ -4056,6 +4310,13 @@ static void CloseThemedDialog(HWND hwndParent, HWND hDlg,
                               ThemedDialogConfig *config) {
   EnableWindow(hwndParent, TRUE);
   SetForegroundWindow(hwndParent);
+  if (g_hwndThemedDialogCloseBtn &&
+      GetParent(g_hwndThemedDialogCloseBtn) == hDlg) {
+    g_hwndThemedDialogCloseBtn = NULL;
+    g_oldThemedDialogCloseProc = NULL;
+    g_themedDialogCloseHover = false;
+    g_themedDialogClosePressed = false;
+  }
   DestroyWindow(hDlg);
   if (g_hwndActiveThemedDialog == hDlg) {
     g_hwndActiveThemedDialog = NULL;
@@ -5371,6 +5632,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SendMessageW(g_hwndFilterFile, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFavorite, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterPassword, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
+    g_passwordFilterOpenState = ShouldShowPasswordFilterOpenState();
+    g_passwordFilterAnimFromOpen = g_passwordFilterOpenState;
+    g_passwordFilterAnimToOpen = g_passwordFilterOpenState;
+    g_passwordFilterAnimating = false;
+    g_passwordFilterAnimProgress = 1.0f;
     g_oldFilterFavoriteProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndFilterFavorite, GWLP_WNDPROC, (LONG_PTR)FilterFavoriteBtnProc);
 
@@ -5865,7 +6131,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         icon = L"\uE734";
         break; // FavoriteStar
       case ID_FILTER_PASSWORD:
-        icon = L"";
+        icon = g_passwordFilterOpenState ? L"\uE785" : L"\uE72E";
         break; // Lock
       }
 
@@ -5890,7 +6156,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       // 绘制图标
       SelectObject(hdc, hIconFont);
-      TextOutW(hdc, startX, centerY - iconSize.cy / 2, icon, 1);
+      if (lpDIS->CtlID == ID_FILTER_PASSWORD && g_passwordFilterAnimating) {
+        const wchar_t *fromIcon =
+            g_passwordFilterAnimFromOpen ? L"\uE785" : L"\uE72E";
+        const wchar_t *toIcon = g_passwordFilterAnimToOpen ? L"\uE785" : L"\uE72E";
+
+        int fromOffsetX =
+            (int)((g_passwordFilterAnimToOpen ? -1.0f : 1.0f) *
+                  6.0f * g_passwordFilterAnimProgress);
+        int toOffsetX =
+            (int)((g_passwordFilterAnimToOpen ? 1.0f : -1.0f) *
+                  6.0f * (1.0f - g_passwordFilterAnimProgress));
+
+        SetTextColor(hdc, isSelected ? GetTextColor() : RGB(128, 128, 128));
+        if (g_passwordFilterAnimProgress < 1.0f) {
+          TextOutW(hdc, startX + fromOffsetX, centerY - iconSize.cy / 2,
+                   fromIcon, 1);
+        }
+
+        COLORREF blendColor = isSelected ? GetTextColor() : RGB(128, 128, 128);
+        int boost = (int)(36.0f * g_passwordFilterAnimProgress);
+        int r = std::min(255, (int)GetRValue(blendColor) + boost);
+        int g = std::min(255, (int)GetGValue(blendColor) + boost);
+        int b = std::min(255, (int)GetBValue(blendColor) + boost);
+        SetTextColor(hdc, RGB(r, g, b));
+        TextOutW(hdc, startX + toOffsetX, centerY - iconSize.cy / 2, toIcon, 1);
+        SetTextColor(hdc, isSelected ? GetTextColor() : RGB(128, 128, 128));
+      } else {
+        TextOutW(hdc, startX, centerY - iconSize.cy / 2, icon, 1);
+      }
 
       // 绘制文本
       SelectObject(hdc, hFont);
@@ -6127,9 +6421,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
       SetBkMode(hdc, TRANSPARENT);
 
-      // 图标颜色：禁用时灰色，悬浮时蓝色，正常时文字色
+      // 图标颜色：暗黑模式下统一使用柔和蓝系，明显区分可用/禁用状态
       COLORREF iconColor;
-      if (isDisabled) {
+      if (g_isDarkMode) {
+        if (isDisabled) {
+          iconColor = RGB(92, 110, 136);
+        } else if (isHover) {
+          iconColor = RGB(148, 176, 214);
+        } else {
+          iconColor = RGB(118, 148, 192);
+        }
+      } else if (isDisabled) {
         iconColor = RGB(180, 180, 180);
       } else if (isHover) {
         iconColor = GetAccentColor();
@@ -6530,46 +6832,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               DrawIconEx(hdc, iconX, iconY, hAppIcon, iconSize, iconSize, 0,
                          NULL, DI_NORMAL);
             } else {
-              // 非悬浮时绘制灰度图标
-              // 创建内存 DC 用于灰度化处理
-              HDC hdcMem = CreateCompatibleDC(hdc);
-              HBITMAP hBitmap = CreateCompatibleBitmap(hdc, iconSize, iconSize);
-              HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
-
-              // 填充背景色（支持暗黑模式）
-              RECT rcIcon = {0, 0, iconSize, iconSize};
-              HBRUSH hWhiteBrush = CreateSolidBrush(GetWhiteColor());
-              FillRect(hdcMem, &rcIcon, hWhiteBrush);
-              DeleteObject(hWhiteBrush);
-
-              // 绘制图标到内存 DC
-              DrawIconEx(hdcMem, 0, 0, hAppIcon, iconSize, iconSize, 0, NULL,
-                         DI_NORMAL);
-
-              // 灰度化处理
-              for (int y = 0; y < iconSize; y++) {
-                for (int x = 0; x < iconSize; x++) {
-                  COLORREF color = GetPixel(hdcMem, x, y);
-                  int r = GetRValue(color);
-                  int g = GetGValue(color);
-                  int b = GetBValue(color);
-                  // 计算灰度值（加权平均）
-                  int gray = (int)(0.299 * r + 0.587 * g + 0.114 * b);
-                  // 稍微提亮，使其更柔和
-                  gray = gray + 40;
-                  if (gray > 255)
-                    gray = 255;
-                  SetPixel(hdcMem, x, y, RGB(gray, gray, gray));
-                }
+              // 非悬浮时使用 GDI+ 按 alpha 绘制灰度图标，避免出现矩形底色
+              Gdiplus::Bitmap *iconBitmap = Gdiplus::Bitmap::FromHICON(hAppIcon);
+              if (iconBitmap &&
+                  iconBitmap->GetLastStatus() == Gdiplus::Ok) {
+                Gdiplus::Graphics graphics(hdc);
+                graphics.SetInterpolationMode(
+                    Gdiplus::InterpolationModeHighQualityBicubic);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                Gdiplus::ImageAttributes imageAttr;
+                const float brighten = g_isDarkMode ? 0.14f : 0.10f;
+                const Gdiplus::ColorMatrix colorMatrix = {
+                    0.299f, 0.299f, 0.299f, 0.0f, 0.0f,
+                    0.587f, 0.587f, 0.587f, 0.0f, 0.0f,
+                    0.114f, 0.114f, 0.114f, 0.0f, 0.0f,
+                    0.0f,   0.0f,   0.0f,   0.82f, 0.0f,
+                    brighten, brighten, brighten, 0.0f, 1.0f};
+                imageAttr.SetColorMatrix(
+                    &colorMatrix, Gdiplus::ColorMatrixFlagsDefault,
+                    Gdiplus::ColorAdjustTypeBitmap);
+                graphics.DrawImage(
+                    iconBitmap,
+                    Gdiplus::Rect(iconX, iconY, iconSize, iconSize), 0, 0,
+                    iconBitmap->GetWidth(), iconBitmap->GetHeight(),
+                    Gdiplus::UnitPixel, &imageAttr);
+              } else {
+                DrawIconEx(hdc, iconX, iconY, hAppIcon, iconSize, iconSize, 0,
+                           NULL, DI_NORMAL);
               }
-
-              // 将灰度化后的图标绘制到目标 DC
-              BitBlt(hdc, iconX, iconY, iconSize, iconSize, hdcMem, 0, 0,
-                     SRCCOPY);
-
-              SelectObject(hdcMem, hOldBitmap);
-              DeleteObject(hBitmap);
-              DeleteDC(hdcMem);
+              delete iconBitmap;
             }
           }
 
@@ -6688,7 +6979,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               // 文件不存在时，清除缩略图数据
               if (!imageFileExists &&
                   !g_history[actualIndex].imageData.empty()) {
-                g_history[actualIndex].imageData.clear();
+                std::vector<BYTE>().swap(g_history[actualIndex].imageData);
                 g_history[actualIndex].thumbWidth = 0;
                 g_history[actualIndex].thumbHeight = 0;
                 SaveHistory(); // 保存更新后的历史记录
@@ -6746,6 +7037,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                         DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX |
                             DT_END_ELLIPSIS);
 
+              SelectObject(hdc, hPrevTextFont);
+              DeleteObject(hTextFont);
+            } else if (item.imageData.empty() || item.imageWidth <= 0 ||
+                       item.imageHeight <= 0) {
+              HFONT hTextFont = CreateFontW(
+                  16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                  DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+              HFONT hPrevTextFont = (HFONT)SelectObject(hdc, hTextFont);
+              std::wstring displayText =
+                  !item.imageFileName.empty() ? item.imageFileName : L"图片预览不可用";
+              SetTextColor(hdc, RGB(150, 150, 150));
+              DrawTextW(hdc, displayText.c_str(), -1, &rcContent,
+                        DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX |
+                            DT_END_ELLIPSIS);
               SelectObject(hdc, hPrevTextFont);
               DeleteObject(hTextFont);
             } else {
@@ -7228,6 +7534,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_vaultUnlocked = false;
           g_passwords.clear();
         }
+        UpdatePasswordFilterLockVisual(hwnd, true);
         // 重绘所有筛选按钮以更新选中状态
         InvalidateRect(g_hwndFilterAll, NULL, TRUE);
         InvalidateRect(g_hwndFilterText, NULL, TRUE);
@@ -8039,6 +8346,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         KillTimer(hwnd, ID_BATCH_EDIT_ANIM_TIMER);
       }
       InvalidateRect(g_hwndBatchEditBtn, NULL, TRUE);
+    } else if (wParam == ID_PASSWORD_FILTER_LOCK_TIMER) {
+      g_passwordFilterAnimProgress += 0.14f;
+      if (g_passwordFilterAnimProgress >= 1.0f) {
+        g_passwordFilterAnimProgress = 1.0f;
+        g_passwordFilterAnimating = false;
+        KillTimer(hwnd, ID_PASSWORD_FILTER_LOCK_TIMER);
+      }
+      if (g_hwndFilterPassword)
+        InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
     }
     break;
   }
@@ -9111,8 +9427,12 @@ void UpdatePasswordListBox() {
 void ShowSetMasterPasswordDialog(HWND hwndParent) {
   HINSTANCE hInst = GetModuleHandleW(NULL);
   const int closeBtnId = 2003;
+  const int togglePw1Id = 2011;
+  const int togglePw2Id = 2012;
   static bool s_setMasterDone = false;
+  static std::vector<PasswordToggleBinding> s_passwordToggles;
   s_setMasterDone = false;
+  s_passwordToggles = {{2001, togglePw1Id, false}, {2002, togglePw2Id, false}};
   ThemedDialogConfig config = {};
   config.windowTitle = L"设置主密码";
   config.title = L"设置主密码";
@@ -9125,6 +9445,7 @@ void ShowSetMasterPasswordDialog(HWND hwndParent) {
   config.fieldLabelIds = fieldLabelIds;
   config.fieldLabelCount = _countof(fieldLabelIds);
   config.doneFlag = &s_setMasterDone;
+  config.userData = &s_passwordToggles;
 
   HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
   if (!hDlg) {
@@ -9141,16 +9462,23 @@ void ShowSetMasterPasswordDialog(HWND hwndParent) {
                   (HMENU)20011, hInst, NULL);
   HWND hPw1 = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                               WS_CHILD | WS_VISIBLE | ES_PASSWORD |
-                                  ES_AUTOHSCROLL,
+                                  ES_AUTOHSCROLL | ES_MULTILINE,
                               editX, firstY + 24, editW, 32, hDlg, (HMENU)2001,
                               hInst, NULL);
+  ApplyDialogPasswordMask(hPw1, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + 24, togglePw1Id);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"确认密码",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap, 160, 20,
                   hDlg, (HMENU)20012, hInst, NULL);
-  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL, editX,
-                  firstY + blockGap + 24, editW, 32, hDlg, (HMENU)2002, hInst,
-                  NULL);
+  HWND hPw2 = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                              WS_CHILD | WS_VISIBLE | ES_PASSWORD |
+                                  ES_AUTOHSCROLL | ES_MULTILINE,
+                              editX, firstY + blockGap + 24, editW, 32, hDlg,
+                              (HMENU)2002, hInst, NULL);
+  ApplyDialogPasswordMask(hPw2, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + blockGap + 24, togglePw2Id);
   config.initialFocus = hPw1;
 
   const int btnW = 65;
@@ -9195,8 +9523,11 @@ void ShowSetMasterPasswordDialog(HWND hwndParent) {
 void ShowVerifyMasterPasswordDialog(HWND hwndParent) {
   HINSTANCE hInst = GetModuleHandleW(NULL);
   const int closeBtnId = 2002;
+  const int togglePwId = 2021;
   static bool s_verifyDone = false;
+  static std::vector<PasswordToggleBinding> s_passwordToggles;
   s_verifyDone = false;
+  s_passwordToggles = {{2001, togglePwId, false}};
   ThemedDialogConfig config = {};
   config.windowTitle = L"验证密码";
   config.title = L"验证密码";
@@ -9204,11 +9535,13 @@ void ShowVerifyMasterPasswordDialog(HWND hwndParent) {
   config.dlgW = 424;
   config.dlgH = 248;
   config.closeBtnId = closeBtnId;
+  config.bodyFontDelta = 1;
   config.cardRect = {14, 78, 410, 182};
   static const int fieldLabelIds[] = {20010};
   config.fieldLabelIds = fieldLabelIds;
   config.fieldLabelCount = _countof(fieldLabelIds);
   config.doneFlag = &s_verifyDone;
+  config.userData = &s_passwordToggles;
 
   HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
   if (!hDlg) {
@@ -9219,8 +9552,11 @@ void ShowVerifyMasterPasswordDialog(HWND hwndParent) {
                   34, 96, 120, 20, hDlg, (HMENU)20010, hInst, NULL);
   HWND hPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                              WS_CHILD | WS_VISIBLE | ES_PASSWORD |
-                                 ES_AUTOHSCROLL,
+                                 ES_AUTOHSCROLL | ES_MULTILINE,
                              34, 120, 356, 32, hDlg, (HMENU)2001, hInst, NULL);
+  ApplyDialogPasswordMask(hPw, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, 34 + 356 - 28, 120,
+                                   togglePwId);
   config.initialFocus = hPw;
 
   const int btnW = 65;
@@ -9295,11 +9631,14 @@ void ShowPasswordEntryDialog(HWND hwndParent, int editId) {
   HINSTANCE hInst = GetModuleHandleW(NULL);
   const wchar_t *dlgTitle = (editId >= 0) ? L"编辑密码" : L"新增密码";
   const int closeBtnId = 3004;
+  const int toggleEntryPwId = 3013;
   static bool s_entryDone = false;
   static bool s_entryOk = false;
   static wchar_t s_entryName[256], s_entryTitle[256], s_entryAccount[256], s_entryPassword[256];
+  static std::vector<PasswordToggleBinding> s_passwordToggles;
   s_entryDone = false;
   s_entryOk = false;
+  s_passwordToggles = {{3003, toggleEntryPwId, false}};
 
   ThemedDialogConfig config = {};
   config.windowTitle = dlgTitle;
@@ -9309,11 +9648,13 @@ void ShowPasswordEntryDialog(HWND hwndParent, int editId) {
   config.dlgW = 424;
   config.dlgH = 396;
   config.closeBtnId = closeBtnId;
+  config.bodyFontDelta = 1;
   config.cardRect = {14, 78, 410, 342};
   static const int fieldLabelIds[] = {30010, 30011, 30012, 30013};
   config.fieldLabelIds = fieldLabelIds;
   config.fieldLabelCount = _countof(fieldLabelIds);
   config.doneFlag = &s_entryDone;
+  config.userData = &s_passwordToggles;
 
   HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
   if (!hDlg) return;
@@ -9328,26 +9669,32 @@ void ShowPasswordEntryDialog(HWND hwndParent, int editId) {
                   WS_CHILD | WS_VISIBLE, labelX, firstY, 100, 20,
                   hDlg, (HMENU)30010, hInst, NULL);
   CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initName,
-                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_MULTILINE,
                   editX, firstY + 24, editW, 32, hDlg, (HMENU)3000, hInst, NULL);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"网址 / 应用",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap, 120, 20,
                   hDlg, (HMENU)30011, hInst, NULL);
   CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initTitle,
-                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_MULTILINE,
                   editX, firstY + blockGap + 24, editW, 32, hDlg, (HMENU)3001, hInst, NULL);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"账号",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap * 2, 100, 20,
                   hDlg, (HMENU)30012, hInst, NULL);
   CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initAccount,
-                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_MULTILINE,
                   editX, firstY + blockGap * 2 + 24, editW, 32, hDlg, (HMENU)3002, hInst, NULL);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"密码",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap * 3, 100, 20,
                   hDlg, (HMENU)30013, hInst, NULL);
-  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initPassword,
-                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                  editX, firstY + blockGap * 3 + 24, editW, 32, hDlg, (HMENU)3003, hInst, NULL);
+  HWND hEntryPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", initPassword,
+                                  WS_CHILD | WS_VISIBLE | ES_PASSWORD |
+                                      ES_AUTOHSCROLL | ES_MULTILINE,
+                                  editX, firstY + blockGap * 3 + 24, editW, 32,
+                                  hDlg, (HMENU)3003, hInst, NULL);
+  ApplyDialogPasswordMask(hEntryPw, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + blockGap * 3 + 24,
+                                   toggleEntryPwId);
   const int btnW = 65;
   const int btnH = 25;
   const int btnGap = 10;
@@ -9403,8 +9750,15 @@ void ShowPasswordEntryDialog(HWND hwndParent, int editId) {
 void ShowResetMasterPasswordDialog(HWND hwndParent) {
   HINSTANCE hInst = GetModuleHandleW(NULL);
   const int closeBtnId = 2004;
+  const int toggleOldPwId = 2031;
+  const int toggleNewPwId = 2032;
+  const int toggleConfirmPwId = 2033;
   static bool s_resetDone = false;
+  static std::vector<PasswordToggleBinding> s_passwordToggles;
   s_resetDone = false;
+  s_passwordToggles = {{2001, toggleOldPwId, false},
+                       {2002, toggleNewPwId, false},
+                       {2003, toggleConfirmPwId, false}};
   ThemedDialogConfig config = {};
   config.windowTitle = L"重置主密码";
   config.title = L"重置主密码";
@@ -9412,11 +9766,13 @@ void ShowResetMasterPasswordDialog(HWND hwndParent) {
   config.dlgW = 424;
   config.dlgH = 370;
   config.closeBtnId = closeBtnId;
+  config.bodyFontDelta = 1;
   config.cardRect = {14, 78, 410, 304};
   static const int fieldLabelIds[] = {20021, 20022, 20023};
   config.fieldLabelIds = fieldLabelIds;
   config.fieldLabelCount = _countof(fieldLabelIds);
   config.doneFlag = &s_resetDone;
+  config.userData = &s_passwordToggles;
 
   HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
   if (!hDlg) {
@@ -9433,23 +9789,35 @@ void ShowResetMasterPasswordDialog(HWND hwndParent) {
                   (HMENU)20021, hInst, NULL);
   HWND hOldPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                 WS_CHILD | WS_VISIBLE | ES_PASSWORD |
-                                    ES_AUTOHSCROLL,
+                                    ES_AUTOHSCROLL | ES_MULTILINE,
                                 editX, firstY + 24, editW, 32, hDlg,
                                 (HMENU)2001, hInst, NULL);
+  ApplyDialogPasswordMask(hOldPw, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + 24, toggleOldPwId);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"新密码（至少 6 个字符）",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap, 190, 20,
                   hDlg, (HMENU)20022, hInst, NULL);
-  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL, editX,
-                  firstY + blockGap + 24, editW, 32, hDlg, (HMENU)2002, hInst,
-                  NULL);
+  HWND hNewPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                WS_CHILD | WS_VISIBLE | ES_PASSWORD |
+                                    ES_AUTOHSCROLL | ES_MULTILINE,
+                                editX, firstY + blockGap + 24, editW, 32, hDlg,
+                                (HMENU)2002, hInst, NULL);
+  ApplyDialogPasswordMask(hNewPw, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + blockGap + 24, toggleNewPwId);
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"确认新密码",
                   WS_CHILD | WS_VISIBLE, labelX, firstY + blockGap * 2, 120, 20,
                   hDlg, (HMENU)20023, hInst, NULL);
-  CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                  WS_CHILD | WS_VISIBLE | ES_PASSWORD | ES_AUTOHSCROLL, editX,
-                  firstY + blockGap * 2 + 24, editW, 32, hDlg, (HMENU)2003,
-                  hInst, NULL);
+  HWND hConfirmPw = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                    WS_CHILD | WS_VISIBLE | ES_PASSWORD |
+                                        ES_AUTOHSCROLL | ES_MULTILINE,
+                                    editX, firstY + blockGap * 2 + 24, editW,
+                                    32, hDlg, (HMENU)2003, hInst, NULL);
+  ApplyDialogPasswordMask(hConfirmPw, false);
+  CreateDialogPasswordToggleButton(hDlg, hInst, editX + editW - 28,
+                                   firstY + blockGap * 2 + 24,
+                                   toggleConfirmPwId);
   config.initialFocus = hOldPw;
 
   const int btnW = 65;

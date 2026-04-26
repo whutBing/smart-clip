@@ -190,6 +190,36 @@ static int GetControlX(int controlWidth) {
   return SETTINGS_WIDTH - CONTENT_PADDING - controlWidth;
 }
 
+static bool IsOverDataDirPath(POINT pt) {
+  if (g_currentSettingsTab != 2)
+    return false;
+
+  int contentLeft = SIDEBAR_W + CONTENT_PADDING;
+  int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
+  int row2Y = GetRowY(2);
+  RECT rcPath = {contentLeft, row2Y + 30, contentRight - 70, row2Y + 50};
+  return PtInRect(&rcPath, pt) != FALSE;
+}
+
+static std::wstring BuildDataSizeText() {
+  ULONGLONG usedBytes = GetDataDirSize();
+
+  std::wstring filePath = GetDataFilePath();
+  wchar_t volumePath[MAX_PATH] = {};
+  bool hasVolumePath =
+      GetVolumePathNameW(filePath.c_str(), volumePath, _countof(volumePath)) !=
+      FALSE;
+
+  ULARGE_INTEGER freeBytes = {};
+  if (hasVolumePath &&
+      GetDiskFreeSpaceExW(volumePath, NULL, NULL, &freeBytes) != FALSE) {
+    return FormatFileSize(usedBytes) + L" / " +
+           FormatFileSize(freeBytes.QuadPart);
+  }
+
+  return FormatFileSize(usedBytes);
+}
+
 static std::wstring FormatHotkeyText(UINT mod, UINT vk,
                                      const wchar_t *fallbackKeyName) {
   std::wstring text;
@@ -213,11 +243,58 @@ static std::wstring FormatHotkeyText(UINT mod, UINT vk,
   return text;
 }
 
+static void SetHotkeyEditPlaceholder(HWND hwnd, const wchar_t *text) {
+  if (!hwnd)
+    return;
+  SendMessageW(hwnd, 0x1501, TRUE, (LPARAM)text); // EM_SETCUEBANNER
+}
+
 static void SyncHotkeyEditTextRect(HWND hwnd) {
   if (!hwnd)
     return;
+  RECT rcClient = {};
+  GetClientRect(hwnd, &rcClient);
+  if (rcClient.right <= rcClient.left || rcClient.bottom <= rcClient.top)
+    return;
+
+  HDC hdc = GetDC(hwnd);
+  if (!hdc)
+    return;
+
+  HFONT hFont = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+  HFONT hOldFont = NULL;
+  if (hFont)
+    hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+  TEXTMETRICW tm = {};
+  GetTextMetricsW(hdc, &tm);
+  LOGFONTW lf = {};
+  if (hFont)
+    GetObjectW(hFont, sizeof(lf), &lf);
+  if (hOldFont)
+    SelectObject(hdc, hOldFont);
+  ReleaseDC(hwnd, hdc);
+
+  int fontHeight = lf.lfHeight != 0 ? abs(lf.lfHeight) : (int)tm.tmHeight;
+  int textHeight = std::max(1, fontHeight + (int)tm.tmExternalLeading);
+  int availableHeight = (int)(rcClient.bottom - rcClient.top);
+  int topPadding = (availableHeight - textHeight) / 2;
+  if (topPadding < 3)
+    topPadding = 3;
+  int bottomPadding = availableHeight - textHeight - topPadding;
+  if (bottomPadding < 3) {
+    bottomPadding = 3;
+    topPadding = std::max(3, availableHeight - textHeight - bottomPadding);
+  }
+
+  RECT rcText = {10,
+                 topPadding,
+                 std::max(11, (int)rcClient.right - 10),
+                 std::max(topPadding + textHeight + 1,
+                          (int)rcClient.bottom - bottomPadding)};
+  SendMessageW(hwnd, EM_SETRECT, 0, (LPARAM)&rcText);
   SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-               MAKELONG(8, 8));
+               MAKELONG(0, 0));
   InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -400,6 +477,7 @@ static void ClearRecordedHotkey(HWND hwnd, bool isSearchHotkey) {
     g_searchHotkeyModifiers = 0;
     g_searchHotkeyVirtualKey = 0;
     SetWindowTextW(hwnd, L"");
+    SetHotkeyEditPlaceholder(hwnd, L"请输入快捷键");
   } else {
     g_isRecordingHotkey = false;
     g_isHotkeyEnabled = false;
@@ -407,6 +485,7 @@ static void ClearRecordedHotkey(HWND hwnd, bool isSearchHotkey) {
     g_hotkeyVirtualKey = 0;
     UnregisterHotkey(g_hwndMain);
     SetWindowTextW(hwnd, L"");
+    SetHotkeyEditPlaceholder(hwnd, L"请输入快捷键");
   }
   SaveHotkeySettings();
   UpdateHotkeyConflictState();
@@ -616,7 +695,7 @@ static void SwitchSettingsTab(int tab) {
 
   // 切换到数据页时刷新磁盘空间
   if (tab == 2) {
-    g_dataSizeText = FormatFileSize(GetDataDirSize());
+    g_dataSizeText = BuildDataSizeText();
   }
 
   // 切换到智能操作页时刷新控件
@@ -1618,9 +1697,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       int row0Y = GetRowY(0);
       SelectObject(hdc, g_hTitleFont);
       SetTextColor(hdc, COLOR_ACCENT);
-      RECT rcSize = {contentRight - 150, row0Y + 12, contentRight, row0Y + 30};
+      RECT rcSize = {contentRight - 220, row0Y + 12, contentRight, row0Y + 30};
       DrawTextW(hdc, g_dataSizeText.c_str(), -1, &rcSize,
-                DT_RIGHT | DT_SINGLELINE);
+                DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
       // 第1行右侧：蓝色粘贴次数
       extern int g_pasteCount;
@@ -1982,6 +2061,19 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     break;
   }
 
+  case WM_SETCURSOR:
+    if ((HWND)wParam == hwnd && LOWORD(lParam) == HTCLIENT) {
+      POINT pt = {};
+      if (GetCursorPos(&pt)) {
+        ScreenToClient(hwnd, &pt);
+        if (IsOverDataDirPath(pt)) {
+          SetCursor(LoadCursorW(NULL, IDC_HAND));
+          return TRUE;
+        }
+      }
+    }
+    break;
+
   case WM_MOUSEMOVE: {
     POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
     int newHover = -1;
@@ -2002,18 +2094,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // 数据目录路径悬浮检测
     if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
-      int row2Y = GetRowY(2);
-      bool overPath = (pt.y >= row2Y + 30 && pt.y <= row2Y + 50 &&
-                        pt.x < SETTINGS_WIDTH - CONTENT_PADDING - 70);
+      bool overPath = IsOverDataDirPath(pt);
       if (overPath && !g_dataDirHovered) {
         g_dataDirHovered = true;
         SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
-        SetCursor(LoadCursorW(NULL, IDC_HAND));
       } else if (!overPath && g_dataDirHovered) {
         g_dataDirHovered = false;
         SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
       }
-      if (overPath) SetCursor(LoadCursorW(NULL, IDC_HAND));
     } else if (g_dataDirHovered) {
       g_dataDirHovered = false;
       SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
@@ -2250,7 +2338,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
                                          .c_str(),
                                      L"确认迁移", MB_YESNO | MB_ICONQUESTION);
             if (result == IDYES) {
-              MigrateDataDir(path);
+              if (MigrateDataDir(path)) {
+                g_dataSizeText = BuildDataSizeText();
+                InvalidateRect(hwnd, NULL, TRUE);
+              }
             }
           }
           CoTaskMemFree(pidl);
@@ -2263,7 +2354,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             L"确认清理", MB_YESNO | MB_ICONWARNING);
         if (result == IDYES) {
           ClearNonFavoriteHistory();
-          g_dataSizeText = FormatFileSize(GetDataDirSize());
+          g_dataSizeText = BuildDataSizeText();
           InvalidateRect(hwnd, NULL, TRUE);
           if (g_isNotificationEnabled)
             ShowTrayBalloon(g_hwndMain, L"提示", L"非收藏数据已清理");
@@ -2278,7 +2369,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         if (result == IDYES) {
           extern void CleanInvalidImageRecords();
           CleanInvalidImageRecords();
-          g_dataSizeText = FormatFileSize(GetDataDirSize());
+          g_dataSizeText = BuildDataSizeText();
           InvalidateRect(hwnd, NULL, TRUE);
           if (g_isNotificationEnabled)
             ShowTrayBalloon(g_hwndMain, L"提示", L"失效图片记录已清理");
@@ -2336,9 +2427,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       g_imagePreviewQuality =
           (ImagePreviewQuality)g_activeDropdown.selectedIndex;
       SaveHotkeySettings();
-      extern HWND g_hwndListBox;
-      if (g_hwndListBox)
-        InvalidateRect(g_hwndListBox, NULL, TRUE);
+      ApplyImagePreviewQualityChange();
       if (g_hwndImagePreviewCombo)
         InvalidateRect(g_hwndImagePreviewCombo, NULL, TRUE);
       return 0;
@@ -2396,9 +2485,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         g_isRecordingHotkey = false;
         if (g_isHotkeyEnabled)
           RegisterHotkey(g_hwndMain);
-        std::wstring text = FormatHotkeyText(g_hotkeyModifiers,
-                                             g_hotkeyVirtualKey, L"Z");
+        std::wstring text =
+            FormatHotkeyText(g_hotkeyModifiers, g_hotkeyVirtualKey, L"");
         SetWindowTextW(g_hwndHotkeyEdit, text.c_str());
+        SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, L"请输入快捷键");
       }
     }
     if (wID == IDC_SEARCH_HOTKEY_EDIT) {
@@ -2414,6 +2504,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         std::wstring text = FormatHotkeyText(g_searchHotkeyModifiers,
                                              g_searchHotkeyVirtualKey, L"F");
         SetWindowTextW(g_hwndSearchHotkeyEdit, text.c_str());
+        SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
       }
     }
 
@@ -2649,11 +2740,12 @@ static void ConfigureSettingsEdit(HWND hwnd) {
 }
 
 static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
-  int y = GetRowY(rowIndex) + (ROW_HEIGHT - 28) / 2;
+  int y = GetRowY(rowIndex) + (ROW_HEIGHT - 32) / 2;
   int x = GetControlX(180);
   return CreateWindowExW(0, L"EDIT", NULL,
-                         WS_CHILD | WS_TABSTOP | ES_CENTER | ES_AUTOHSCROLL,
-                         x, y, 180, 28, parent, (HMENU)(INT_PTR)ctlId,
+                         WS_CHILD | WS_TABSTOP | ES_CENTER | ES_AUTOHSCROLL |
+                             ES_MULTILINE,
+                         x, y, 180, 32, parent, (HMENU)(INT_PTR)ctlId,
                          GetModuleHandleW(NULL), NULL);
 }
 
@@ -2827,19 +2919,26 @@ void ShowSettingsDialog(HWND hwndParent) {
   ConfigureSettingsEdit(g_hwndHotkeyEdit);
   SendMessageW(g_hwndHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
   g_oldEditProc = (WNDPROC)SetWindowLongPtrW(g_hwndHotkeyEdit, GWLP_WNDPROC,
-                                             (LONG_PTR)IosEditProc);
-  std::wstring hkText = FormatHotkeyText(oldMod, oldVk, L"");
+                                             (LONG_PTR)HotkeyEditProc);
+  std::wstring hkText =
+      (g_isHotkeyEnabled && oldMod != 0 && oldVk != 0)
+          ? FormatHotkeyText(oldMod, oldVk, L"")
+          : L"";
   SetWindowTextW(g_hwndHotkeyEdit, hkText.c_str());
+  SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, L"请输入快捷键");
+  SyncHotkeyEditTextRect(g_hwndHotkeyEdit);
 
   g_hwndSearchHotkeyEdit =
       CreateHotkeyEditBox(hwndDlg, 1, IDC_SEARCH_HOTKEY_EDIT);
   ConfigureSettingsEdit(g_hwndSearchHotkeyEdit);
   SendMessageW(g_hwndSearchHotkeyEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
   g_oldSearchEditProc = (WNDPROC)SetWindowLongPtrW(
-      g_hwndSearchHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+      g_hwndSearchHotkeyEdit, GWLP_WNDPROC, (LONG_PTR)SearchHotkeyEditProc);
   std::wstring shText =
       FormatHotkeyText(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, L"F");
   SetWindowTextW(g_hwndSearchHotkeyEdit, shText.c_str());
+  SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
+  SyncHotkeyEditTextRect(g_hwndSearchHotkeyEdit);
 
   g_hwndToggleQuickPaste = CreateToggle(hwndDlg, 2, IDC_QUICK_PASTE_CHECK);
 

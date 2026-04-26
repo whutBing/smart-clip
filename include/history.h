@@ -72,6 +72,7 @@ void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height
 void AddImageFileToHistory(const std::wstring& filePath, const std::vector<BYTE>& imageData, int width, int height);  // 添加图片文件（只保存缩略图和路径）
 void AddFileToHistory(const std::wstring& filePath);
 void UpdateListBox();
+void ApplyImagePreviewQualityChange();
 void ClearIconCache();  // 清理图标缓存
 std::wstring GetImagesPath();  // 获取图片存储目录
 std::wstring GetThumbsPath();  // 获取缩略图存储目录
