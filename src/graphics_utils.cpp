@@ -1,15 +1,18 @@
 #include "graphics_utils.h"
+#include <algorithm>
 
-HBITMAP CreateMenuIconBitmap(const wchar_t* iconChar, COLORREF color) {
-    const int size = 16;
+HBITMAP CreateMenuIconBitmap(const wchar_t* iconChar, COLORREF color,
+                             int verticalPadding) {
+    const int width = 16;
+    const int height = 16 + std::max(0, verticalPadding) * 2;
 
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = size;
-    bmi.bmiHeader.biHeight = -size;
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -24,7 +27,7 @@ HBITMAP CreateMenuIconBitmap(const wchar_t* iconChar, COLORREF color) {
 
     COLORREF menuBg = GetSysColor(COLOR_MENU);
     Gdiplus::SolidBrush bgBrush(Gdiplus::Color(255, GetRValue(menuBg), GetGValue(menuBg), GetBValue(menuBg)));
-    graphics.FillRectangle(&bgBrush, 0, 0, size, size);
+    graphics.FillRectangle(&bgBrush, 0, 0, width, height);
 
     Gdiplus::FontFamily fontFamily(L"Segoe MDL2 Assets");
     Gdiplus::Font font(&fontFamily, 11, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
@@ -33,7 +36,7 @@ HBITMAP CreateMenuIconBitmap(const wchar_t* iconChar, COLORREF color) {
     Gdiplus::StringFormat format;
     format.SetAlignment(Gdiplus::StringAlignmentCenter);
     format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-    Gdiplus::RectF rect(0, 0, (float)size, (float)size);
+    Gdiplus::RectF rect(0, 0, (float)width, (float)height);
     graphics.DrawString(iconChar, 1, &font, rect, &format, &textBrush);
 
     SelectObject(hdcMem, hOldBitmap);

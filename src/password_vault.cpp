@@ -363,8 +363,9 @@ bool TryWindowsHelloAuth(HWND hwndParent) {
     (*ppAsyncOp)->Release(pAsyncOp);
     (*ppVtbl)->Release(pFactory);
 
-    // 0 = Verified
-    return SUCCEEDED(hr) && (result == 0);
+    // 0 = Verified, 其余包括 DeviceNotPresent / NotConfiguredForUser /
+    // DisabledByPolicy / DeviceBusy / RetriesExhausted / Canceled 都视为失败。
+    return SUCCEEDED(hr) && result == 0;
 }
 
 // ==================== 序列化/反序列化 ====================

@@ -2468,7 +2468,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (wID == IDC_AUTH_METHOD_COMBO && wNotify == CBN_SELCHANGE) {
       int sel = g_activeDropdown.selectedIndex;
       g_vaultAuthMethod = sel;
+      g_vaultUnlocked = false;
+      g_passwords.clear();
       SaveVaultSettings();
+      if (g_hwndMain) {
+        extern void UpdatePasswordListBox();
+        UpdatePasswordListBox();
+        InvalidateRect(g_hwndMain, NULL, FALSE);
+      }
       if (g_hwndAuthMethodCombo)
         InvalidateRect(g_hwndAuthMethodCombo, NULL, TRUE);
       return 0;
