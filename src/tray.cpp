@@ -1,3 +1,4 @@
+#include "i18n.h"
 #include "tray.h"
 #include "resource.h"
 
@@ -38,7 +39,7 @@ void AddTrayIcon(HWND hwnd) {
         g_nid.hIcon = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
     }
 
-    wcscpy_s(g_nid.szTip, L"Smart Clip");
+    wcscpy_s(g_nid.szTip, T(STR_TRAY_TIP));
 
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }

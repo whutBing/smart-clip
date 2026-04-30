@@ -2,9 +2,11 @@
 #include "graphics_utils.h"
 #include "history.h"
 #include "hotkey.h"
+#include "i18n.h"
 #include "password_vault.h"
 #include "resource.h"
 #include "smart_action.h"
+#include "theme.h"
 #include "tray.h"
 #include <commctrl.h>
 #include <gdiplus.h>
@@ -34,33 +36,33 @@ extern HWND g_hwndMain;
 
 // ==================== 颜色辅助 ====================
 inline COLORREF GetSettingsBgColor() {
-  return g_isDarkMode ? RGB(32, 32, 36) : RGB(248, 248, 248);
+  return GetThemeSurfaceAltColor();
 }
 inline COLORREF GetSidebarBgColor() {
-  return g_isDarkMode ? RGB(28, 28, 32) : RGB(238, 238, 238);
+  return GetThemeSidebarBgColor();
 }
 inline COLORREF GetSidebarHoverColor() {
-  return g_isDarkMode ? RGB(42, 42, 46) : RGB(225, 225, 225);
+  return GetThemeSidebarHoverColor();
 }
 inline COLORREF GetDescTextColor() {
-  return g_isDarkMode ? RGB(140, 140, 145) : RGB(130, 130, 130);
+  return GetThemeTextSecondaryColor();
 }
 inline COLORREF GetSeparatorColor() {
-  return g_isDarkMode ? RGB(55, 55, 58) : RGB(225, 225, 225);
+  return GetThemeSeparatorColor();
 }
 inline COLORREF GetToggleOffColor() {
-  return g_isDarkMode ? RGB(85, 85, 85) : RGB(190, 190, 190);
+  return GetThemeToggleOffColor();
 }
 inline COLORREF GetSettingsTextColor() {
-  return g_isDarkMode ? RGB(226, 222, 226) : RGB(60, 60, 60);
+  return GetThemeTextPrimaryColor();
 }
 inline COLORREF GetSettingsEditBg() {
-  return g_isDarkMode ? RGB(46, 46, 48) : RGB(255, 255, 255);
+  return GetThemeInputBgColor();
 }
 inline COLORREF GetTitlebarBgColor() {
-  return g_isDarkMode ? RGB(24, 24, 28) : RGB(245, 245, 245);
+  return GetThemeTitlebarBgColor();
 }
-#define COLOR_ACCENT (g_isDarkMode ? RGB(104, 142, 196) : RGB(0, 120, 215))
+#define COLOR_ACCENT (GetThemeAccentColor())
 
 // ==================== 全局变量 ====================
 bool g_isSettingsDialogOpen = false;
@@ -102,6 +104,8 @@ static HWND g_hwndToggleSmoothScroll = NULL;
 static HWND g_hwndToggleScrollbar = NULL;
 static HWND g_hwndToggleColorDot = NULL;
 static HWND g_hwndThemeCombo = NULL;
+static HWND g_hwndThemeStyleCombo = NULL;
+static HWND g_hwndLanguageCombo = NULL;
 static HWND g_hwndImagePreviewCombo = NULL;
 static HWND g_hwndHotkeyEdit = NULL;
 static HWND g_hwndSearchHotkeyEdit = NULL;
@@ -661,6 +665,10 @@ static void SwitchSettingsTab(int tab) {
     ShowWindow(g_hwndScrollbarTimeoutEdit, showGen);
   if (g_hwndThemeCombo)
     ShowWindow(g_hwndThemeCombo, showGen);
+  if (g_hwndThemeStyleCombo)
+    ShowWindow(g_hwndThemeStyleCombo, showGen);
+  if (g_hwndLanguageCombo)
+    ShowWindow(g_hwndLanguageCombo, showGen);
   if (g_hwndImagePreviewCombo)
     ShowWindow(g_hwndImagePreviewCombo, showGen);
   if (g_hwndHistoryLimitEdit)
@@ -729,65 +737,66 @@ static void SwitchSettingsTab(int tab) {
 // ==================== 侧边栏数据 ====================
 struct SidebarItem {
   const wchar_t *icon;
-  const wchar_t *label;
+  StringId labelId;
 };
 static const SidebarItem g_sidebarItems[] = {
-    {L"\uE713", L"通用"},
-    {L"\uE765", L"快捷键"},
-
-    {L"", L"数据"},
-    {L"", L"智能操作"},
-    {L"", L"密码"},
+    {L"\uE713", STR_SETTINGS_GENERAL},
+    {L"\uE765", STR_SETTINGS_HOTKEY},
+    {L"", STR_SETTINGS_DATA},
+    {L"", STR_SETTINGS_SMART_ACTION},
+    {L"", STR_SETTINGS_PASSWORD},
 };
 #define SIDEBAR_COUNT 5
 
 // 设置行数据
 struct SettingRowInfo {
-  const wchar_t *title;
-  const wchar_t *desc;
+  StringId titleId;
+  StringId descId;
 };
 
 static const SettingRowInfo g_generalRows[] = {
-    {L"消息通知", L"操作时显示系统通知"},
-    {L"平滑滚动", L"列表滚动时使用平滑动画"},
-    {L"显示滚动条", L"显示右侧悬浮滚动条并支持拖拽"},
-    {L"停留时间", L"设置滚动条停止后的停留时长"},
-    {L"主题模式", L"切换日间、夜间或跟随系统"},
-    {L"图片预览质量", L"设置剪贴板图片的预览清晰度"},
-    {L"历史记录数量", L"最多保存的剪贴板记录条数"},
+    {STR_ROW_NOTIFICATION, STR_ROW_NOTIFICATION_DESC},
+    {STR_ROW_SMOOTH_SCROLL, STR_ROW_SMOOTH_SCROLL_DESC},
+    {STR_ROW_SCROLLBAR, STR_ROW_SCROLLBAR_DESC},
+    {STR_ROW_SCROLLBAR_DELAY, STR_ROW_SCROLLBAR_DELAY_DESC},
+    {STR_ROW_THEME_MODE, STR_ROW_THEME_MODE_DESC},
+    {STR_ROW_THEME_STYLE, STR_ROW_THEME_STYLE_DESC},
+    {STR_ROW_LANGUAGE, STR_ROW_LANGUAGE_DESC},
+    {STR_ROW_IMAGE_PREVIEW, STR_ROW_IMAGE_PREVIEW_DESC},
+    {STR_ROW_HISTORY_LIMIT, STR_ROW_HISTORY_LIMIT_DESC},
 };
 static const SettingRowInfo g_hotkeyRows[] = {
-    {L"切换快捷键", L"显示/隐藏 Smart Clip 窗口"},
-    {L"搜索框快捷键", L"聚焦搜索框的快捷键"},
-    {L"快捷粘贴", L"使用修饰键+数字快速粘贴"},
-    {L"快捷粘贴修饰键", L"选择快捷粘贴使用的修饰键"},
+    {STR_ROW_HOTKEY_TOGGLE, STR_ROW_HOTKEY_TOGGLE_DESC},
+    {STR_ROW_HOTKEY_SEARCH, STR_ROW_HOTKEY_SEARCH_DESC},
+    {STR_ROW_QUICK_PASTE, STR_ROW_QUICK_PASTE_DESC},
+    {STR_ROW_QUICK_PASTE_MOD, STR_ROW_QUICK_PASTE_MOD_DESC},
 };
 static const SettingRowInfo g_dataRows[] = {
-    {L"占用磁盘空间", L""},
-    {L"粘贴次数", L""},
-    {L"设置数据目录", L""},
-    {L"清理非收藏数据", L"删除所有未收藏的历史记录"},
-    {L"删除失效图片", L"清理原始图片已丢失的记录"},
+    {STR_ROW_DATA_SIZE, STR_COUNT},
+    {STR_ROW_PASTE_COUNT, STR_COUNT},
+    {STR_ROW_SET_DATA_DIR, STR_COUNT},
+    {STR_ROW_CLEAR_NON_FAV, STR_ROW_CLEAR_NON_FAV_DESC},
+    {STR_ROW_CLEAN_INVALID_IMAGES, STR_ROW_CLEAN_INVALID_IMAGES_DESC},
 };
 static const SettingRowInfo g_passwordRows[] = {
-    {L"开启密码保护", L"访问密码库时需要验证身份"},
-    {L"认证方式", L"选择解锁密码库的验证方式"},
-    {L"重置主密码", L"修改主密码（需验证旧密码）"},
+    {STR_ROW_PASSWORD_PROTECTION, STR_ROW_PASSWORD_PROTECTION_DESC},
+    {STR_ROW_PASSWORD_AUTH, STR_ROW_PASSWORD_AUTH_DESC},
+    {STR_ROW_PASSWORD_RESET, STR_ROW_PASSWORD_RESET_DESC},
 };
 
 // 分类标题
 struct CategoryHeader {
-  const wchar_t *title;
-  const wchar_t *desc;
+  StringId titleId;
+  StringId descId;
   const SettingRowInfo *rows;
   int rowCount;
 };
 static const CategoryHeader g_categories[] = {
-    {L"通用", L"基本设置和外观", g_generalRows, 7},
-    {L"快捷键", L"快捷键配置", g_hotkeyRows, 4},
-    {L"数据", L"", g_dataRows, 5},
-    {L"智能操作", L"根据内容自动执行操作", NULL, 0},
-    {L"密码", L"密码库保护设置", g_passwordRows, 3},
+    {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 9},
+    {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 4},
+    {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 5},
+    {STR_SETTINGS_SMART_ACTION, STR_SETTINGS_SMART_ACTION_DESC, NULL, 0},
+    {STR_SETTINGS_PASSWORD, STR_SETTINGS_PASSWORD_DESC, g_passwordRows, 3},
 };
 
 // ==================== 绘制辅助 ====================
@@ -845,8 +854,15 @@ static DropdownInfo g_activeDropdown = {};
 static int g_dropdownHoverIndex = -1;
 static bool g_dropdownClassRegistered = false;
 
-static const wchar_t *g_themeItems[] = {L"日间", L"夜间", L"跟随系统"};
-static const wchar_t *g_previewItems[] = {L"关闭", L"模糊", L"标清", L"高清"};
+static const StringId g_themeItemIds[] = {STR_THEME_LIGHT, STR_THEME_DARK,
+                                          STR_THEME_SYSTEM};
+static const StringId g_themeStyleItemIds[] = {
+    STR_THEME_STYLE_CLASSIC, STR_THEME_STYLE_GRAPHITE,
+    STR_THEME_STYLE_WARM, STR_THEME_STYLE_HIGH_CONTRAST};
+static const StringId g_languageItemIds[] = {STR_LANGUAGE_ZH_CN,
+                                             STR_LANGUAGE_EN_US};
+static const StringId g_previewItemIds[] = {STR_PREVIEW_OFF, STR_PREVIEW_BLUR,
+                                            STR_PREVIEW_SD, STR_PREVIEW_HD};
 static const wchar_t *g_quickPasteItems[] = {
     L"Alt", L"Ctrl", L"Shift", L"Ctrl+Alt", L"Ctrl+Shift", L"Alt+Shift"};
 static const wchar_t *g_authMethodItems[] = {L"主密码", L"Windows Hello"};
@@ -854,9 +870,13 @@ static const wchar_t *g_authMethodItems[] = {L"主密码", L"Windows Hello"};
 // 获取下拉按钮当前显示文字
 static const wchar_t *GetDropdownText(int ctlId) {
   if (ctlId == IDC_THEME_COMBO)
-    return g_themeItems[(int)g_themeMode];
+    return T(g_themeItemIds[(int)g_themeMode]);
+  if (ctlId == IDC_THEME_STYLE_COMBO)
+    return T(g_themeStyleItemIds[(int)g_themeId]);
+  if (ctlId == IDC_LANGUAGE_COMBO)
+    return T(g_languageItemIds[(int)g_appLanguage]);
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
-    return g_previewItems[(int)g_imagePreviewQuality];
+    return T(g_previewItemIds[(int)g_imagePreviewQuality]);
   if (ctlId == IDC_QUICK_PASTE_COMBO) {
     if (g_quickPasteModifiers == MOD_ALT)
       return g_quickPasteItems[0];
@@ -880,6 +900,10 @@ static const wchar_t *GetDropdownText(int ctlId) {
 static int GetDropdownSelectedIndex(int ctlId) {
   if (ctlId == IDC_THEME_COMBO)
     return (int)g_themeMode;
+  if (ctlId == IDC_THEME_STYLE_COMBO)
+    return (int)g_themeId;
+  if (ctlId == IDC_LANGUAGE_COMBO)
+    return (int)g_appLanguage;
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
     return (int)g_imagePreviewQuality;
   if (ctlId == IDC_QUICK_PASTE_COMBO) {
@@ -985,7 +1009,7 @@ LRESULT CALLBACK DropdownPopupProc(HWND hwnd, UINT msg, WPARAM wParam,
 
       // 悬浮高亮
       if (i == g_dropdownHoverIndex) {
-        COLORREF hc = g_isDarkMode ? RGB(55, 55, 60) : RGB(230, 230, 230);
+        COLORREF hc = GetThemeDropdownHoverColor();
         Gdiplus::GraphicsPath hoverPath;
         CreateRoundRectPath(&hoverPath, (int)itemRect.X, (int)itemRect.Y,
                             (int)itemRect.Width, (int)itemRect.Height, 6);
@@ -1087,10 +1111,28 @@ static void ShowDropdownPopup(HWND hwndBtn, int ctlId) {
 
   g_activeDropdown.ctlId = ctlId;
   if (ctlId == IDC_THEME_COMBO) {
-    g_activeDropdown.items = g_themeItems;
+    static const wchar_t *s_themeItems[3];
+    for (int i = 0; i < 3; ++i)
+      s_themeItems[i] = T(g_themeItemIds[i]);
+    g_activeDropdown.items = s_themeItems;
     g_activeDropdown.itemCount = 3;
+  } else if (ctlId == IDC_THEME_STYLE_COMBO) {
+    static const wchar_t *s_themeStyleItems[4];
+    for (int i = 0; i < 4; ++i)
+      s_themeStyleItems[i] = T(g_themeStyleItemIds[i]);
+    g_activeDropdown.items = s_themeStyleItems;
+    g_activeDropdown.itemCount = 4;
+  } else if (ctlId == IDC_LANGUAGE_COMBO) {
+    static const wchar_t *s_languageItems[2];
+    for (int i = 0; i < 2; ++i)
+      s_languageItems[i] = T(g_languageItemIds[i]);
+    g_activeDropdown.items = s_languageItems;
+    g_activeDropdown.itemCount = 2;
   } else if (ctlId == IDC_IMAGE_PREVIEW_COMBO) {
-    g_activeDropdown.items = g_previewItems;
+    static const wchar_t *s_previewItems[4];
+    for (int i = 0; i < 4; ++i)
+      s_previewItems[i] = T(g_previewItemIds[i]);
+    g_activeDropdown.items = s_previewItems;
     g_activeDropdown.itemCount = 4;
   } else if (ctlId == IDC_QUICK_PASTE_COMBO) {
     g_activeDropdown.items = g_quickPasteItems;
@@ -1594,7 +1636,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     HFONT hOld = (HFONT)SelectObject(hdc, g_hHeaderFont);
     SetTextColor(hdc, GetSettingsTextColor());
     RECT rcTitleText = {16, 0, 200, SETTINGS_TITLEBAR_H};
-    DrawTextW(hdc, L"设置", -1, &rcTitleText,
+    DrawTextW(hdc, T(STR_SETTINGS_TITLE), -1, &rcTitleText,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     // 侧边栏背景
@@ -1632,7 +1674,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       // 文字
       SelectObject(hdc, g_hSidebarFont);
       RECT rcLabel = {48, itemY, SIDEBAR_W - 8, itemY + SIDEBAR_ITEM_H};
-      DrawTextW(hdc, g_sidebarItems[i].label, -1, &rcLabel,
+      DrawTextW(hdc, T(g_sidebarItems[i].labelId), -1, &rcLabel,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -1652,14 +1694,15 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     SetTextColor(hdc, GetSettingsTextColor());
     RECT rcCatTitle = {contentLeft, SETTINGS_TITLEBAR_H + 10, contentRight,
                        SETTINGS_TITLEBAR_H + 32};
-    DrawTextW(hdc, cat.title, -1, &rcCatTitle,
+    DrawTextW(hdc, T(cat.titleId), -1, &rcCatTitle,
               DT_LEFT | DT_TOP | DT_SINGLELINE);
 
     SelectObject(hdc, g_hHeaderDescFont);
     SetTextColor(hdc, GetDescTextColor());
     RECT rcCatDesc = {contentLeft, SETTINGS_TITLEBAR_H + 34, contentRight,
                       SETTINGS_TITLEBAR_H + 50};
-    DrawTextW(hdc, cat.desc, -1, &rcCatDesc, DT_LEFT | DT_TOP | DT_SINGLELINE);
+    DrawTextW(hdc, cat.descId == STR_COUNT ? L"" : T(cat.descId), -1,
+              &rcCatDesc, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
     // 设置行
     for (int i = 0; i < cat.rowCount; i++) {
@@ -1669,14 +1712,15 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       SelectObject(hdc, g_hTitleFont);
       SetTextColor(hdc, GetSettingsTextColor());
       RECT rcRowTitle = {contentLeft, rowY + 12, contentRight - 160, rowY + 30};
-      DrawTextW(hdc, cat.rows[i].title, -1, &rcRowTitle,
+      DrawTextW(hdc, T(cat.rows[i].titleId), -1, &rcRowTitle,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
 
       // 描述
       SelectObject(hdc, g_hDescFont);
       SetTextColor(hdc, GetDescTextColor());
       RECT rcRowDesc = {contentLeft, rowY + 32, contentRight - 160, rowY + 48};
-      DrawTextW(hdc, cat.rows[i].desc, -1, &rcRowDesc,
+      DrawTextW(hdc, cat.rows[i].descId == STR_COUNT ? L"" : T(cat.rows[i].descId), -1,
+                &rcRowDesc,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
 
       // 分隔线
@@ -2007,6 +2051,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // 下拉选择器按钮
     if (lpDIS->CtlID == IDC_THEME_COMBO ||
+        lpDIS->CtlID == IDC_THEME_STYLE_COMBO ||
+        lpDIS->CtlID == IDC_LANGUAGE_COMBO ||
         lpDIS->CtlID == IDC_IMAGE_PREVIEW_COMBO ||
         lpDIS->CtlID == IDC_QUICK_PASTE_COMBO ||
         lpDIS->CtlID == IDC_AUTH_METHOD_COMBO) {
@@ -2381,6 +2427,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         ShowDropdownPopup(g_hwndThemeCombo, IDC_THEME_COMBO);
         return 0;
       }
+      if (wID == IDC_THEME_STYLE_COMBO) {
+        ShowDropdownPopup(g_hwndThemeStyleCombo, IDC_THEME_STYLE_COMBO);
+        return 0;
+      }
       if (wID == IDC_IMAGE_PREVIEW_COMBO) {
         ShowDropdownPopup(g_hwndImagePreviewCombo, IDC_IMAGE_PREVIEW_COMBO);
         return 0;
@@ -2391,6 +2441,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       }
       if (wID == IDC_AUTH_METHOD_COMBO) {
         ShowDropdownPopup(g_hwndAuthMethodCombo, IDC_AUTH_METHOD_COMBO);
+        return 0;
+      }
+      if (wID == IDC_LANGUAGE_COMBO) {
+        ShowDropdownPopup(g_hwndLanguageCombo, IDC_LANGUAGE_COMBO);
         return 0;
       }
     }
@@ -2419,6 +2473,38 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       RedrawWindow(hwnd, NULL, NULL,
                    RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN |
                        RDW_UPDATENOW);
+      return 0;
+    }
+
+    if (wID == IDC_THEME_STYLE_COMBO && wNotify == CBN_SELCHANGE) {
+      int sel = g_activeDropdown.selectedIndex;
+      if (sel >= 0 && sel <= 3) {
+        g_themeId = (ThemeId)sel;
+        ApplyTheme();
+        SaveHotkeySettings();
+        UpdateSettingsBrushes();
+        SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND,
+                         (LONG_PTR)CreateSolidBrush(GetSettingsBgColor()));
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN |
+                         RDW_UPDATENOW);
+      }
+      return 0;
+    }
+
+    if (wID == IDC_LANGUAGE_COMBO && wNotify == CBN_SELCHANGE) {
+      int sel = g_activeDropdown.selectedIndex;
+      if (sel >= 0 && sel <= 1) {
+        g_appLanguage = (AppLanguage)sel;
+        ApplyLanguage();
+        SaveHotkeySettings();
+        UpdateSettingsBrushes();
+        SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND,
+                         (LONG_PTR)CreateSolidBrush(GetSettingsBgColor()));
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN |
+                         RDW_UPDATENOW);
+      }
       return 0;
     }
 
@@ -2889,12 +2975,16 @@ void ShowSettingsDialog(HWND hwndParent) {
   }
 
   g_hwndThemeCombo = CreateSettingsCombo(hwndDlg, 4, IDC_THEME_COMBO, 120);
+  g_hwndThemeStyleCombo =
+      CreateSettingsCombo(hwndDlg, 5, IDC_THEME_STYLE_COMBO, 120);
+  g_hwndLanguageCombo =
+      CreateSettingsCombo(hwndDlg, 6, IDC_LANGUAGE_COMBO, 140);
 
   g_hwndImagePreviewCombo =
-      CreateSettingsCombo(hwndDlg, 5, IDC_IMAGE_PREVIEW_COMBO, 120);
+      CreateSettingsCombo(hwndDlg, 7, IDC_IMAGE_PREVIEW_COMBO, 120);
 
   {
-    int limitY = GetRowY(6) + (ROW_HEIGHT - 28) / 2;
+    int limitY = GetRowY(8) + (ROW_HEIGHT - 28) / 2;
     wchar_t limitBuf[16];
     _snwprintf_s(limitBuf, _countof(limitBuf), L"%d", g_maxHistoryCount);
     g_hwndHistoryLimitEdit = CreateWindowExW(

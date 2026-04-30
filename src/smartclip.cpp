@@ -2,6 +2,7 @@
 #include "graphics_utils.h"
 #include "history.h"
 #include "hotkey.h"
+#include "i18n.h"
 #include "image_handler.h"
 #include "password_vault.h"
 #include "resource.h" // 添加资源头文件
@@ -9,6 +10,7 @@
 #include "settings.h"
 #include "smart_action.h"
 #include "text_utils.h"
+#include "theme.h"
 #include "tray.h"
 #include <algorithm> // 用于std::remove_if
 #include <cmath>     // 用于sin函数
@@ -136,10 +138,6 @@ HMENU g_hMenu;
 bool g_isTopmost = false;
 // 置顶按钮悬浮状态
 bool g_isTopmostBtnHover = false;
-// 暗黑模式状态
-bool g_isDarkMode = false;
-// 主题模式设置
-ThemeMode g_themeMode = THEME_LIGHT;
 HWND g_hwndActiveThemedDialog = NULL;
 static HWND g_hwndThemedDialogCloseBtn = NULL;
 static WNDPROC g_oldThemedDialogCloseProc = NULL;
@@ -163,93 +161,21 @@ WNDPROC g_oldTitleMinimizeProc = NULL;
 WNDPROC g_oldTitleMaximizeProc = NULL;
 WNDPROC g_oldTitleCloseProc = NULL;
 
-// 暗黑模式颜色定义
-#define COLOR_LIGHT_BG RGB(245, 245, 245)    // 明亮模式背景色
-#define COLOR_LIGHT_WHITE RGB(255, 255, 255) // 明亮模式白色
-#define COLOR_LIGHT_TEXT RGB(60, 60, 60)     // 明亮模式文字色
-#define COLOR_DARK_BG RGB(23, 23, 26)        // 暗黑模式背景色
-#define COLOR_DARK_WHITE RGB(46, 46, 48)     // 暗黑模式白色（输入框等）
-#define COLOR_DARK_TEXT RGB(226, 222, 226)   // 暗黑模式文字色
-
 // 获取当前模式的颜色
 inline COLORREF GetBgColor() {
-  return g_isDarkMode ? COLOR_DARK_BG : COLOR_LIGHT_BG;
+  return GetThemeWindowBgColor();
 }
 inline COLORREF GetWhiteColor() {
-  return g_isDarkMode ? COLOR_DARK_WHITE : COLOR_LIGHT_WHITE;
+  return GetThemeSurfaceColor();
 }
 inline COLORREF GetTextColor() {
-  return g_isDarkMode ? COLOR_DARK_TEXT : COLOR_LIGHT_TEXT;
+  return GetThemeTextPrimaryColor();
 }
 inline COLORREF GetAccentColor() {
-  return g_isDarkMode ? RGB(104, 142, 196) : RGB(0, 120, 215);
+  return GetThemeAccentColor();
 }
 inline COLORREF GetAccentStrongColor() {
-  return g_isDarkMode ? RGB(124, 160, 210) : RGB(66, 133, 244);
-}
-
-// 检测系统是否为暗黑模式
-bool IsSystemDarkMode() {
-  HKEY hKey;
-  DWORD value = 0;
-  DWORD size = sizeof(value);
-  if (RegOpenKeyExW(
-          HKEY_CURRENT_USER,
-          L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-          0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-    RegQueryValueExW(hKey, L"AppsUseLightTheme", NULL, NULL, (LPBYTE)&value,
-                     &size);
-    RegCloseKey(hKey);
-  }
-  return value == 0; // 0 表示暗黑模式，1 表示明亮模式
-}
-
-// 应用主题
-void ApplyTheme() {
-  bool newDarkMode = false;
-  switch (g_themeMode) {
-  case THEME_LIGHT:
-    newDarkMode = false;
-    break;
-  case THEME_DARK:
-    newDarkMode = true;
-    break;
-  case THEME_SYSTEM:
-    newDarkMode = IsSystemDarkMode();
-    break;
-  }
-
-  if (newDarkMode != g_isDarkMode) {
-    g_isDarkMode = newDarkMode;
-
-    // 更新窗口背景色
-    if (g_hwndMain) {
-      SetClassLongPtrW(g_hwndMain, GCLP_HBRBACKGROUND,
-                       (LONG_PTR)CreateSolidBrush(GetBgColor()));
-
-      // 更新列表框背景色
-      if (g_hwndListBox) {
-        InvalidateRect(g_hwndListBox, NULL, TRUE);
-      }
-
-      // 更新搜索框背景色
-      if (g_hwndSearchBox) {
-        InvalidateRect(g_hwndSearchBox, NULL, TRUE);
-      }
-
-      // 强制重绘窗口
-      InvalidateRect(g_hwndMain, NULL, TRUE);
-      UpdateWindow(g_hwndMain);
-    }
-
-    // 刷新设置对话框
-    if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
-      InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
-    }
-    if (g_hwndActiveThemedDialog && IsWindow(g_hwndActiveThemedDialog)) {
-      SendMessageW(g_hwndActiveThemedDialog, WM_THEMECHANGED, 0, 0);
-    }
-  }
+  return GetThemeAccentStrongColor();
 }
 
 // 当前右键选中的索引
@@ -831,6 +757,39 @@ int CalculateVisibleItemCount(int startIndex) {
   return count > 0 ? count : 1; // 至少返回1
 }
 
+static int GetShortcutIndexForDisplayIndex(int displayIndex) {
+  if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
+    return -1;
+
+  int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+  RECT rcListBox = {};
+  int visibleHeight = 0;
+  if (g_hwndListBox) {
+    GetClientRect(g_hwndListBox, &rcListBox);
+    visibleHeight = rcListBox.bottom - rcListBox.top;
+  }
+  int count = 0;
+  for (int i = g_listBoxTopIndex; i <= displayIndex; ++i) {
+    if (i < 0 || i >= (int)g_displayIndexMap.size())
+      break;
+
+    RECT rcItem = {};
+    if (g_hwndListBox &&
+        SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
+            LB_ERR) {
+      int itemHeight = rcItem.bottom - rcItem.top;
+      if (visibleHeight > 0 && rcItem.top + itemHeight / 2 > visibleHeight)
+        break;
+    }
+
+    ++count;
+    if (i == displayIndex)
+      return (count <= 10 && count <= visibleLimit) ? (count - 1) : -1;
+  }
+
+  return -1;
+}
+
 // 计算下一页的起始索引（确保当前页最后一个不完整显示的项目成为下一页第一个）
 int CalculateNextPageIndex(int currentTopIndex) {
   if (g_hwndListBox == NULL)
@@ -1095,7 +1054,8 @@ static void ShowCustomScrollbar(HWND hwnd, bool showQuickPasteHint = true) {
   g_scrollbarVisible = true;
   if (showQuickPasteHint)
     g_quickPasteHintVisible = true;
-  StartScrollbarHideTimer(hwnd);
+  if (!g_isScrollbarDragging)
+    StartScrollbarHideTimer(hwnd);
 }
 
 static void ApplyListBoxTopIndex(HWND hwnd, int newTop) {
@@ -1522,6 +1482,30 @@ static bool HandleMainNavigationKey(const MSG &msg) {
   case VK_END:
     handled = JumpListSelectionToBoundary(true);
     break;
+  case VK_PRIOR:
+    if (g_hwndListBox && g_listBoxTopIndex > 0) {
+      g_shortcutSkipCount = 0;
+      g_smoothScrollExpectedTop = -1;
+      ApplyListBoxTopIndex(g_hwndListBox,
+                           CalculatePrevPageIndex(g_listBoxTopIndex));
+      ShowCustomScrollbar(g_hwndListBox);
+      handled = true;
+    }
+    break;
+  case VK_NEXT: {
+    if (g_hwndListBox) {
+      int topIndex = CalculateNextPageIndex(g_listBoxTopIndex);
+      if (topIndex > g_listBoxTopIndex &&
+          topIndex < (int)g_displayIndexMap.size()) {
+        g_shortcutSkipCount = 0;
+        g_smoothScrollExpectedTop = -1;
+        ApplyListBoxTopIndex(g_hwndListBox, topIndex);
+        ShowCustomScrollbar(g_hwndListBox);
+        handled = true;
+      }
+    }
+    break;
+  }
   case 'G':
     if (shiftPressed) {
       handled = JumpListSelectionToBoundary(true);
@@ -1976,12 +1960,28 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
   int relativeTop = thumbTop - minThumbTop;
   int contentOffset = (relativeTop * maxScrollOffset + travel / 2) / travel;
   int newTop = GetTopIndexForContentOffset(contentOffset);
-  ApplyListBoxTopIndex(hwnd, newTop);
-  ShowCustomScrollbar(hwnd);
-  if (hadOldThumb) {
-    InvalidateRect(hwnd, &rcOldThumb, FALSE);
+  int oldTop = g_listBoxTopIndex;
+  if (newTop != oldTop) {
+    ApplyListBoxTopIndex(hwnd, newTop);
   }
-  InvalidateCustomScrollbarArea(hwnd, FALSE);
+  g_scrollbarVisible = true;
+
+  RECT rcNewThumb = {};
+  bool hasNewThumb = GetCustomScrollbarThumbRect(hwnd, &rcNewThumb);
+  if (hadOldThumb && hasNewThumb) {
+    RECT rcDirty = {
+        std::min(rcOldThumb.left, rcNewThumb.left),
+        std::min(rcOldThumb.top, rcNewThumb.top),
+        std::max(rcOldThumb.right, rcNewThumb.right),
+        std::max(rcOldThumb.bottom, rcNewThumb.bottom)};
+    InvalidateRect(hwnd, &rcDirty, FALSE);
+  } else if (hadOldThumb) {
+    InvalidateRect(hwnd, &rcOldThumb, FALSE);
+  } else if (hasNewThumb) {
+    InvalidateRect(hwnd, &rcNewThumb, FALSE);
+  } else {
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
+  }
 }
 
 static void HideNativeListBoxScrollbar(HWND hwnd) {
@@ -2066,13 +2066,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         // 最终位置设置
         int finalPos = (int)(g_smoothScrollTarget + 0.5f);
         ApplyListBoxTopIndex(hwnd, finalPos);
-        int actualTop = g_listBoxTopIndex;
-        if (g_smoothScrollExpectedTop >= 0) {
-          g_shortcutSkipCount = g_smoothScrollExpectedTop - actualTop;
-          if (g_shortcutSkipCount < 0)
-            g_shortcutSkipCount = 0;
-          g_smoothScrollExpectedTop = -1;
-        }
+        g_shortcutSkipCount = 0;
+        g_smoothScrollExpectedTop = -1;
       } else {
         g_smoothScrollCurrent += step;
         // 设置滚动位置
@@ -2181,7 +2176,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     RECT rcTrack;
     bool isOverScrollbar =
         GetCustomScrollbarTrackRect(hwnd, &rcTrack) && PtInRect(&rcTrack, pt);
-  if (g_isScrollbarDragging) {
+    if (g_isScrollbarDragging) {
       g_isScrollbarHovered = true;
       DragCustomScrollbarTo(hwnd, pt.y);
       return 0;
@@ -3581,7 +3576,8 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
 
       RECT textRect = rcClient;
       textRect.left += 4;
-      DrawTextW(hdc, L"键入搜索", -1, &textRect, DT_SINGLELINE | DT_VCENTER);
+      DrawTextW(hdc, T(STR_SEARCH_PLACEHOLDER), -1, &textRect,
+                DT_SINGLELINE | DT_VCENTER);
 
       SelectObject(hdc, hOldFont);
     }
@@ -5916,22 +5912,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 创建筛选按钮（自绘样式）
     g_hwndFilterAll = CreateWindowExW(
-        0, L"BUTTON", L"全部", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_ALL), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_ALL, GetModuleHandleW(NULL), NULL);
     g_hwndFilterText = CreateWindowExW(
-        0, L"BUTTON", L"文本", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_TEXT), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_TEXT, GetModuleHandleW(NULL), NULL);
     g_hwndFilterImage = CreateWindowExW(
-        0, L"BUTTON", L"图像", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_IMAGE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_IMAGE, GetModuleHandleW(NULL), NULL);
     g_hwndFilterFile = CreateWindowExW(
-        0, L"BUTTON", L"文件", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_FILE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_FILE, GetModuleHandleW(NULL), NULL);
     g_hwndFilterFavorite = CreateWindowExW(
-        0, L"BUTTON", L"收藏", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_FAVORITE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
     g_hwndFilterPassword = CreateWindowExW(
-        0, L"BUTTON", L"密码", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
+        0, L"BUTTON", T(STR_FILTER_PASSWORD), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_PASSWORD, GetModuleHandleW(NULL), NULL);
 
     // 设置筛选按钮字体（比UI字体大4px）
@@ -5945,6 +5941,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SendMessageW(g_hwndFilterFile, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFavorite, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterPassword, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
+    ApplyLanguage();
     g_passwordFilterOpenState = ShouldShowPasswordFilterOpenState();
     g_passwordFilterAnimFromOpen = g_passwordFilterOpenState;
     g_passwordFilterAnimToOpen = g_passwordFilterOpenState;
@@ -7220,23 +7217,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
           // 在标题行右侧绘制快捷键提示（一直显示，位置随滚动更新）
           if (g_isQuickPasteEnabled) {
-            int visibleIndex =
-                (int)lpDIS->itemID - g_listBoxTopIndex;
-            int shortcutIndex = visibleIndex - g_shortcutSkipCount;
+            int shortcutIndex =
+                GetShortcutIndexForDisplayIndex((int)lpDIS->itemID);
             if (shortcutIndex >= 0 && shortcutIndex < 10) {
-              int visibleItemCount =
-                  CalculateVisibleItemCount(g_listBoxTopIndex);
-              if (visibleIndex < visibleItemCount) {
-                wchar_t keyChar =
-                    (shortcutIndex == 9) ? L'0' : L'1' + shortcutIndex;
-                std::wstring shortcutText =
-                    GetQuickPasteModifierText() + keyChar;
-                RECT rcShortcut = rcHeader;
-                rcShortcut.right -= 4;
-                SetTextColor(hdc, RGB(100, 149, 237)); // 淡蓝色
-                DrawTextW(hdc, shortcutText.c_str(), -1, &rcShortcut,
-                          DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-              }
+              wchar_t keyChar =
+                  (shortcutIndex == 9) ? L'0' : L'1' + shortcutIndex;
+              std::wstring shortcutText = GetQuickPasteModifierText() + keyChar;
+              RECT rcShortcut = rcHeader;
+              rcShortcut.right -= 4;
+              SetTextColor(hdc, RGB(100, 149, 237)); // 淡蓝色
+              DrawTextW(hdc, shortcutText.c_str(), -1, &rcShortcut,
+                        DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
             }
           }
 
@@ -8021,6 +8012,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     } else if (wID == ID_DARKMODE_BUTTON && wNotifyCode == BN_CLICKED) {
       // 切换暗黑模式
       g_isDarkMode = !g_isDarkMode;
+      g_themeMode = g_isDarkMode ? THEME_DARK : THEME_LIGHT;
 
       // 更新窗口背景色
       SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND,
@@ -8041,6 +8033,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                         g_isDarkMode ? L"已切换到暗黑模式"
                                      : L"已切换到明亮模式");
       }
+      SaveHotkeySettings();
 
       // 强制重绘窗口
       InvalidateRect(hwnd, NULL, TRUE);
@@ -8074,12 +8067,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(g_hwndPageDownBtn, NULL, TRUE);
       }
     } else if (wID == ID_PAGE_DOWN_BTN && wNotifyCode == BN_CLICKED) {
-      // 下一页 - 跳过当前页已显示快捷键的项目
-      int visibleCount = CalculateVisibleItemCount(g_listBoxTopIndex);
-      int expectedNextTop = g_listBoxTopIndex + visibleCount;
-      if (expectedNextTop < (int)g_displayIndexMap.size() &&
-          expectedNextTop > g_listBoxTopIndex) {
-        int topIndex = expectedNextTop;
+      // 下一页 - 让下一页从新的首项开始，快捷键重新从 1 编号
+      int topIndex = CalculateNextPageIndex(g_listBoxTopIndex);
+      if (topIndex < (int)g_displayIndexMap.size() &&
+          topIndex > g_listBoxTopIndex) {
+        g_shortcutSkipCount = 0;
+        g_smoothScrollExpectedTop = -1;
 
         // 更新页码
         g_currentPage = topIndex / ITEMS_PER_PAGE;
@@ -8090,17 +8083,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollCurrent = (float)g_listBoxTopIndex;
           g_smoothScrollActive = true;
           g_smoothScrollListBox = g_hwndListBox;
-          g_smoothScrollExpectedTop = expectedNextTop;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
           ShowScrollBar(g_hwndListBox, SB_VERT, FALSE);
           SendMessageW(g_hwndListBox, LB_SETTOPINDEX, topIndex, 0);
-          int actualTop =
+          g_listBoxTopIndex =
               (int)SendMessageW(g_hwndListBox, LB_GETTOPINDEX, 0, 0);
-          g_shortcutSkipCount = expectedNextTop - actualTop;
-          if (g_shortcutSkipCount < 0)
-            g_shortcutSkipCount = 0;
-          g_listBoxTopIndex = actualTop;
           InvalidateRect(g_hwndListBox, NULL, FALSE);
         }
         // 更新按钮状态
@@ -8609,13 +8597,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 托盘菜单：切换消息通知
       g_isNotificationEnabled = !g_isNotificationEnabled;
       if (g_isNotificationEnabled) {
-        ShowTrayBalloon(hwnd, L"设置已更新", L"消息通知已启用");
+        ShowTrayBalloon(hwnd, T(STR_TRAY_NOTIFY_UPDATED),
+                        T(STR_TRAY_NOTIFICATIONS_ENABLED));
       }
     } else if (wID == IDM_THEME_LIGHT) {
       // 托盘菜单：切换到日间模式
       if (g_themeMode != THEME_LIGHT || g_isDarkMode) {
         g_themeMode = THEME_LIGHT;
-        g_isDarkMode = true;
         ApplyTheme();
         SaveHotkeySettings();
         if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
@@ -8626,7 +8614,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 托盘菜单：切换到夜间模式
       if (g_themeMode != THEME_DARK || !g_isDarkMode) {
         g_themeMode = THEME_DARK;
-        g_isDarkMode = false;
         ApplyTheme();
         SaveHotkeySettings();
         if (g_hwndSettingsDlg && IsWindow(g_hwndSettingsDlg)) {
@@ -8959,17 +8946,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       COLORREF textColor = GetTextColor();
       SetBkColor(hdcEdit, bgColor);
       SetTextColor(hdcEdit, textColor);
-      static HBRUSH hBrushLight = NULL;
-      static HBRUSH hBrushDark = NULL;
-      if (g_isDarkMode) {
-        if (!hBrushDark)
-          hBrushDark = CreateSolidBrush(COLOR_DARK_WHITE);
-        return (LRESULT)hBrushDark;
-      } else {
-        if (!hBrushLight)
-          hBrushLight = CreateSolidBrush(COLOR_LIGHT_WHITE);
-        return (LRESULT)hBrushLight;
+      static HBRUSH hBrush = NULL;
+      static COLORREF s_lastColor = CLR_INVALID;
+      if (!hBrush || s_lastColor != bgColor) {
+        if (hBrush)
+          DeleteObject(hBrush);
+        hBrush = CreateSolidBrush(bgColor);
+        s_lastColor = bgColor;
       }
+      return (LRESULT)hBrush;
     }
     break;
   }
@@ -8980,17 +8965,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (hwndListBox == g_hwndListBox) {
       COLORREF bgColor = GetWhiteColor();
       SetBkColor(hdcListBox, bgColor);
-      static HBRUSH hListBrushLight = NULL;
-      static HBRUSH hListBrushDark = NULL;
-      if (g_isDarkMode) {
-        if (!hListBrushDark)
-          hListBrushDark = CreateSolidBrush(COLOR_DARK_WHITE);
-        return (LRESULT)hListBrushDark;
-      } else {
-        if (!hListBrushLight)
-          hListBrushLight = CreateSolidBrush(COLOR_LIGHT_WHITE);
-        return (LRESULT)hListBrushLight;
+      static HBRUSH hListBrush = NULL;
+      static COLORREF s_lastColor = CLR_INVALID;
+      if (!hListBrush || s_lastColor != bgColor) {
+        if (hListBrush)
+          DeleteObject(hListBrush);
+        hListBrush = CreateSolidBrush(bgColor);
+        s_lastColor = bgColor;
       }
+      return (LRESULT)hListBrush;
     }
     break;
   }
@@ -9316,13 +9299,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
 
       mii.wID = IDM_SETTINGS;
-      mii.dwTypeData = (LPWSTR)L"设置";
+      mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_SETTINGS);
       mii.hbmpItem = hSettingsIcon;
       InsertMenuItemW(hTrayMenu, 0, TRUE, &mii);
 
       mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP | MIIM_STATE;
       mii.wID = IDM_NOTIFICATION;
-      mii.dwTypeData = (LPWSTR)L"消息通知";
+      mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_NOTIFICATIONS);
       mii.hbmpItem = hNotificationIcon;
       mii.fState = g_isNotificationEnabled ? MFS_CHECKED : MFS_UNCHECKED;
       InsertMenuItemW(hTrayMenu, 1, TRUE, &mii);
@@ -9331,11 +9314,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
       if (g_isDarkMode) {
         mii.wID = IDM_THEME_LIGHT;
-        mii.dwTypeData = (LPWSTR)L"日间模式";
+        mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_LIGHT);
         mii.hbmpItem = hLightModeIcon;
       } else {
         mii.wID = IDM_THEME_DARK;
-        mii.dwTypeData = (LPWSTR)L"夜间模式";
+        mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_DARK);
         mii.hbmpItem = hDarkModeIcon;
       }
       InsertMenuItemW(hTrayMenu, 2, TRUE, &mii);
@@ -9343,7 +9326,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
       mii.fState = 0;
       mii.wID = IDM_EXIT;
-      mii.dwTypeData = (LPWSTR)L"退出";
+      mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_EXIT);
       mii.hbmpItem = hExitIcon;
       InsertMenuItemW(hTrayMenu, 3, TRUE, &mii);
 
@@ -9395,13 +9378,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       int pasteOffset =
           (int)(wParam - ID_HOTKEY_PASTE_1); // 0-9，相对于可见区域的偏移
 
-      int topIndex = g_listBoxTopIndex;
-
-      // 加上跳过数，映射到正确的项目
-      int visibleItemIndex = topIndex + g_shortcutSkipCount + pasteOffset;
+      int visibleItemIndex = -1;
+      int seenCount = 0;
+      int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+      for (int i = g_listBoxTopIndex;
+           i < (int)g_displayIndexMap.size() && seenCount < visibleLimit &&
+           seenCount < 10;
+           ++i) {
+        int shortcutIndex = GetShortcutIndexForDisplayIndex(i);
+        if (shortcutIndex < 0)
+          continue;
+        if (shortcutIndex == pasteOffset) {
+          visibleItemIndex = i;
+          break;
+        }
+        ++seenCount;
+      }
 
       // 使用 g_displayIndexMap 获取实际的历史记录索引
-      if (visibleItemIndex < (int)g_displayIndexMap.size()) {
+      if (visibleItemIndex >= 0 &&
+          visibleItemIndex < (int)g_displayIndexMap.size()) {
         int actualIndex = g_displayIndexMap[visibleItemIndex];
         const ClipboardItem &item = g_history[actualIndex];
 

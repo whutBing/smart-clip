@@ -1,6 +1,8 @@
 #include "hotkey.h"
 #include "history.h"
+#include "i18n.h"
 #include "settings.h"
+#include "theme.h"
 #include "tray.h"
 #include <string>
 
@@ -37,7 +39,7 @@ void SaveHotkeySettings() {
   if (hFile != INVALID_HANDLE_VALUE) {
     DWORD dwBytesWritten = 0;
 
-    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled
+    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled\nthemeId\nlanguage
     std::wstring content = std::to_wstring(g_isHotkeyEnabled) + L"|" +
                            std::to_wstring(g_hotkeyModifiers) + L"|" +
                            std::to_wstring(g_hotkeyVirtualKey) + L"\n" +
@@ -52,7 +54,9 @@ void SaveHotkeySettings() {
                            std::to_wstring(g_maxHistoryCount) + L"\n" +
                            std::to_wstring(g_isCustomScrollbarEnabled) + L"\n" +
                            std::to_wstring(g_customScrollbarHideDelayMs) + L"\n" +
-                           std::to_wstring(g_isColorDotEnabled) + L"\n";
+                           std::to_wstring(g_isColorDotEnabled) + L"\n" +
+                           std::to_wstring((int)g_themeId) + L"\n" +
+                           std::to_wstring((int)g_appLanguage) + L"\n";
 
     // 转换为UTF-8
     int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, NULL,
@@ -311,6 +315,40 @@ void LoadHotkeySettings() {
             if (pEnd != NULL)
               *pEnd = L'\0';
             g_isColorDotEnabled = (wcstol(pLine, NULL, 10) != 0);
+          }
+
+          // 解析第十一行：themeId（旧配置可能不存在）
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            int themeIdValue = (int)wcstol(pLine, NULL, 10);
+            if (themeIdValue >= 0 && themeIdValue <= 3) {
+              g_themeId = (ThemeId)themeIdValue;
+            }
+            if (pEnd != NULL)
+              pNextLine = pEnd + 1;
+            else
+              pNextLine = NULL;
+          }
+
+          // 解析第十二行：language（旧配置可能不存在）
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            int languageValue = (int)wcstol(pLine, NULL, 10);
+            if (languageValue >= 0 && languageValue <= 1) {
+              g_appLanguage = (AppLanguage)languageValue;
+            }
           }
         }
       }

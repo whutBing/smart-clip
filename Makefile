@@ -43,7 +43,9 @@ SRCS := \
     $(SRCDIR)/text_utils.cpp        \
     $(SRCDIR)/graphics_utils.cpp    \
     $(SRCDIR)/smart_action.cpp      \
-    $(SRCDIR)/password_vault.cpp
+    $(SRCDIR)/password_vault.cpp    \
+    $(SRCDIR)/theme.cpp             \
+    $(SRCDIR)/i18n.cpp
 
 RC   := $(RESDIR)/resource.rc
 RES  := $(BUILDDIR)/resource.res
