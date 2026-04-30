@@ -649,7 +649,7 @@ int g_scrollbarDragOffsetY = 0;
 
 // 列表框顶部索引缓存（用于快捷键提示，避免频繁调用LB_GETTOPINDEX）
 int g_listBoxTopIndex = 0;
-int g_shortcutSkipCount = 0; // 翻页后需要跳过的快捷键项目数（避免重复显示）
+int g_shortcutStartDisplayIndex = 0; // 当前视图中从哪个显示索引开始显示快捷键
 
 // 翻页相关
 #define ITEMS_PER_PAGE 9             // 每页显示的项目数
@@ -671,7 +671,7 @@ static float g_smoothScrollTarget = 0.0f;  // 目标滚动位置
 static float g_smoothScrollCurrent = 0.0f; // 当前滚动位置
 static bool g_smoothScrollActive = false;  // 是否正在平滑滚动
 static HWND g_smoothScrollListBox = NULL;  // 正在滚动的列表框
-static int g_smoothScrollExpectedTop = -1; // 平滑滚动期望的顶部索引（用于计算快捷键跳过数）
+static int g_smoothScrollExpectedTop = -1; // 平滑翻页后快捷键编号的起始索引
 static DWORD g_vimNavPendingGTick = 0;
 
 // 计算单个项目的高度（基于显示索引）
@@ -762,6 +762,14 @@ static int GetShortcutIndexForDisplayIndex(int displayIndex) {
     return -1;
 
   int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+  int shortcutStart =
+      std::max(g_listBoxTopIndex, g_shortcutStartDisplayIndex);
+  if (shortcutStart < 0)
+    shortcutStart = 0;
+  if (shortcutStart >= (int)g_displayIndexMap.size() ||
+      displayIndex < shortcutStart)
+    return -1;
+
   RECT rcListBox = {};
   int visibleHeight = 0;
   if (g_hwndListBox) {
@@ -769,7 +777,8 @@ static int GetShortcutIndexForDisplayIndex(int displayIndex) {
     visibleHeight = rcListBox.bottom - rcListBox.top;
   }
   int count = 0;
-  for (int i = g_listBoxTopIndex; i <= displayIndex; ++i) {
+  const int headerVisibleThreshold = 9; // 头部大约一半可见才参与快捷键编号
+  for (int i = shortcutStart; i <= displayIndex; ++i) {
     if (i < 0 || i >= (int)g_displayIndexMap.size())
       break;
 
@@ -778,13 +787,19 @@ static int GetShortcutIndexForDisplayIndex(int displayIndex) {
         SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
             LB_ERR) {
       int itemHeight = rcItem.bottom - rcItem.top;
+      if (rcItem.top + headerVisibleThreshold <= 0)
+        continue;
       if (visibleHeight > 0 && rcItem.top + itemHeight / 2 > visibleHeight)
         break;
     }
 
     ++count;
-    if (i == displayIndex)
-      return (count <= 10 && count <= visibleLimit) ? (count - 1) : -1;
+    if (i == displayIndex) {
+      if (count > 10 || count > visibleLimit)
+        return -1;
+      int shortcutIndex = count - 1;
+      return (shortcutIndex < 10) ? shortcutIndex : -1;
+    }
   }
 
   return -1;
@@ -1267,7 +1282,7 @@ static void EnsureListSelectionVisible(int index) {
   }
 
   if (newTop >= 0) {
-    g_shortcutSkipCount = 0;
+    g_shortcutStartDisplayIndex = newTop;
     g_smoothScrollExpectedTop = -1;
     ApplyListBoxTopIndex(g_hwndListBox, newTop);
     ShowCustomScrollbar(g_hwndListBox);
@@ -1484,22 +1499,27 @@ static bool HandleMainNavigationKey(const MSG &msg) {
     break;
   case VK_PRIOR:
     if (g_hwndListBox && g_listBoxTopIndex > 0) {
-      g_shortcutSkipCount = 0;
       g_smoothScrollExpectedTop = -1;
       ApplyListBoxTopIndex(g_hwndListBox,
                            CalculatePrevPageIndex(g_listBoxTopIndex));
+      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+      RedrawWindow(g_hwndListBox, NULL, NULL,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
       ShowCustomScrollbar(g_hwndListBox);
       handled = true;
     }
     break;
   case VK_NEXT: {
     if (g_hwndListBox) {
-      int topIndex = CalculateNextPageIndex(g_listBoxTopIndex);
-      if (topIndex > g_listBoxTopIndex &&
-          topIndex < (int)g_displayIndexMap.size()) {
-        g_shortcutSkipCount = 0;
+      int visibleCount = CalculateVisibleItemCount(g_listBoxTopIndex);
+      int expectedNextTop = g_listBoxTopIndex + visibleCount;
+      if (expectedNextTop < (int)g_displayIndexMap.size() &&
+          expectedNextTop > g_listBoxTopIndex) {
+        ApplyListBoxTopIndex(g_hwndListBox, expectedNextTop);
+        g_shortcutStartDisplayIndex = expectedNextTop;
         g_smoothScrollExpectedTop = -1;
-        ApplyListBoxTopIndex(g_hwndListBox, topIndex);
+        RedrawWindow(g_hwndListBox, NULL, NULL,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         ShowCustomScrollbar(g_hwndListBox);
         handled = true;
       }
@@ -1963,6 +1983,7 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
   int oldTop = g_listBoxTopIndex;
   if (newTop != oldTop) {
     ApplyListBoxTopIndex(hwnd, newTop);
+    g_shortcutStartDisplayIndex = g_listBoxTopIndex;
   }
   g_scrollbarVisible = true;
 
@@ -2042,9 +2063,9 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 设置新的顶部索引
     if (newTop != currentTop) {
-      g_shortcutSkipCount = 0;
       g_smoothScrollExpectedTop = -1;
       ApplyListBoxTopIndex(hwnd, newTop);
+      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
     }
 
     InvalidateCustomScrollbarArea(hwnd, FALSE);
@@ -2066,8 +2087,14 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         // 最终位置设置
         int finalPos = (int)(g_smoothScrollTarget + 0.5f);
         ApplyListBoxTopIndex(hwnd, finalPos);
-        g_shortcutSkipCount = 0;
-        g_smoothScrollExpectedTop = -1;
+        if (g_smoothScrollExpectedTop >= 0) {
+          g_shortcutStartDisplayIndex = g_smoothScrollExpectedTop;
+          g_smoothScrollExpectedTop = -1;
+        } else {
+          g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+        }
+        RedrawWindow(hwnd, NULL, NULL,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
       } else {
         g_smoothScrollCurrent += step;
         // 设置滚动位置
@@ -2099,7 +2126,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
     }
     if (!g_smoothScrollActive)
-      g_shortcutSkipCount = 0;
+      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
     // 同步更新页码
     int newPage = g_listBoxTopIndex / ITEMS_PER_PAGE;
     if (newPage != g_currentPage) {
@@ -8041,7 +8068,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     } else if (wID == ID_PAGE_UP_BTN && wNotifyCode == BN_CLICKED) {
       // 上一页 - 使用 g_listBoxTopIndex 判断，与禁用逻辑一致
       if (g_listBoxTopIndex > 0) {
-        g_shortcutSkipCount = 0;
         g_smoothScrollExpectedTop = -1;
         // 计算目标位置：基于可视区域高度向上翻页
         int topIndex = CalculatePrevPageIndex(g_listBoxTopIndex);
@@ -8057,22 +8083,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollListBox = g_hwndListBox;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
-          ShowScrollBar(g_hwndListBox, SB_VERT, FALSE);
-          SendMessageW(g_hwndListBox, LB_SETTOPINDEX, topIndex, 0);
-          g_listBoxTopIndex = topIndex;
-          InvalidateRect(g_hwndListBox, NULL, FALSE);
+          ApplyListBoxTopIndex(g_hwndListBox, topIndex);
+          g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+          RedrawWindow(g_hwndListBox, NULL, NULL,
+                       RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
         InvalidateRect(g_hwndPageDownBtn, NULL, TRUE);
       }
     } else if (wID == ID_PAGE_DOWN_BTN && wNotifyCode == BN_CLICKED) {
-      // 下一页 - 让下一页从新的首项开始，快捷键重新从 1 编号
-      int topIndex = CalculateNextPageIndex(g_listBoxTopIndex);
-      if (topIndex < (int)g_displayIndexMap.size() &&
-          topIndex > g_listBoxTopIndex) {
-        g_shortcutSkipCount = 0;
-        g_smoothScrollExpectedTop = -1;
+      // 下一页 - 新页从新的内容开始，但顶部可能保留上一页已显示过的项
+      int visibleCount = CalculateVisibleItemCount(g_listBoxTopIndex);
+      int expectedNextTop = g_listBoxTopIndex + visibleCount;
+      if (expectedNextTop < (int)g_displayIndexMap.size() &&
+          expectedNextTop > g_listBoxTopIndex) {
+        int topIndex = expectedNextTop;
 
         // 更新页码
         g_currentPage = topIndex / ITEMS_PER_PAGE;
@@ -8083,13 +8109,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollCurrent = (float)g_listBoxTopIndex;
           g_smoothScrollActive = true;
           g_smoothScrollListBox = g_hwndListBox;
+          g_smoothScrollExpectedTop = expectedNextTop;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
-          ShowScrollBar(g_hwndListBox, SB_VERT, FALSE);
-          SendMessageW(g_hwndListBox, LB_SETTOPINDEX, topIndex, 0);
-          g_listBoxTopIndex =
-              (int)SendMessageW(g_hwndListBox, LB_GETTOPINDEX, 0, 0);
-          InvalidateRect(g_hwndListBox, NULL, FALSE);
+          ApplyListBoxTopIndex(g_hwndListBox, topIndex);
+          g_shortcutStartDisplayIndex = expectedNextTop;
+          RedrawWindow(g_hwndListBox, NULL, NULL,
+                       RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
