@@ -649,7 +649,8 @@ int g_scrollbarDragOffsetY = 0;
 
 // 列表框顶部索引缓存（用于快捷键提示，避免频繁调用LB_GETTOPINDEX）
 int g_listBoxTopIndex = 0;
-int g_shortcutStartDisplayIndex = 0; // 当前视图中从哪个显示索引开始显示快捷键
+int g_shortcutStartDisplayIndex = -1; // 翻到下一页时，从新记录开始显示快捷键
+int g_shortcutEndDisplayIndexExclusive = -1; // 向上翻页补位时，旧记录的截止索引
 
 // 翻页相关
 #define ITEMS_PER_PAGE 9             // 每页显示的项目数
@@ -672,7 +673,13 @@ static float g_smoothScrollCurrent = 0.0f; // 当前滚动位置
 static bool g_smoothScrollActive = false;  // 是否正在平滑滚动
 static HWND g_smoothScrollListBox = NULL;  // 正在滚动的列表框
 static int g_smoothScrollExpectedTop = -1; // 平滑翻页后快捷键编号的起始索引
+static int g_smoothScrollExpectedEndExclusive = -1; // 平滑向上翻页后的旧记录截止索引
 static DWORD g_vimNavPendingGTick = 0;
+
+static void ClearShortcutDisplayBounds() {
+  g_shortcutStartDisplayIndex = -1;
+  g_shortcutEndDisplayIndexExclusive = -1;
+}
 
 // 计算单个项目的高度（基于显示索引）
 int GetItemDisplayHeight(int displayIndex) {
@@ -726,6 +733,10 @@ int GetItemDisplayHeight(int displayIndex) {
   }
 }
 
+static int GetListBoxVisibleHeight(HWND hwnd);
+static void UpdateShortcutEndForUpwardFill(int oldTop);
+static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount);
+
 // 计算从指定索引开始，在可视区域内能完整显示的项目数
 int CalculateVisibleItemCount(int startIndex) {
   if (g_hwndListBox == NULL)
@@ -761,25 +772,89 @@ static int GetShortcutIndexForDisplayIndex(int displayIndex) {
   if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
     return -1;
 
-  int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
-  int shortcutStart =
-      std::max(g_listBoxTopIndex, g_shortcutStartDisplayIndex);
-  if (shortcutStart < 0)
-    shortcutStart = 0;
-  if (shortcutStart >= (int)g_displayIndexMap.size() ||
-      displayIndex < shortcutStart)
-    return -1;
+  auto collectVisibleShortcutDisplayIndices = [&](int *outIds,
+                                                  int maxCount) -> int {
+    if (!outIds || maxCount <= 0 || g_displayIndexMap.empty())
+      return 0;
 
-  RECT rcListBox = {};
-  int visibleHeight = 0;
-  if (g_hwndListBox) {
-    GetClientRect(g_hwndListBox, &rcListBox);
-    visibleHeight = rcListBox.bottom - rcListBox.top;
+    int startHint = g_shortcutStartDisplayIndex;
+    int endHint = g_shortcutEndDisplayIndexExclusive;
+    int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+    int totalItems = (int)g_displayIndexMap.size();
+    int count = 0;
+    const int headerVisibleThreshold = 9;
+
+    for (int i = 0; i < totalItems && count < maxCount; ++i) {
+      if (startHint >= 0 && i < startHint)
+        continue;
+      if (endHint >= 0 && i >= endHint)
+        break;
+
+      RECT rcItem = {};
+      if (g_hwndListBox &&
+          SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
+              LB_ERR) {
+        int itemHeight = rcItem.bottom - rcItem.top;
+        if (rcItem.bottom <= 0)
+          continue;
+        if (rcItem.top >= 0 && count == 0) {
+          // 第一条真实可见项，直接纳入编号
+        } else if (rcItem.top + headerVisibleThreshold <= 0) {
+          continue;
+        }
+        if (rcItem.top + itemHeight / 2 > GetListBoxVisibleHeight(g_hwndListBox))
+          break;
+      }
+
+      outIds[count++] = i;
+      if (count >= visibleLimit)
+        break;
+    }
+    return count;
+  };
+
+  int visibleIds[10] = {};
+  int visibleCount = collectVisibleShortcutDisplayIndices(visibleIds, 10);
+  for (int i = 0; i < visibleCount; ++i) {
+    if (visibleIds[i] == displayIndex)
+      return i;
   }
+  return -1;
+}
+
+static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
+  if (!outIds || maxCount <= 0 || g_displayIndexMap.empty())
+    return 0;
+
+  int startHint = g_shortcutStartDisplayIndex;
+  int endHint = g_shortcutEndDisplayIndexExclusive;
+  int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+  int totalItems = (int)g_displayIndexMap.size();
   int count = 0;
-  const int headerVisibleThreshold = 9; // 头部大约一半可见才参与快捷键编号
-  for (int i = shortcutStart; i <= displayIndex; ++i) {
-    if (i < 0 || i >= (int)g_displayIndexMap.size())
+  const int headerVisibleThreshold = 9;
+  int visibleHeight = g_hwndListBox ? GetListBoxVisibleHeight(g_hwndListBox) : 0;
+  int startIndex = g_listBoxTopIndex;
+
+  if (startHint >= 0)
+    startIndex = std::max(startIndex, startHint);
+
+  if (g_hwndListBox) {
+    while (startIndex > 0) {
+      RECT rcPrev = {};
+      if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, startIndex - 1,
+                       (LPARAM)&rcPrev) == LB_ERR) {
+        break;
+      }
+      if (rcPrev.bottom <= 0)
+        break;
+      if (startHint >= 0 && startIndex - 1 < startHint)
+        break;
+      --startIndex;
+    }
+  }
+
+  for (int i = startIndex; i < totalItems && count < maxCount; ++i) {
+    if (endHint >= 0 && i >= endHint)
       break;
 
     RECT rcItem = {};
@@ -787,22 +862,32 @@ static int GetShortcutIndexForDisplayIndex(int displayIndex) {
         SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
             LB_ERR) {
       int itemHeight = rcItem.bottom - rcItem.top;
-      if (rcItem.top + headerVisibleThreshold <= 0)
+      if (rcItem.bottom <= 0)
         continue;
+      if (rcItem.top >= 0 && count == 0) {
+        // 第一条真实可见项，直接纳入编号
+      } else if (rcItem.top + headerVisibleThreshold <= 0) {
+        continue;
+      }
       if (visibleHeight > 0 && rcItem.top + itemHeight / 2 > visibleHeight)
         break;
     }
 
-    ++count;
-    if (i == displayIndex) {
-      if (count > 10 || count > visibleLimit)
-        return -1;
-      int shortcutIndex = count - 1;
-      return (shortcutIndex < 10) ? shortcutIndex : -1;
-    }
+    outIds[count++] = i;
+    if (count >= visibleLimit)
+      break;
   }
+  return count;
+}
 
-  return -1;
+static void UpdateShortcutEndForUpwardFill(int oldTop) {
+  g_shortcutEndDisplayIndexExclusive = -1;
+  if (!g_hwndListBox || oldTop <= g_listBoxTopIndex)
+    return;
+
+  int visibleCount = CalculateVisibleItemCount(g_listBoxTopIndex);
+  if (g_listBoxTopIndex < visibleCount)
+    g_shortcutEndDisplayIndexExclusive = oldTop;
 }
 
 // 计算下一页的起始索引（确保当前页最后一个不完整显示的项目成为下一页第一个）
@@ -1282,8 +1367,9 @@ static void EnsureListSelectionVisible(int index) {
   }
 
   if (newTop >= 0) {
-    g_shortcutStartDisplayIndex = newTop;
+    ClearShortcutDisplayBounds();
     g_smoothScrollExpectedTop = -1;
+    g_smoothScrollExpectedEndExclusive = -1;
     ApplyListBoxTopIndex(g_hwndListBox, newTop);
     ShowCustomScrollbar(g_hwndListBox);
   }
@@ -1499,10 +1585,13 @@ static bool HandleMainNavigationKey(const MSG &msg) {
     break;
   case VK_PRIOR:
     if (g_hwndListBox && g_listBoxTopIndex > 0) {
+      int oldTop = g_listBoxTopIndex;
       g_smoothScrollExpectedTop = -1;
+      g_smoothScrollExpectedEndExclusive = -1;
       ApplyListBoxTopIndex(g_hwndListBox,
                            CalculatePrevPageIndex(g_listBoxTopIndex));
-      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+      ClearShortcutDisplayBounds();
+      UpdateShortcutEndForUpwardFill(oldTop);
       RedrawWindow(g_hwndListBox, NULL, NULL,
                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
       ShowCustomScrollbar(g_hwndListBox);
@@ -1518,6 +1607,8 @@ static bool HandleMainNavigationKey(const MSG &msg) {
         ApplyListBoxTopIndex(g_hwndListBox, expectedNextTop);
         g_shortcutStartDisplayIndex = expectedNextTop;
         g_smoothScrollExpectedTop = -1;
+        g_shortcutEndDisplayIndexExclusive = -1;
+        g_smoothScrollExpectedEndExclusive = -1;
         RedrawWindow(g_hwndListBox, NULL, NULL,
                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         ShowCustomScrollbar(g_hwndListBox);
@@ -1980,10 +2071,24 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
   int relativeTop = thumbTop - minThumbTop;
   int contentOffset = (relativeTop * maxScrollOffset + travel / 2) / travel;
   int newTop = GetTopIndexForContentOffset(contentOffset);
+  int maxTop = GetListBoxMaxTopIndex();
+  if (thumbTop <= minThumbTop)
+    newTop = 0;
+  else if (thumbTop >= maxThumbTop)
+    newTop = maxTop;
   int oldTop = g_listBoxTopIndex;
+  if (newTop == oldTop) {
+    if (g_shortcutStartDisplayIndex != -1 ||
+        g_shortcutEndDisplayIndexExclusive != -1) {
+      ClearShortcutDisplayBounds();
+      RedrawWindow(hwnd, NULL, NULL,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+      return;
+    }
+  }
   if (newTop != oldTop) {
     ApplyListBoxTopIndex(hwnd, newTop);
-    g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+    ClearShortcutDisplayBounds();
   }
   g_scrollbarVisible = true;
 
@@ -2064,8 +2169,12 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     // 设置新的顶部索引
     if (newTop != currentTop) {
       g_smoothScrollExpectedTop = -1;
+      g_smoothScrollExpectedEndExclusive = -1;
       ApplyListBoxTopIndex(hwnd, newTop);
-      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+      ClearShortcutDisplayBounds();
+      RedrawWindow(hwnd, NULL, NULL,
+                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+      return 0;
     }
 
     InvalidateCustomScrollbarArea(hwnd, FALSE);
@@ -2090,8 +2199,15 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         if (g_smoothScrollExpectedTop >= 0) {
           g_shortcutStartDisplayIndex = g_smoothScrollExpectedTop;
           g_smoothScrollExpectedTop = -1;
+          if (g_smoothScrollExpectedEndExclusive >= 0) {
+            int oldTop = g_smoothScrollExpectedEndExclusive;
+            g_smoothScrollExpectedEndExclusive = -1;
+            UpdateShortcutEndForUpwardFill(oldTop);
+          } else {
+            g_shortcutEndDisplayIndexExclusive = -1;
+          }
         } else {
-          g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+          ClearShortcutDisplayBounds();
         }
         RedrawWindow(hwnd, NULL, NULL,
                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
@@ -2126,7 +2242,9 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
     }
     if (!g_smoothScrollActive)
-      g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+      ClearShortcutDisplayBounds();
+    if (!g_smoothScrollActive)
+      g_shortcutEndDisplayIndexExclusive = -1;
     // 同步更新页码
     int newPage = g_listBoxTopIndex / ITEMS_PER_PAGE;
     if (newPage != g_currentPage) {
@@ -2197,8 +2315,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
   // 鼠标移动时检测是否悬浮在图标上，并更新 Tooltip
   if (message == WM_MOUSEMOVE) {
     POINT pt;
-    pt.x = LOWORD(lParam);
-    pt.y = HIWORD(lParam);
+    pt.x = GET_X_LPARAM(lParam);
+    pt.y = GET_Y_LPARAM(lParam);
 
     RECT rcTrack;
     bool isOverScrollbar =
@@ -8068,7 +8186,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     } else if (wID == ID_PAGE_UP_BTN && wNotifyCode == BN_CLICKED) {
       // 上一页 - 使用 g_listBoxTopIndex 判断，与禁用逻辑一致
       if (g_listBoxTopIndex > 0) {
+        int oldTop = g_listBoxTopIndex;
         g_smoothScrollExpectedTop = -1;
+        g_smoothScrollExpectedEndExclusive = -1;
         // 计算目标位置：基于可视区域高度向上翻页
         int topIndex = CalculatePrevPageIndex(g_listBoxTopIndex);
 
@@ -8081,10 +8201,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollCurrent = (float)g_listBoxTopIndex;
           g_smoothScrollActive = true;
           g_smoothScrollListBox = g_hwndListBox;
+          g_smoothScrollExpectedTop = topIndex;
+          g_smoothScrollExpectedEndExclusive = oldTop;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
-          g_shortcutStartDisplayIndex = g_listBoxTopIndex;
+          ClearShortcutDisplayBounds();
+          UpdateShortcutEndForUpwardFill(oldTop);
           RedrawWindow(g_hwndListBox, NULL, NULL,
                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         }
@@ -8110,10 +8233,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollActive = true;
           g_smoothScrollListBox = g_hwndListBox;
           g_smoothScrollExpectedTop = expectedNextTop;
+          g_smoothScrollExpectedEndExclusive = -1;
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
           g_shortcutStartDisplayIndex = expectedNextTop;
+          g_shortcutEndDisplayIndexExclusive = -1;
           RedrawWindow(g_hwndListBox, NULL, NULL,
                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         }
@@ -9405,21 +9530,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           (int)(wParam - ID_HOTKEY_PASTE_1); // 0-9，相对于可见区域的偏移
 
       int visibleItemIndex = -1;
-      int seenCount = 0;
-      int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
-      for (int i = g_listBoxTopIndex;
-           i < (int)g_displayIndexMap.size() && seenCount < visibleLimit &&
-           seenCount < 10;
-           ++i) {
-        int shortcutIndex = GetShortcutIndexForDisplayIndex(i);
-        if (shortcutIndex < 0)
-          continue;
-        if (shortcutIndex == pasteOffset) {
-          visibleItemIndex = i;
-          break;
-        }
-        ++seenCount;
-      }
+      int visibleIds[10] = {};
+      int visibleCount = CollectVisibleShortcutDisplayIndices(visibleIds, 10);
+      if (pasteOffset >= 0 && pasteOffset < visibleCount)
+        visibleItemIndex = visibleIds[pasteOffset];
 
       // 使用 g_displayIndexMap 获取实际的历史记录索引
       if (visibleItemIndex >= 0 &&
