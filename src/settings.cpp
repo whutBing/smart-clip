@@ -6,6 +6,7 @@
 #include "password_vault.h"
 #include "resource.h"
 #include "smart_action.h"
+#include "themed_dialog.h"
 #include "theme.h"
 #include "tray.h"
 #include <commctrl.h>
@@ -22,8 +23,8 @@ extern HWND g_hwndMain;
 #define ID_TOPMOST_BUTTON 1006
 
 // ==================== 布局常量 ====================
-#define SETTINGS_WIDTH 600
-#define SETTINGS_HEIGHT 550
+#define SETTINGS_WIDTH 660
+#define SETTINGS_HEIGHT 610
 #define SETTINGS_TITLEBAR_H 36
 #define SIDEBAR_W 180
 #define CONTENT_PADDING 24
@@ -85,12 +86,15 @@ static int g_currentSettingsTab = 0;
 static int g_settingsHoverSidebar = -1;
 static bool g_isRecordingHotkey = false;
 static bool g_isRecordingSearchHotkey = false;
+static bool g_isRecordingPasswordGeneratorHotkey = false;
 static WNDPROC g_oldEditProc = NULL;
 static WNDPROC g_oldSearchEditProc = NULL;
+static WNDPROC g_oldPasswordGeneratorHotkeyEditProc = NULL;
 static WNDPROC g_oldIosEditProc = NULL;
 static bool g_settingsClassRegistered = false;
 static bool g_hotkeyConflict = false;
 static bool g_searchHotkeyConflict = false;
+static bool g_passwordGeneratorHotkeyConflict = false;
 
 // 数据目录路径悬浮动画
 static bool g_dataDirHovered = false;
@@ -109,6 +113,7 @@ static HWND g_hwndLanguageCombo = NULL;
 static HWND g_hwndImagePreviewCombo = NULL;
 static HWND g_hwndHotkeyEdit = NULL;
 static HWND g_hwndSearchHotkeyEdit = NULL;
+static HWND g_hwndPasswordGeneratorHotkeyEdit = NULL;
 static HWND g_hwndToggleQuickPaste = NULL;
 static HWND g_hwndQuickPasteCombo = NULL;
 static HWND g_hwndScrollbarTimeoutEdit = NULL;
@@ -129,9 +134,12 @@ static std::vector<HWND> g_smartDelHwnds;
 static HWND g_hwndToggleVaultProtection = NULL;
 static HWND g_hwndAuthMethodCombo = NULL;
 static HWND g_hwndResetPasswordBtn = NULL;
+static HWND g_hwndToggleTrayPasswordGenerator = NULL;
+static HWND g_hwndPasswordGeneratorHotkeyEditPasswordTab = NULL;
 #define IDC_VAULT_PROTECTION_TOGGLE 400
 #define IDC_AUTH_METHOD_COMBO 401
 #define IDC_RESET_PASSWORD_BTN 402
+#define IDC_TRAY_PASSWORD_GENERATOR_TOGGLE 403
 
 static void UpdateScrollbarSettingsControls();
 
@@ -200,7 +208,7 @@ static bool IsOverDataDirPath(POINT pt) {
 
   int contentLeft = SIDEBAR_W + CONTENT_PADDING;
   int contentRight = SETTINGS_WIDTH - CONTENT_PADDING;
-  int row2Y = GetRowY(2);
+  int row2Y = GetRowY(3);
   RECT rcPath = {contentLeft, row2Y + 30, contentRight - 70, row2Y + 50};
   return PtInRect(&rcPath, pt) != FALSE;
 }
@@ -311,6 +319,8 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                                 LPARAM lParam);
 LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                                       LPARAM lParam);
+LRESULT CALLBACK PasswordGeneratorHotkeyEditProc(HWND hwnd, UINT uMsg,
+                                                 WPARAM wParam, LPARAM lParam);
 
 static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
                                     LPARAM lParam) {
@@ -407,6 +417,9 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
         showConflict = true;
       if (hwnd == g_hwndSearchHotkeyEdit && g_searchHotkeyConflict)
         showConflict = true;
+      if (hwnd == g_hwndPasswordGeneratorHotkeyEditPasswordTab &&
+          g_passwordGeneratorHotkeyConflict)
+        showConflict = true;
 
       if (showConflict) {
         // 红色圆角边框
@@ -455,6 +468,11 @@ static bool CheckHotkeyConflict(UINT mod, UINT vk, int excludeType) {
     if (g_searchHotkeyModifiers == mod && g_searchHotkeyVirtualKey == vk)
       return true;
   }
+  if (excludeType != 2 && g_isPasswordGeneratorHotkeyEnabled) {
+    if (g_passwordGeneratorHotkeyModifiers == mod &&
+        g_passwordGeneratorHotkeyVirtualKey == vk)
+      return true;
+  }
 
   // 检查与快捷粘贴是否冲突
   if (g_isQuickPasteEnabled && mod == g_quickPasteModifiers) {
@@ -472,14 +490,27 @@ static void UpdateHotkeyConflictState() {
   g_searchHotkeyConflict =
       g_isSearchHotkeyEnabled &&
       CheckHotkeyConflict(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, 1);
+  g_passwordGeneratorHotkeyConflict =
+      g_isPasswordGeneratorHotkeyEnabled &&
+      CheckHotkeyConflict(g_passwordGeneratorHotkeyModifiers,
+                          g_passwordGeneratorHotkeyVirtualKey, 2);
 }
 
-static void ClearRecordedHotkey(HWND hwnd, bool isSearchHotkey) {
-  if (isSearchHotkey) {
+static void ClearRecordedHotkey(HWND hwnd, int hotkeyType) {
+  if (hotkeyType == 1) {
     g_isRecordingSearchHotkey = false;
     g_isSearchHotkeyEnabled = false;
     g_searchHotkeyModifiers = 0;
     g_searchHotkeyVirtualKey = 0;
+    SetWindowTextW(hwnd, L"");
+    SetHotkeyEditPlaceholder(hwnd, L"请输入快捷键");
+  } else if (hotkeyType == 2) {
+    g_isRecordingPasswordGeneratorHotkey = false;
+    g_isPasswordGeneratorHotkeyEnabled = false;
+    g_passwordGeneratorHotkeyModifiers = 0;
+    g_passwordGeneratorHotkeyVirtualKey = 0;
+    UnregisterHotkey(g_hwndMain);
+    RegisterHotkey(g_hwndMain);
     SetWindowTextW(hwnd, L"");
     SetHotkeyEditPlaceholder(hwnd, L"请输入快捷键");
   } else {
@@ -498,6 +529,8 @@ static void ClearRecordedHotkey(HWND hwnd, bool isSearchHotkey) {
     InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
   if (g_hwndSearchHotkeyEdit)
     InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
+  if (g_hwndPasswordGeneratorHotkeyEditPasswordTab)
+    InvalidateRect(g_hwndPasswordGeneratorHotkeyEditPasswordTab, NULL, TRUE);
   if (g_hwndSettingsDlg)
     SetFocus(g_hwndSettingsDlg);
 }
@@ -512,7 +545,7 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     if (g_isRecordingHotkey) {
       UINT vk = (UINT)wParam;
       if (vk == VK_ESCAPE) {
-        ClearRecordedHotkey(hwnd, false);
+        ClearRecordedHotkey(hwnd, 0);
         return 0;
       }
       if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT ||
@@ -547,6 +580,9 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       InvalidateRect(hwnd, NULL, TRUE);
       if (g_hwndSearchHotkeyEdit)
         InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
+      if (g_hwndPasswordGeneratorHotkeyEditPasswordTab)
+        InvalidateRect(g_hwndPasswordGeneratorHotkeyEditPasswordTab, NULL,
+                       TRUE);
       g_isRecordingHotkey = false;
       return 0;
     }
@@ -569,7 +605,7 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     if (g_isRecordingSearchHotkey) {
       UINT vk = (UINT)wParam;
       if (vk == VK_ESCAPE) {
-        ClearRecordedHotkey(hwnd, true);
+        ClearRecordedHotkey(hwnd, 1);
         return 0;
       }
       if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT ||
@@ -612,6 +648,9 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       InvalidateRect(hwnd, NULL, TRUE);
       if (g_hwndHotkeyEdit)
         InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
+      if (g_hwndPasswordGeneratorHotkeyEditPasswordTab)
+        InvalidateRect(g_hwndPasswordGeneratorHotkeyEditPasswordTab, NULL,
+                       TRUE);
       g_isRecordingSearchHotkey = false;
       return 0;
     }
@@ -624,6 +663,67 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     break;
   }
   return CallWindowProcW(g_oldSearchEditProc, hwnd, uMsg, wParam, lParam);
+}
+
+LRESULT CALLBACK PasswordGeneratorHotkeyEditProc(HWND hwnd, UINT uMsg,
+                                                 WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+  case WM_KEYDOWN:
+  case WM_SYSKEYDOWN: {
+    if (g_isRecordingPasswordGeneratorHotkey) {
+      UINT vk = (UINT)wParam;
+      if (vk == VK_ESCAPE) {
+        ClearRecordedHotkey(hwnd, 2);
+        return 0;
+      }
+      if (vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT ||
+          vk == VK_LWIN || vk == VK_RWIN)
+        return 0;
+      UINT mod = 0;
+      if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        mod |= MOD_CONTROL;
+      if (GetAsyncKeyState(VK_MENU) & 0x8000)
+        mod |= MOD_ALT;
+      if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        mod |= MOD_SHIFT;
+      if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000)
+        mod |= MOD_WIN;
+      g_passwordGeneratorHotkeyModifiers = mod;
+      g_passwordGeneratorHotkeyVirtualKey = vk;
+      std::wstring text = FormatHotkeyText(mod, vk, L"?");
+      SetWindowTextW(hwnd, text.c_str());
+      g_isPasswordGeneratorHotkeyEnabled = true;
+      SaveHotkeySettings();
+      bool regOk = RegisterHotkey(g_hwndMain);
+      UpdateHotkeyConflictState();
+      if (!regOk)
+        g_passwordGeneratorHotkeyConflict = true;
+      if (g_passwordGeneratorHotkeyConflict) {
+        if (g_isNotificationEnabled)
+          ShowTrayBalloon(g_hwndMain, L"快捷键冲突",
+                          L"该快捷键与其他快捷键冲突");
+      } else {
+        if (g_isNotificationEnabled)
+          ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+      }
+      InvalidateRect(hwnd, NULL, TRUE);
+      if (g_hwndHotkeyEdit)
+        InvalidateRect(g_hwndHotkeyEdit, NULL, TRUE);
+      if (g_hwndSearchHotkeyEdit)
+        InvalidateRect(g_hwndSearchHotkeyEdit, NULL, TRUE);
+      g_isRecordingPasswordGeneratorHotkey = false;
+      return 0;
+    }
+    break;
+  }
+  case WM_CHAR:
+  case WM_SYSCHAR:
+    if (g_isRecordingPasswordGeneratorHotkey)
+      return 0;
+    break;
+  }
+  return CallWindowProcW(g_oldPasswordGeneratorHotkeyEditProc, hwnd, uMsg,
+                         wParam, lParam);
 }
 
 // ==================== 分类切换 ====================
@@ -672,7 +772,7 @@ static void SwitchSettingsTab(int tab) {
   if (g_hwndImagePreviewCombo)
     ShowWindow(g_hwndImagePreviewCombo, showGen);
   if (g_hwndHistoryLimitEdit)
-    ShowWindow(g_hwndHistoryLimitEdit, showGen);
+    ShowWindow(g_hwndHistoryLimitEdit, showDt);
 
   if (g_hwndHotkeyEdit)
     ShowWindow(g_hwndHotkeyEdit, showHk);
@@ -682,6 +782,8 @@ static void SwitchSettingsTab(int tab) {
     ShowWindow(g_hwndToggleQuickPaste, showHk);
   if (g_hwndQuickPasteCombo)
     ShowWindow(g_hwndQuickPasteCombo, showHk);
+  if (g_hwndPasswordGeneratorHotkeyEdit)
+    ShowWindow(g_hwndPasswordGeneratorHotkeyEdit, SW_HIDE);
 
   if (g_hwndSetDataDirBtn)
     ShowWindow(g_hwndSetDataDirBtn, showDt);
@@ -726,6 +828,10 @@ static void SwitchSettingsTab(int tab) {
     EnableWindow(g_hwndResetPasswordBtn,
                  g_vaultProtectionEnabled && IsMasterPasswordSet());
   }
+  if (g_hwndToggleTrayPasswordGenerator)
+    ShowWindow(g_hwndToggleTrayPasswordGenerator, showPw);
+  if (g_hwndPasswordGeneratorHotkeyEditPasswordTab)
+    ShowWindow(g_hwndPasswordGeneratorHotkeyEditPasswordTab, showPw);
 
   if (g_hwndSettingsDlg)
     InvalidateRect(g_hwndSettingsDlg, NULL, TRUE);
@@ -763,7 +869,6 @@ static const SettingRowInfo g_generalRows[] = {
     {STR_ROW_THEME_STYLE, STR_ROW_THEME_STYLE_DESC},
     {STR_ROW_LANGUAGE, STR_ROW_LANGUAGE_DESC},
     {STR_ROW_IMAGE_PREVIEW, STR_ROW_IMAGE_PREVIEW_DESC},
-    {STR_ROW_HISTORY_LIMIT, STR_ROW_HISTORY_LIMIT_DESC},
 };
 static const SettingRowInfo g_hotkeyRows[] = {
     {STR_ROW_HOTKEY_TOGGLE, STR_ROW_HOTKEY_TOGGLE_DESC},
@@ -774,6 +879,7 @@ static const SettingRowInfo g_hotkeyRows[] = {
 static const SettingRowInfo g_dataRows[] = {
     {STR_ROW_DATA_SIZE, STR_COUNT},
     {STR_ROW_PASTE_COUNT, STR_COUNT},
+    {STR_ROW_HISTORY_LIMIT, STR_ROW_HISTORY_LIMIT_DESC},
     {STR_ROW_SET_DATA_DIR, STR_COUNT},
     {STR_ROW_CLEAR_NON_FAV, STR_ROW_CLEAR_NON_FAV_DESC},
     {STR_ROW_CLEAN_INVALID_IMAGES, STR_ROW_CLEAN_INVALID_IMAGES_DESC},
@@ -782,6 +888,9 @@ static const SettingRowInfo g_passwordRows[] = {
     {STR_ROW_PASSWORD_PROTECTION, STR_ROW_PASSWORD_PROTECTION_DESC},
     {STR_ROW_PASSWORD_AUTH, STR_ROW_PASSWORD_AUTH_DESC},
     {STR_ROW_PASSWORD_RESET, STR_ROW_PASSWORD_RESET_DESC},
+    {STR_ROW_PASSWORD_TRAY_GENERATOR, STR_ROW_PASSWORD_TRAY_GENERATOR_DESC},
+    {STR_ROW_PASSWORD_GENERATOR_HOTKEY,
+     STR_ROW_PASSWORD_GENERATOR_HOTKEY_DESC},
 };
 
 // 分类标题
@@ -792,11 +901,11 @@ struct CategoryHeader {
   int rowCount;
 };
 static const CategoryHeader g_categories[] = {
-    {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 9},
+    {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 8},
     {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 4},
-    {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 5},
+    {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 6},
     {STR_SETTINGS_SMART_ACTION, STR_SETTINGS_SMART_ACTION_DESC, NULL, 0},
-    {STR_SETTINGS_PASSWORD, STR_SETTINGS_PASSWORD_DESC, g_passwordRows, 3},
+    {STR_SETTINGS_PASSWORD, STR_SETTINGS_PASSWORD_DESC, g_passwordRows, 5},
 };
 
 // ==================== 绘制辅助 ====================
@@ -1755,8 +1864,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       RECT rcPaste = {contentRight - 150, row1Y + 12, contentRight, row1Y + 30};
       DrawTextW(hdc, pasteBuf, -1, &rcPaste, DT_RIGHT | DT_SINGLELINE);
 
-      // 第2行：数据目录路径作为描述文字（按钮左侧）
-      int row2Y = GetRowY(2);
+      // 第3行：数据目录路径作为描述文字（按钮左侧）
+      int row2Y = GetRowY(3);
       SelectObject(hdc, g_hDescFont);
       std::wstring dataPath = GetDataFilePath();
       size_t lastSlash = dataPath.find_last_of(L"\\");
@@ -1952,7 +2061,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         lpDIS->CtlID == IDC_SCROLLBAR_CHECK ||
         lpDIS->CtlID == IDC_COLOR_DOT_CHECK ||
         lpDIS->CtlID == IDC_QUICK_PASTE_CHECK ||
-        lpDIS->CtlID == IDC_VAULT_PROTECTION_TOGGLE) {
+        lpDIS->CtlID == IDC_VAULT_PROTECTION_TOGGLE ||
+        lpDIS->CtlID == IDC_TRAY_PASSWORD_GENERATOR_TOGGLE) {
 
       // 先填充背景
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
@@ -1978,6 +2088,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         break;
       case IDC_VAULT_PROTECTION_TOGGLE:
         isOn = g_vaultProtectionEnabled;
+        break;
+      case IDC_TRAY_PASSWORD_GENERATOR_TOGGLE:
+        isOn = g_trayPasswordGeneratorEnabled;
         break;
       }
       DrawToggleSwitch(lpDIS->hDC, rc, isOn);
@@ -2185,7 +2298,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
       }
       // 只重绘数据目录路径区域
-      int row2Y = GetRowY(2);
+      int row2Y = GetRowY(3);
       RECT rcPath = {SIDEBAR_W, row2Y + 28, SETTINGS_WIDTH, row2Y + 52};
       InvalidateRect(hwnd, &rcPath, FALSE);
       return 0;
@@ -2208,9 +2321,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         SwitchSettingsTab(idx);
       }
     }
-    // 数据分类：点击数据目录路径打开资源管理器（第2行）
+    // 数据分类：点击数据目录路径打开资源管理器（第3行）
     if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
-      int row2Y = GetRowY(2);
+      int row2Y = GetRowY(3);
       if (pt.y >= row2Y + 10 && pt.y <= row2Y + 45) {
         std::wstring dataPath = GetDataFilePath();
         size_t lastSlash = dataPath.find_last_of(L"\\");
@@ -2369,6 +2482,12 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         ShowResetMasterPasswordDialog(hwnd);
         return 0;
       }
+      if (wID == IDC_TRAY_PASSWORD_GENERATOR_TOGGLE) {
+        g_trayPasswordGeneratorEnabled = !g_trayPasswordGeneratorEnabled;
+        InvalidateRect(g_hwndToggleTrayPasswordGenerator, NULL, TRUE);
+        SaveVaultSettings();
+        return 0;
+      }
       if (wID == IDC_SET_DATA_DIR) {
         BROWSEINFOW bi = {};
         bi.hwndOwner = hwnd;
@@ -2395,10 +2514,18 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         return 0;
       }
       if (wID == IDC_CLEAR_NON_FAV) {
-        int result = MessageBoxW(
-            hwnd, L"确定要删除所有未收藏的历史记录吗？\n此操作不可撤销。",
-            L"确认清理", MB_YESNO | MB_ICONWARNING);
-        if (result == IDYES) {
+        ThemedConfirmDialogConfig dialog = {
+            L"清理非收藏数据",
+            L"删除全部非收藏记录",
+            L"仅保留你已收藏的内容",
+            L"这会移除所有未收藏的历史记录，操作不可撤销。",
+            L"立即清理",
+            L"取消",
+            424,
+            246,
+            {14, 78, 410, 180},
+            true};
+        if (ShowThemedConfirmDialog(hwnd, dialog)) {
           ClearNonFavoriteHistory();
           g_dataSizeText = BuildDataSizeText();
           InvalidateRect(hwnd, NULL, TRUE);
@@ -2408,11 +2535,18 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         return 0;
       }
       if (wID == IDC_CLEAN_INVALID_IMAGES) {
-        int result = MessageBoxW(
-            hwnd,
-            L"确定要删除所有原始图片已丢失的图片记录吗？\n此操作不可撤销。",
-            L"确认清理", MB_YESNO | MB_ICONWARNING);
-        if (result == IDYES) {
+        ThemedConfirmDialogConfig dialog = {
+            L"删除失效图片记录",
+            L"清理原图已丢失的记录",
+            L"只删除已经失效的图片项",
+            L"这会移除原始图片文件已不存在的记录，操作不可撤销。",
+            L"立即清理",
+            L"取消",
+            424,
+            246,
+            {14, 78, 410, 180},
+            true};
+        if (ShowThemedConfirmDialog(hwnd, dialog)) {
           extern void CleanInvalidImageRecords();
           CleanInvalidImageRecords();
           g_dataSizeText = BuildDataSizeText();
@@ -2598,6 +2732,25 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
                                              g_searchHotkeyVirtualKey, L"F");
         SetWindowTextW(g_hwndSearchHotkeyEdit, text.c_str());
         SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
+      }
+    }
+    if (wID == IDC_PASSWORD_GENERATOR_HOTKEY_EDIT) {
+      if (wNotify == EN_SETFOCUS) {
+        UnregisterHotkey(g_hwndMain);
+        g_isRecordingPasswordGeneratorHotkey = true;
+        SetWindowTextW(g_hwndPasswordGeneratorHotkeyEditPasswordTab,
+                       L"请按下快捷键...");
+      }
+      if (wNotify == EN_KILLFOCUS && g_isRecordingPasswordGeneratorHotkey) {
+        g_isRecordingPasswordGeneratorHotkey = false;
+        RegisterHotkey(g_hwndMain);
+        std::wstring text =
+            FormatHotkeyText(g_passwordGeneratorHotkeyModifiers,
+                             g_passwordGeneratorHotkeyVirtualKey, L"");
+        SetWindowTextW(g_hwndPasswordGeneratorHotkeyEditPasswordTab,
+                       text.c_str());
+        SetHotkeyEditPlaceholder(g_hwndPasswordGeneratorHotkeyEditPasswordTab,
+                                 L"请输入快捷键");
       }
     }
 
@@ -2984,7 +3137,7 @@ void ShowSettingsDialog(HWND hwndParent) {
       CreateSettingsCombo(hwndDlg, 7, IDC_IMAGE_PREVIEW_COMBO, 120);
 
   {
-    int limitY = GetRowY(8) + (ROW_HEIGHT - 28) / 2;
+    int limitY = GetRowY(2) + (ROW_HEIGHT - 28) / 2;
     wchar_t limitBuf[16];
     _snwprintf_s(limitBuf, _countof(limitBuf), L"%d", g_maxHistoryCount);
     g_hwndHistoryLimitEdit = CreateWindowExW(
@@ -3006,10 +3159,10 @@ void ShowSettingsDialog(HWND hwndParent) {
                            width, 32, hwndDlg, (HMENU)(INT_PTR)ctlId,
                            GetModuleHandleW(NULL), NULL);
   };
-  g_hwndSetDataDirBtn = CreateIosButton(2, IDC_SET_DATA_DIR, 60);
-  g_hwndClearNonFavBtn = CreateIosButton(3, IDC_CLEAR_NON_FAV, 60);
+  g_hwndSetDataDirBtn = CreateIosButton(3, IDC_SET_DATA_DIR, 60);
+  g_hwndClearNonFavBtn = CreateIosButton(4, IDC_CLEAR_NON_FAV, 60);
   g_hwndCleanInvalidImagesBtn =
-      CreateIosButton(4, IDC_CLEAN_INVALID_IMAGES, 60);
+      CreateIosButton(5, IDC_CLEAN_INVALID_IMAGES, 60);
 
   // ===== 快捷键分类控件 =====
   g_hwndHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 0, IDC_HOTKEY_EDIT);
@@ -3059,6 +3212,32 @@ void ShowSettingsDialog(HWND hwndParent) {
       0, L"BUTTON", L"重置主密码", WS_CHILD | BS_OWNERDRAW,
       GetControlX(120), GetRowY(2) + (ROW_HEIGHT - 32) / 2, 120, 32,
       hwndDlg, (HMENU)IDC_RESET_PASSWORD_BTN, GetModuleHandleW(NULL), NULL);
+
+  g_hwndToggleTrayPasswordGenerator = CreateWindowExW(
+      0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW,
+      GetControlX(TOGGLE_W), GetRowY(3) + (ROW_HEIGHT - TOGGLE_H) / 2,
+      TOGGLE_W, TOGGLE_H, hwndDlg,
+      (HMENU)IDC_TRAY_PASSWORD_GENERATOR_TOGGLE, GetModuleHandleW(NULL), NULL);
+  g_hwndPasswordGeneratorHotkeyEditPasswordTab =
+      CreateHotkeyEditBox(hwndDlg, 4, IDC_PASSWORD_GENERATOR_HOTKEY_EDIT);
+  ConfigureSettingsEdit(g_hwndPasswordGeneratorHotkeyEditPasswordTab);
+  SendMessageW(g_hwndPasswordGeneratorHotkeyEditPasswordTab, WM_SETFONT,
+               (WPARAM)hCtlFont, TRUE);
+  g_oldPasswordGeneratorHotkeyEditProc = (WNDPROC)SetWindowLongPtrW(
+      g_hwndPasswordGeneratorHotkeyEditPasswordTab, GWLP_WNDPROC,
+      (LONG_PTR)PasswordGeneratorHotkeyEditProc);
+  std::wstring passwordGeneratorHotkeyText =
+      (g_isPasswordGeneratorHotkeyEnabled &&
+       g_passwordGeneratorHotkeyModifiers != 0 &&
+       g_passwordGeneratorHotkeyVirtualKey != 0)
+          ? FormatHotkeyText(g_passwordGeneratorHotkeyModifiers,
+                             g_passwordGeneratorHotkeyVirtualKey, L"")
+          : L"";
+  SetWindowTextW(g_hwndPasswordGeneratorHotkeyEditPasswordTab,
+                 passwordGeneratorHotkeyText.c_str());
+  SetHotkeyEditPlaceholder(g_hwndPasswordGeneratorHotkeyEditPasswordTab,
+                           L"请输入快捷键");
+  SyncHotkeyEditTextRect(g_hwndPasswordGeneratorHotkeyEditPasswordTab);
 
   // 初始显示通用分类
   g_currentSettingsTab = 0;

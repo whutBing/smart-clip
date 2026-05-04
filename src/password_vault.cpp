@@ -15,6 +15,12 @@ bool g_masterPasswordSet = false;
 int g_nextPasswordId = 1;
 bool g_vaultProtectionEnabled = false;
 int g_vaultAuthMethod = 0; // 0=主密码, 1=Windows Hello
+bool g_trayPasswordGeneratorEnabled = false;
+bool g_passwordGeneratorIncludeDigits = true;
+bool g_passwordGeneratorIncludeLower = true;
+bool g_passwordGeneratorIncludeUpper = true;
+bool g_passwordGeneratorIncludeSymbols = false;
+int g_passwordGeneratorLength = 12;
 
 // 密码连续复制状态
 static bool g_pwBatchMode = false;
@@ -41,7 +47,13 @@ static std::wstring GetVaultSettingsPath() {
 void SaveVaultSettings() {
     std::wstring path = GetVaultSettingsPath();
     std::wstring content = std::to_wstring(g_vaultProtectionEnabled ? 1 : 0) + L"\n" +
-                           std::to_wstring(g_vaultAuthMethod) + L"\n";
+                           std::to_wstring(g_vaultAuthMethod) + L"\n" +
+                           std::to_wstring(g_trayPasswordGeneratorEnabled ? 1 : 0) + L"\n" +
+                           std::to_wstring(g_passwordGeneratorIncludeDigits ? 1 : 0) + L"\n" +
+                           std::to_wstring(g_passwordGeneratorIncludeLower ? 1 : 0) + L"\n" +
+                           std::to_wstring(g_passwordGeneratorIncludeUpper ? 1 : 0) + L"\n" +
+                           std::to_wstring(g_passwordGeneratorIncludeSymbols ? 1 : 0) + L"\n" +
+                           std::to_wstring(g_passwordGeneratorLength) + L"\n";
     HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return;
@@ -81,9 +93,62 @@ void LoadVaultSettings() {
     if (pNext) {
         pLine = pNext;
         pNext = wcsstr(pLine, L"\n");
-        if (pNext) *pNext = L'\0';
+        if (pNext) { *pNext = L'\0'; pNext++; }
         g_vaultAuthMethod = _wtoi(pLine);
         if (g_vaultAuthMethod < 0 || g_vaultAuthMethod > 1) g_vaultAuthMethod = 0;
+    }
+
+    if (pNext) {
+        pLine = pNext;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) *pNext = L'\0';
+        g_trayPasswordGeneratorEnabled = (_wtoi(pLine) != 0);
+    } else {
+        g_trayPasswordGeneratorEnabled = false;
+    }
+
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        g_passwordGeneratorIncludeDigits = (_wtoi(pLine) != 0);
+    }
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        g_passwordGeneratorIncludeLower = (_wtoi(pLine) != 0);
+    }
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        g_passwordGeneratorIncludeUpper = (_wtoi(pLine) != 0);
+    }
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        g_passwordGeneratorIncludeSymbols = (_wtoi(pLine) != 0);
+    }
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        int length = _wtoi(pLine);
+        if (length >= 6 && length <= 64) {
+            g_passwordGeneratorLength = length;
+        }
+    }
+
+    if (!g_passwordGeneratorIncludeDigits && !g_passwordGeneratorIncludeLower &&
+        !g_passwordGeneratorIncludeUpper && !g_passwordGeneratorIncludeSymbols) {
+        g_passwordGeneratorIncludeDigits = true;
+        g_passwordGeneratorIncludeLower = true;
+        g_passwordGeneratorIncludeUpper = true;
+    }
+    if (g_passwordGeneratorLength < 6 || g_passwordGeneratorLength > 64) {
+        g_passwordGeneratorLength = 12;
     }
 }
 

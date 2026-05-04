@@ -21,6 +21,12 @@ extern int g_nextPasswordId;
 // 密码保护设置
 extern bool g_vaultProtectionEnabled; // 是否开启密码保护
 extern int g_vaultAuthMethod;         // 0=主密码, 1=Windows Hello
+extern bool g_trayPasswordGeneratorEnabled; // 是否在托盘菜单显示随机密码
+extern bool g_passwordGeneratorIncludeDigits;
+extern bool g_passwordGeneratorIncludeLower;
+extern bool g_passwordGeneratorIncludeUpper;
+extern bool g_passwordGeneratorIncludeSymbols;
+extern int g_passwordGeneratorLength;
 
 // 密码库文件操作
 void LoadVault();

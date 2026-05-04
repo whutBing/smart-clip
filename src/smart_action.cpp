@@ -1,5 +1,6 @@
 #include "smart_action.h"
 #include "history.h"
+#include "themed_dialog.h"
 #include <fstream>
 #include <regex>
 #include <shlwapi.h>
@@ -22,6 +23,9 @@ const ActionTemplate g_actionTemplates[] = {
     // 网络工具
     {L"网络工具", L"Ping", L"cmd_template", L"cmd /k ping {0}"},
     {L"网络工具", L"远程桌面", L"cmd_template", L"mstsc /v:{0}"},
+    {L"网络工具", L"远程桌面（账号密码）", L"cmd_template",
+     L"cmdkey /generic:TERMSRV/{0} /user:\"{user}\" /pass:\"{pass}\" & mstsc "
+     L"/v:{0}"},
     {L"网络工具", L"SSH", L"cmd_template", L"cmd /k ssh {0}"},
     // 开发工具
     {L"开发工具", L"VS Code 打开", L"cmd_template", L"code \"{0}\""},
@@ -60,6 +64,231 @@ std::wstring UrlEncode(const std::wstring &text) {
     }
   }
   return result;
+}
+
+struct SmartActionParamField {
+  std::wstring token;
+  std::wstring label;
+  std::wstring value;
+  bool password;
+  int labelId;
+  int editId;
+  int toggleId;
+};
+
+struct SmartActionPromptState {
+  bool done;
+  bool accepted;
+  std::wstring subtitle;
+  std::wstring body;
+  std::vector<SmartActionParamField> fields;
+  std::vector<int> labelIds;
+  std::vector<PasswordToggleBinding> toggles;
+};
+
+static void ReplaceAll(std::wstring &text, const std::wstring &from,
+                       const std::wstring &to) {
+  if (from.empty())
+    return;
+  size_t pos = 0;
+  while ((pos = text.find(from, pos)) != std::wstring::npos) {
+    text.replace(pos, from.size(), to);
+    pos += to.size();
+  }
+}
+
+static bool IsPasswordPlaceholder(const std::wstring &token) {
+  return token == L"pass" || token == L"password" || token == L"pwd";
+}
+
+static std::wstring GetPlaceholderLabel(const std::wstring &token) {
+  if (token == L"user" || token == L"username")
+    return L"用户名";
+  if (token == L"pass" || token == L"password" || token == L"pwd")
+    return L"密码";
+  if (token == L"arg1")
+    return L"参数 1";
+  if (token == L"arg2")
+    return L"参数 2";
+  if (token == L"arg3")
+    return L"参数 3";
+  return token;
+}
+
+static std::vector<SmartActionParamField>
+CollectTemplateParams(const std::wstring &templateText) {
+  std::vector<SmartActionParamField> fields;
+  try {
+    std::wregex re(L"\\{([A-Za-z][A-Za-z0-9_]*)(:url)?\\}");
+    auto begin =
+        std::wsregex_iterator(templateText.begin(), templateText.end(), re);
+    auto end = std::wsregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+      std::wstring token = (*it)[1].str();
+      bool exists = false;
+      for (size_t i = 0; i < fields.size(); ++i) {
+        if (fields[i].token == token) {
+          exists = true;
+          break;
+        }
+      }
+      if (exists)
+        continue;
+
+      SmartActionParamField field = {};
+      field.token = token;
+      field.label = GetPlaceholderLabel(token);
+      field.password = IsPasswordPlaceholder(token);
+      field.labelId = 5100 + (int)fields.size();
+      field.editId = 5200 + (int)fields.size();
+      field.toggleId = 5300 + (int)fields.size();
+      fields.push_back(field);
+    }
+  } catch (...) {
+  }
+  return fields;
+}
+
+static bool PromptSmartActionParams(HWND hwndParent, const SmartAction &action,
+                                    const std::wstring &text,
+                                    std::vector<SmartActionParamField> *fields) {
+  if (!fields || fields->empty())
+    return true;
+
+  HINSTANCE hInst = GetModuleHandleW(NULL);
+  const int closeBtnId = 5400;
+
+  SmartActionPromptState state = {};
+  state.done = false;
+  state.accepted = false;
+  state.subtitle = L"为“" + action.name + L"”补充执行参数";
+  state.body = L"匹配内容：" + text;
+  state.fields = *fields;
+  for (size_t i = 0; i < state.fields.size(); ++i) {
+    state.labelIds.push_back(state.fields[i].labelId);
+    if (state.fields[i].password) {
+      PasswordToggleBinding binding = {state.fields[i].editId,
+                                       state.fields[i].toggleId, false};
+      state.toggles.push_back(binding);
+    }
+  }
+
+  ThemedDialogConfig config = {};
+  config.windowTitle = L"智能操作参数";
+  config.title = L"智能操作参数";
+  config.subtitle = state.subtitle.c_str();
+  config.bodyText = state.body.c_str();
+  config.primaryButtonText = L"执行";
+  config.secondaryButtonText = L"取消";
+  config.dlgW = 424;
+  config.dlgH = 194 + (int)state.fields.size() * 58;
+  config.closeBtnId = closeBtnId;
+  config.bodyFontDelta = 1;
+  config.cardRect = {14, 78, 410, config.dlgH - 66};
+  config.fieldLabelIds =
+      state.labelIds.empty() ? NULL : &state.labelIds[0];
+  config.fieldLabelCount = (int)state.labelIds.size();
+  config.doneFlag = &state.done;
+  config.userData = &state;
+
+  HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
+  if (!hDlg)
+    return false;
+
+  const int labelX = 34;
+  const int editX = 34;
+  const int editW = 356;
+  const int pwEditW = GetDialogPasswordEditWidth(editW);
+  const int firstY = 92;
+  const int blockGap = 58;
+
+  for (size_t i = 0; i < state.fields.size(); ++i) {
+    SmartActionParamField &field = state.fields[i];
+    int y = firstY + (int)i * blockGap;
+    CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", field.label.c_str(),
+                    WS_CHILD | WS_VISIBLE, labelX, y, 180, 20, hDlg,
+                    (HMENU)(INT_PTR)field.labelId, hInst, NULL);
+    DWORD editStyle = WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_MULTILINE;
+    if (field.password)
+      editStyle |= ES_PASSWORD;
+    HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", editStyle,
+                                 editX, y + 24,
+                                 field.password ? pwEditW : editW, 32, hDlg,
+                                 (HMENU)(INT_PTR)field.editId, hInst, NULL);
+    if (field.password) {
+      ApplyDialogPasswordMask(hEdit, false);
+      CreateDialogPasswordToggleButton(
+          hDlg, hInst, GetDialogPasswordToggleX(editX, editW), y + 24,
+          field.toggleId);
+    }
+    if (i == 0) {
+      config.initialFocus = hEdit;
+    }
+  }
+
+  const int btnW = 65;
+  const int btnH = 25;
+  const int btnGap = 10;
+  const int btnY = config.dlgH - 42;
+  const int cancelBtnX = config.dlgW - 24 - btnW;
+  const int okBtnX = cancelBtnX - btnGap - btnW;
+  CreateWindowExW(0, L"BUTTON", L"执行",
+                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
+                  okBtnX, btnY, btnW, btnH, hDlg, (HMENU)IDOK, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                  cancelBtnX, btnY, btnW, btnH, hDlg, (HMENU)IDCANCEL, hInst,
+                  NULL);
+
+  config.onOk = +[](HWND hw, void *userData) -> bool {
+    SmartActionPromptState *state =
+        reinterpret_cast<SmartActionPromptState *>(userData);
+    if (!state)
+      return false;
+    for (size_t i = 0; i < state->fields.size(); ++i) {
+      wchar_t buf[512] = {};
+      GetDlgItemTextW(hw, state->fields[i].editId, buf, _countof(buf));
+      state->fields[i].value = buf;
+    }
+    state->accepted = true;
+    return true;
+  };
+
+  ShowThemedDialog(hwndParent, hDlg, &config);
+  RunThemedDialogLoop(hDlg, &state.done);
+  CloseThemedDialog(hwndParent, hDlg, &config);
+
+  if (state.accepted) {
+    *fields = state.fields;
+  }
+  return state.accepted;
+}
+
+static bool ExpandActionTemplate(HWND hwndParent, const SmartAction &action,
+                                 const std::wstring &sourceText,
+                                 const std::wstring &templateText,
+                                 std::wstring *expandedText) {
+  if (!expandedText)
+    return false;
+
+  std::wstring output = templateText;
+  std::wstring encoded = UrlEncode(sourceText);
+  ReplaceAll(output, L"{0:url}", encoded);
+  ReplaceAll(output, L"{0}", sourceText);
+
+  std::vector<SmartActionParamField> fields = CollectTemplateParams(output);
+  if (!fields.empty() &&
+      !PromptSmartActionParams(hwndParent, action, sourceText, &fields)) {
+    return false;
+  }
+
+  for (size_t i = 0; i < fields.size(); ++i) {
+    ReplaceAll(output, L"{" + fields[i].token + L":url}",
+               UrlEncode(fields[i].value));
+    ReplaceAll(output, L"{" + fields[i].token + L"}", fields[i].value);
+  }
+
+  *expandedText = output;
+  return true;
 }
 
 void InitDefaultActions() {
@@ -234,7 +463,7 @@ bool HasEnabledMatch(const std::wstring &text) {
   return false;
 }
 
-bool MatchAndExecute(const std::wstring &text) {
+bool MatchAndExecute(HWND hwndParent, const std::wstring &text) {
   for (const auto &a : g_smartActions) {
     if (!a.enabled)
       continue;
@@ -273,30 +502,15 @@ bool MatchAndExecute(const std::wstring &text) {
       }
       return true;
     } else if (a.action == L"url_template" && !a.customCmd.empty()) {
-      std::wstring url = a.customCmd;
-      std::wstring encoded = UrlEncode(text);
-      size_t pos;
-      while ((pos = url.find(L"{0:url}")) != std::wstring::npos) {
-        url.replace(pos, 7, encoded);
-      }
-      while ((pos = url.find(L"{0}")) != std::wstring::npos) {
-        url.replace(pos, 3, text);
-      }
+      std::wstring url;
+      if (!ExpandActionTemplate(hwndParent, a, text, a.customCmd, &url))
+        return true;
       ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
       return true;
     } else if (a.action == L"cmd_template" && !a.customCmd.empty()) {
-      std::wstring cmd = a.customCmd;
-      // {0} 替换为原文，{0:url} 替换为 URL 编码后的文本
-      std::wstring encoded = UrlEncode(text);
-      // 先替换 {0:url}
-      size_t pos;
-      while ((pos = cmd.find(L"{0:url}")) != std::wstring::npos) {
-        cmd.replace(pos, 7, encoded);
-      }
-      // 再替换 {0}
-      while ((pos = cmd.find(L"{0}")) != std::wstring::npos) {
-        cmd.replace(pos, 3, text);
-      }
+      std::wstring cmd;
+      if (!ExpandActionTemplate(hwndParent, a, text, a.customCmd, &cmd))
+        return true;
       // VS Code 的 code 命令需要特殊处理，直接执行而不是通过 cmd.exe
       if (cmd.find(L"code ") == 0) {
         ShellExecuteW(NULL, L"open", cmd.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -312,11 +526,9 @@ bool MatchAndExecute(const std::wstring &text) {
     }
     // custom (旧格式兼容)
     else if (a.action == L"custom" && !a.customCmd.empty()) {
-      std::wstring cmd = a.customCmd;
-      size_t pos;
-      while ((pos = cmd.find(L"{0}")) != std::wstring::npos) {
-        cmd.replace(pos, 3, text);
-      }
+      std::wstring cmd;
+      if (!ExpandActionTemplate(hwndParent, a, text, a.customCmd, &cmd))
+        return true;
       int showFlag = (cmd.find(L"cmd /k") == 0 || cmd.find(L"cmd /K") == 0)
                          ? SW_SHOWNORMAL
                          : SW_HIDE;

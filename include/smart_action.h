@@ -28,6 +28,6 @@ extern const int g_actionTemplateCount;
 void InitDefaultActions();
 void LoadSmartActions();
 void SaveSmartActions();
-bool MatchAndExecute(const std::wstring &text);
+bool MatchAndExecute(HWND hwndParent, const std::wstring &text);
 bool HasEnabledMatch(const std::wstring &text);
 std::wstring UrlEncode(const std::wstring &text);

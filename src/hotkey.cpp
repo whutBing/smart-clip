@@ -17,6 +17,10 @@ bool g_isSearchHotkeyEnabled = true;        // 默认启用
 UINT g_searchHotkeyVirtualKey = 'F';        // 默认F键
 UINT g_searchHotkeyModifiers = MOD_CONTROL; // 默认Ctrl
 
+bool g_isPasswordGeneratorHotkeyEnabled = false;
+UINT g_passwordGeneratorHotkeyVirtualKey = 0;
+UINT g_passwordGeneratorHotkeyModifiers = 0;
+
 // 快捷粘贴修饰键全局变量定义
 bool g_isQuickPasteEnabled = true;    // 默认启用
 UINT g_quickPasteModifiers = MOD_ALT; // 默认Alt
@@ -39,7 +43,7 @@ void SaveHotkeySettings() {
   if (hFile != INVALID_HANDLE_VALUE) {
     DWORD dwBytesWritten = 0;
 
-    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled\nthemeId\nlanguage
+    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\nquickPasteEnabled|quickPasteModifiers\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled\nthemeId\nlanguage\npasswordGenEnabled|passwordGenModifiers|passwordGenVirtualKey
     std::wstring content = std::to_wstring(g_isHotkeyEnabled) + L"|" +
                            std::to_wstring(g_hotkeyModifiers) + L"|" +
                            std::to_wstring(g_hotkeyVirtualKey) + L"\n" +
@@ -56,7 +60,10 @@ void SaveHotkeySettings() {
                            std::to_wstring(g_customScrollbarHideDelayMs) + L"\n" +
                            std::to_wstring(g_isColorDotEnabled) + L"\n" +
                            std::to_wstring((int)g_themeId) + L"\n" +
-                           std::to_wstring((int)g_appLanguage) + L"\n";
+                           std::to_wstring((int)g_appLanguage) + L"\n" +
+                           std::to_wstring(g_isPasswordGeneratorHotkeyEnabled) + L"|" +
+                           std::to_wstring(g_passwordGeneratorHotkeyModifiers) + L"|" +
+                           std::to_wstring(g_passwordGeneratorHotkeyVirtualKey) + L"\n";
 
     // 转换为UTF-8
     int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, NULL,
@@ -85,6 +92,7 @@ void LoadHotkeySettings() {
   bool settingsLoaded = false;
   bool searchSettingsLoaded = false;
   bool quickPasteSettingsLoaded = false;
+  bool passwordGeneratorHotkeyLoaded = false;
   HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ,
                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (hFile != INVALID_HANDLE_VALUE) {
@@ -349,6 +357,44 @@ void LoadHotkeySettings() {
             if (languageValue >= 0 && languageValue <= 1) {
               g_appLanguage = (AppLanguage)languageValue;
             }
+            if (pEnd != NULL)
+              pNextLine = pEnd + 1;
+            else
+              pNextLine = NULL;
+          }
+
+          // 解析第十三行：passwordGenEnabled|passwordGenModifiers|passwordGenVirtualKey
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            pNextLine = wcsstr(pLine, L"\n");
+            if (pNextLine != NULL) {
+              *pNextLine = L'\0';
+              pNextLine++;
+            }
+
+            pDelim = wcsstr(pLine, L"|");
+            if (pDelim != NULL) {
+              *pDelim = L'\0';
+              g_isPasswordGeneratorHotkeyEnabled = (wcstol(pLine, NULL, 10) != 0);
+
+              pLine = pDelim + 1;
+              pDelim = wcsstr(pLine, L"|");
+              if (pDelim != NULL) {
+                *pDelim = L'\0';
+                g_passwordGeneratorHotkeyModifiers = (UINT)wcstol(pLine, NULL, 10);
+
+                pLine = pDelim + 1;
+                g_passwordGeneratorHotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
+                if (!g_isPasswordGeneratorHotkeyEnabled ||
+                    g_passwordGeneratorHotkeyModifiers == 0 ||
+                    g_passwordGeneratorHotkeyVirtualKey == 0) {
+                  g_isPasswordGeneratorHotkeyEnabled = false;
+                  g_passwordGeneratorHotkeyModifiers = 0;
+                  g_passwordGeneratorHotkeyVirtualKey = 0;
+                }
+                passwordGeneratorHotkeyLoaded = true;
+              }
+            }
           }
         }
       }
@@ -374,26 +420,44 @@ void LoadHotkeySettings() {
     g_isQuickPasteEnabled = true;    // 默认启用
     g_quickPasteModifiers = MOD_ALT; // 默认Alt
   }
+
+  if (!passwordGeneratorHotkeyLoaded) {
+    g_isPasswordGeneratorHotkeyEnabled = false;
+    g_passwordGeneratorHotkeyModifiers = 0;
+    g_passwordGeneratorHotkeyVirtualKey = 0;
+  }
 }
 
 // 注册快捷键
 bool RegisterHotkey(HWND hwnd) {
+  ::UnregisterHotKey(hwnd, ID_HOTKEY_PASSWORD_GENERATOR);
+
+  bool success = true;
   if (g_isHotkeyEnabled) {
-    UnregisterHotkey(hwnd);
     if (RegisterHotKey(hwnd, ID_HOTKEY_TOGGLE, g_hotkeyModifiers,
                        g_hotkeyVirtualKey)) {
-      // 快捷键注册成功
-      return true;
+      success = true;
     } else {
-      // 注册失败，快捷键冲突
-      return false;
+      success = false;
     }
   }
-  return true;
+  if (g_isPasswordGeneratorHotkeyEnabled &&
+      g_passwordGeneratorHotkeyModifiers != 0 &&
+      g_passwordGeneratorHotkeyVirtualKey != 0) {
+    if (!RegisterHotKey(hwnd, ID_HOTKEY_PASSWORD_GENERATOR,
+                        g_passwordGeneratorHotkeyModifiers,
+                        g_passwordGeneratorHotkeyVirtualKey)) {
+      success = false;
+    }
+  }
+  return success;
 }
 
 // 注销快捷键
-void UnregisterHotkey(HWND hwnd) { ::UnregisterHotKey(hwnd, ID_HOTKEY_TOGGLE); }
+void UnregisterHotkey(HWND hwnd) {
+  ::UnregisterHotKey(hwnd, ID_HOTKEY_TOGGLE);
+  ::UnregisterHotKey(hwnd, ID_HOTKEY_PASSWORD_GENERATOR);
+}
 
 // 切换快捷键状态
 void ToggleHotkey(HWND hwnd) {

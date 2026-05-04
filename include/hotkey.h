@@ -6,6 +6,7 @@
 // 快捷键相关常量
 #define ID_HOTKEY_TOGGLE 3001
 #define ID_HOTKEY_SEARCH 3002
+#define ID_HOTKEY_PASSWORD_GENERATOR 3003
 #define ID_HOTKEY_PASTE_1 3010 // 快捷粘贴1-9，第10个用0
 #define ID_HOTKEY_PASTE_2 3011
 #define ID_HOTKEY_PASTE_3 3012
@@ -27,6 +28,10 @@ extern UINT g_hotkeyModifiers;
 extern bool g_isSearchHotkeyEnabled;
 extern UINT g_searchHotkeyVirtualKey;
 extern UINT g_searchHotkeyModifiers;
+
+extern bool g_isPasswordGeneratorHotkeyEnabled;
+extern UINT g_passwordGeneratorHotkeyVirtualKey;
+extern UINT g_passwordGeneratorHotkeyModifiers;
 
 // 快捷粘贴修饰键相关全局变量
 extern bool g_isQuickPasteEnabled;
