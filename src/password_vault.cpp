@@ -20,6 +20,7 @@ bool g_passwordGeneratorIncludeDigits = true;
 bool g_passwordGeneratorIncludeLower = true;
 bool g_passwordGeneratorIncludeUpper = true;
 bool g_passwordGeneratorIncludeSymbols = false;
+std::wstring g_passwordGeneratorSymbols = L"!@#$%^&*()_+-=[]{};:,.<>?/\\\\|~`";
 int g_passwordGeneratorLength = 12;
 
 // 密码连续复制状态
@@ -53,7 +54,8 @@ void SaveVaultSettings() {
                            std::to_wstring(g_passwordGeneratorIncludeLower ? 1 : 0) + L"\n" +
                            std::to_wstring(g_passwordGeneratorIncludeUpper ? 1 : 0) + L"\n" +
                            std::to_wstring(g_passwordGeneratorIncludeSymbols ? 1 : 0) + L"\n" +
-                           std::to_wstring(g_passwordGeneratorLength) + L"\n";
+                           std::to_wstring(g_passwordGeneratorLength) + L"\n" +
+                           g_passwordGeneratorSymbols + L"\n";
     HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return;
@@ -139,6 +141,16 @@ void LoadVaultSettings() {
         if (length >= 6 && length <= 64) {
             g_passwordGeneratorLength = length;
         }
+    }
+    if (pNext) {
+        pLine = pNext + 1;
+        pNext = wcsstr(pLine, L"\n");
+        if (pNext) { *pNext = L'\0'; }
+        g_passwordGeneratorSymbols = pLine;
+    }
+
+    if (g_passwordGeneratorSymbols.empty() && g_passwordGeneratorIncludeSymbols) {
+        g_passwordGeneratorSymbols = L"!@#$%^&*()_+-=[]{};:,.<>?/\\\\|~`";
     }
 
     if (!g_passwordGeneratorIncludeDigits && !g_passwordGeneratorIncludeLower &&

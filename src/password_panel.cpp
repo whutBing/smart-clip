@@ -9,11 +9,13 @@
 #include <commctrl.h>
 #include <cstdlib>
 #include <gdiplus.h>
+#include <algorithm>
 #include <set>
 #include <string>
 #include <uxtheme.h>
 #include <vector>
 #include <windows.h>
+#include <windowsx.h>
 
 extern bool g_isTopmost;
 using namespace Gdiplus;
@@ -48,12 +50,13 @@ static wchar_t RandomCharsetChar(const std::wstring &charset) {
 }
 
 static std::wstring BuildRandomPassword(bool includeDigits, bool includeLower,
-                                        bool includeUpper, bool includeSymbols,
+                                        bool includeUpper,
+                                        const std::wstring &symbols,
                                         int length) {
   std::wstring digits = L"0123456789";
   std::wstring lower = L"abcdefghijklmnopqrstuvwxyz";
   std::wstring upper = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  std::wstring symbols = L"!@#$%^&*()_+-=,.<>?/\\|[]{}:;~";
+  bool includeSymbols = !symbols.empty();
   std::wstring charset;
   std::wstring result;
 
@@ -97,7 +100,7 @@ static std::wstring BuildRandomPassword(bool includeDigits, bool includeLower,
 bool QuickGenerateConfiguredPassword(HWND hwndNotify) {
   std::wstring password = BuildRandomPassword(
       g_passwordGeneratorIncludeDigits, g_passwordGeneratorIncludeLower,
-      g_passwordGeneratorIncludeUpper, g_passwordGeneratorIncludeSymbols,
+      g_passwordGeneratorIncludeUpper, g_passwordGeneratorSymbols,
       g_passwordGeneratorLength);
   if (password.empty()) {
     return false;
@@ -115,11 +118,12 @@ enum {
   IDC_GEN_DIGITS = 6101,
   IDC_GEN_LOWER = 6102,
   IDC_GEN_UPPER = 6103,
-  IDC_GEN_SYMBOLS = 6104,
   IDC_GEN_LENGTH_SLIDER = 6105,
   IDC_GEN_LENGTH_EDIT = 6106,
   IDC_GEN_PASSWORD_EDIT = 6107,
   IDC_GEN_REFRESH = 6108,
+  IDC_GEN_SYMBOLS_EDIT = 6109,
+  IDC_GEN_SYMBOLS_RESET = 6111,
 };
 
 struct GeneratorState {
@@ -127,13 +131,109 @@ struct GeneratorState {
   bool includeDigits;
   bool includeLower;
   bool includeUpper;
-  bool includeSymbols;
+  bool refreshAnimating;
+  bool sliderDragging;
+  int refreshAngle;
   int length;
+  HWND hSlider;
+  std::wstring customSymbols;
   std::wstring password;
   HFONT hResultFont;
   HFONT hIconFont;
   HFONT hRefreshFont;
 };
+
+static WNDPROC g_oldPasswordGeneratorSliderProc = NULL;
+static void RefreshPasswordGenerator(HWND hDlg, GeneratorState *state);
+static const UINT_PTR ID_GEN_REFRESH_ANIM_TIMER = 0x6201;
+static const wchar_t *kDefaultPasswordGeneratorSymbols =
+    L"!@#$%^&*()_+-=[]{};:,.<>?/\\\\|~`";
+
+static bool IsPasswordGeneratorCheckId(int id) {
+  return id == IDC_GEN_DIGITS || id == IDC_GEN_LOWER || id == IDC_GEN_UPPER;
+}
+
+static bool GetPasswordGeneratorCheckValue(const GeneratorState *state, int id) {
+  if (!state)
+    return false;
+  if (id == IDC_GEN_DIGITS)
+    return state->includeDigits;
+  if (id == IDC_GEN_LOWER)
+    return state->includeLower;
+  if (id == IDC_GEN_UPPER)
+    return state->includeUpper;
+  return false;
+}
+
+static void SetPasswordGeneratorCheckValue(GeneratorState *state, int id,
+                                           bool checked) {
+  if (!state)
+    return;
+  if (id == IDC_GEN_DIGITS)
+    state->includeDigits = checked;
+  else if (id == IDC_GEN_LOWER)
+    state->includeLower = checked;
+  else if (id == IDC_GEN_UPPER)
+    state->includeUpper = checked;
+}
+
+static void DrawPasswordGeneratorCheckButton(HWND hwnd, HDC hdc, const RECT &rc,
+                                             const wchar_t *text,
+                                             bool checked, bool pressed,
+                                             bool focused) {
+  (void)focused;
+  Graphics g(hdc);
+  g.SetSmoothingMode(SmoothingModeAntiAlias);
+  g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+
+  HBRUSH bgBrush = CreateSolidBrush(GetThemeDialogCardBgColor());
+  FillRect(hdc, &rc, bgBrush);
+  DeleteObject(bgBrush);
+
+  RECT rcCheck = {rc.left + 2, rc.top + (rc.bottom - rc.top - 18) / 2,
+                  rc.left + 20, rc.top + (rc.bottom - rc.top - 18) / 2 + 18};
+  GraphicsPath checkPath;
+  CreateRoundRectPath(&checkPath, rcCheck.left, rcCheck.top,
+                      rcCheck.right - rcCheck.left, rcCheck.bottom - rcCheck.top,
+                      4);
+  COLORREF boxFill =
+      checked ? (pressed ? RGB(10, 92, 174) : RGB(24, 120, 214))
+              : (g_isDarkMode ? RGB(32, 34, 40) : RGB(255, 255, 255));
+  COLORREF boxBorder =
+      checked ? boxFill
+              : (g_isDarkMode ? RGB(110, 116, 126) : RGB(188, 196, 208));
+  SolidBrush boxBrush(Color(255, GetRValue(boxFill), GetGValue(boxFill),
+                            GetBValue(boxFill)));
+  Pen boxPen(Color(255, GetRValue(boxBorder), GetGValue(boxBorder),
+                   GetBValue(boxBorder)),
+             1.0f);
+  g.FillPath(&boxBrush, &checkPath);
+  g.DrawPath(&boxPen, &checkPath);
+
+  if (checked) {
+    HFONT hCheckFont = CreateFontW(
+        14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
+    HFONT hOldCheckFont = (HFONT)SelectObject(hdc, hCheckFont);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    RECT rcGlyph = {rcCheck.left, rcCheck.top - 1, rcCheck.right, rcCheck.bottom};
+    DrawTextW(hdc, L"\u2713", -1, &rcGlyph,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(hdc, hOldCheckFont);
+    DeleteObject(hCheckFont);
+  }
+
+  RECT rcText = {rcCheck.right + 10, rc.top, rc.right - 2, rc.bottom};
+  SetBkMode(hdc, TRANSPARENT);
+  SetTextColor(hdc, g_isDarkMode ? RGB(228, 232, 238) : RGB(64, 70, 80));
+  HFONT hOldFont =
+      (HFONT)SelectObject(hdc, (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0));
+  DrawTextW(hdc, text, -1, &rcText,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  SelectObject(hdc, hOldFont);
+}
 
 static int ClampPasswordGeneratorLength(int value) {
   if (value < 6)
@@ -143,13 +243,193 @@ static int ClampPasswordGeneratorLength(int value) {
   return value;
 }
 
+static int GetPasswordGeneratorSliderValueFromX(HWND hwnd, int x) {
+  RECT rc = {};
+  GetClientRect(hwnd, &rc);
+  const int minValue = 6;
+  const int maxValue = 64;
+  const int thumbSize = 16;
+  const int trackInset = thumbSize / 2 + 3;
+  const int trackLeft = rc.left + trackInset;
+  const int trackRight = rc.right - trackInset;
+  const int trackWidth = std::max(1, trackRight - trackLeft);
+  int clampedX = x;
+  if (clampedX < trackLeft)
+    clampedX = trackLeft;
+  if (clampedX > trackRight)
+    clampedX = trackRight;
+  double ratio = (double)(clampedX - trackLeft) / (double)trackWidth;
+  int value = minValue + (int)(ratio * (maxValue - minValue) + 0.5);
+  return ClampPasswordGeneratorLength(value);
+}
+
+static void DrawPasswordGeneratorSlider(HWND hwnd, HDC hdc,
+                                        GeneratorState *state) {
+  RECT rc = {};
+  GetClientRect(hwnd, &rc);
+
+  Graphics g(hdc);
+  g.SetSmoothingMode(SmoothingModeAntiAlias);
+  g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+
+  HBRUSH bgBrush = CreateSolidBrush(GetThemeDialogCardBgColor());
+  FillRect(hdc, &rc, bgBrush);
+  DeleteObject(bgBrush);
+
+  const int minValue = 6;
+  const int maxValue = 64;
+  const int thumbSize = 16;
+  const int trackInset = thumbSize / 2 + 3;
+  const int centerY = (rc.top + rc.bottom) / 2;
+  const int trackLeft = rc.left + trackInset;
+  const int trackRight = rc.right - trackInset;
+  const int trackWidth = std::max(1, trackRight - trackLeft);
+  const double ratio =
+      state ? (double)(state->length - minValue) / (double)(maxValue - minValue)
+            : 0.0;
+  const int thumbCenterX = trackLeft + (int)(ratio * trackWidth + 0.5);
+
+  COLORREF inactiveTrackColor =
+      g_isDarkMode ? RGB(78, 82, 90) : RGB(223, 228, 236);
+  COLORREF activeTrackColor = GetThemeAccentColor();
+
+  Pen inactivePen(Color(255, GetRValue(inactiveTrackColor),
+                        GetGValue(inactiveTrackColor),
+                        GetBValue(inactiveTrackColor)),
+                  6.0f);
+  inactivePen.SetStartCap(LineCapRound);
+  inactivePen.SetEndCap(LineCapRound);
+  Pen activePen(Color(255, GetRValue(activeTrackColor),
+                      GetGValue(activeTrackColor),
+                      GetBValue(activeTrackColor)),
+                6.0f);
+  activePen.SetStartCap(LineCapRound);
+  activePen.SetEndCap(LineCapRound);
+
+  g.DrawLine(&inactivePen, (INT)trackLeft, (INT)centerY, (INT)trackRight,
+             (INT)centerY);
+  g.DrawLine(&activePen, (INT)trackLeft, (INT)centerY, (INT)thumbCenterX,
+             (INT)centerY);
+
+  COLORREF thumbFillColor =
+      g_isDarkMode ? RGB(246, 249, 252) : RGB(255, 255, 255);
+  Pen thumbBorderPen(Color(255, GetRValue(activeTrackColor),
+                           GetGValue(activeTrackColor),
+                           GetBValue(activeTrackColor)),
+                     2.0f);
+  SolidBrush thumbFillBrush(Color(255, GetRValue(thumbFillColor),
+                                  GetGValue(thumbFillColor),
+                                  GetBValue(thumbFillColor)));
+  const int thumbX = thumbCenterX - thumbSize / 2;
+  const int thumbY = centerY - thumbSize / 2;
+  g.FillEllipse(&thumbFillBrush, thumbX, thumbY, thumbSize, thumbSize);
+  g.DrawEllipse(&thumbBorderPen, thumbX, thumbY, thumbSize, thumbSize);
+}
+
 static void PersistPasswordGeneratorSettings(const GeneratorState *state) {
   g_passwordGeneratorIncludeDigits = state->includeDigits;
   g_passwordGeneratorIncludeLower = state->includeLower;
   g_passwordGeneratorIncludeUpper = state->includeUpper;
-  g_passwordGeneratorIncludeSymbols = state->includeSymbols;
+  g_passwordGeneratorSymbols = state->customSymbols;
+  g_passwordGeneratorIncludeSymbols = !state->customSymbols.empty();
   g_passwordGeneratorLength = state->length;
   SaveVaultSettings();
+}
+
+static void UpdatePasswordGeneratorLength(HWND hDlg, GeneratorState *state,
+                                          int value) {
+  if (!state)
+    return;
+  value = ClampPasswordGeneratorLength(value);
+  if (value == state->length)
+    return;
+  state->length = value;
+  RefreshPasswordGenerator(hDlg, state);
+}
+
+static void StartPasswordGeneratorRefreshAnimation(HWND hDlg,
+                                                   GeneratorState *state) {
+  if (!state)
+    return;
+  state->refreshAnimating = true;
+  state->refreshAngle = 0;
+  SetTimer(hDlg, ID_GEN_REFRESH_ANIM_TIMER, 16, NULL);
+  HWND hRefresh = GetDlgItem(hDlg, IDC_GEN_REFRESH);
+  if (hRefresh)
+    InvalidateRect(hRefresh, NULL, TRUE);
+}
+
+static LRESULT CALLBACK PasswordGeneratorSliderProc(HWND hwnd, UINT uMsg,
+                                                    WPARAM wParam,
+                                                    LPARAM lParam) {
+  HWND hDlg = GetParent(hwnd);
+  ThemedDialogConfig *config = reinterpret_cast<ThemedDialogConfig *>(
+      GetWindowLongPtrW(hDlg, GWLP_USERDATA));
+  GeneratorState *state =
+      config ? static_cast<GeneratorState *>(config->userData) : NULL;
+
+  switch (uMsg) {
+  case WM_LBUTTONDOWN:
+    if (state) {
+      state->sliderDragging = true;
+      SetCapture(hwnd);
+      UpdatePasswordGeneratorLength(
+          hDlg, state,
+          GetPasswordGeneratorSliderValueFromX(hwnd, GET_X_LPARAM(lParam)));
+      InvalidateRect(hwnd, NULL, TRUE);
+    }
+    return 0;
+  case WM_MOUSEMOVE:
+    if (state && state->sliderDragging && GetCapture() == hwnd) {
+      UpdatePasswordGeneratorLength(
+          hDlg, state,
+          GetPasswordGeneratorSliderValueFromX(hwnd, GET_X_LPARAM(lParam)));
+      InvalidateRect(hwnd, NULL, TRUE);
+      return 0;
+    }
+    break;
+  case WM_MOUSEWHEEL:
+    if (state) {
+      int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+      int step = (delta > 0) ? 1 : -1;
+      UpdatePasswordGeneratorLength(hDlg, state, state->length + step);
+      InvalidateRect(hwnd, NULL, TRUE);
+      return 0;
+    }
+    break;
+  case WM_LBUTTONUP:
+    if (state && state->sliderDragging) {
+      UpdatePasswordGeneratorLength(
+          hDlg, state,
+          GetPasswordGeneratorSliderValueFromX(hwnd, GET_X_LPARAM(lParam)));
+      state->sliderDragging = false;
+      if (GetCapture() == hwnd)
+        ReleaseCapture();
+      InvalidateRect(hwnd, NULL, TRUE);
+      return 0;
+    }
+    break;
+  case WM_CAPTURECHANGED:
+    if (state)
+      state->sliderDragging = false;
+    InvalidateRect(hwnd, NULL, TRUE);
+    return 0;
+  case WM_ERASEBKGND:
+    return 1;
+  case WM_PAINT: {
+    PAINTSTRUCT ps = {};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    DrawPasswordGeneratorSlider(hwnd, hdc, state);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  case WM_SETCURSOR:
+    SetCursor(LoadCursorW(NULL, IDC_HAND));
+    return TRUE;
+  }
+
+  return CallWindowProcW(g_oldPasswordGeneratorSliderProc, hwnd, uMsg, wParam,
+                         lParam);
 }
 
 static void DestroyPasswordGeneratorFonts(GeneratorState *state) {
@@ -170,16 +450,14 @@ static void DestroyPasswordGeneratorFonts(GeneratorState *state) {
 static void EnsurePasswordGeneratorHasCharset(HWND hDlg, GeneratorState *state,
                                               int fallbackId) {
   if (state->includeDigits || state->includeLower || state->includeUpper ||
-      state->includeSymbols) {
+      !state->customSymbols.empty()) {
     return;
   }
 
   state->includeDigits = (fallbackId == IDC_GEN_DIGITS);
   state->includeLower = (fallbackId == IDC_GEN_LOWER);
   state->includeUpper = (fallbackId == IDC_GEN_UPPER);
-  state->includeSymbols = (fallbackId == IDC_GEN_SYMBOLS);
-  if (!state->includeDigits && !state->includeLower && !state->includeUpper &&
-      !state->includeSymbols) {
+  if (!state->includeDigits && !state->includeLower && !state->includeUpper) {
     state->includeDigits = true;
   }
 
@@ -189,25 +467,19 @@ static void EnsurePasswordGeneratorHasCharset(HWND hDlg, GeneratorState *state,
                       state->includeLower ? BST_CHECKED : BST_UNCHECKED, 0);
   SendDlgItemMessageW(hDlg, IDC_GEN_UPPER, BM_SETCHECK,
                       state->includeUpper ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendDlgItemMessageW(hDlg, IDC_GEN_SYMBOLS, BM_SETCHECK,
-                      state->includeSymbols ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 static void SyncPasswordGeneratorFlags(HWND hDlg, GeneratorState *state) {
-  state->includeDigits =
-      SendDlgItemMessageW(hDlg, IDC_GEN_DIGITS, BM_GETCHECK, 0, 0) == BST_CHECKED;
-  state->includeLower =
-      SendDlgItemMessageW(hDlg, IDC_GEN_LOWER, BM_GETCHECK, 0, 0) == BST_CHECKED;
-  state->includeUpper =
-      SendDlgItemMessageW(hDlg, IDC_GEN_UPPER, BM_GETCHECK, 0, 0) == BST_CHECKED;
-  state->includeSymbols =
-      SendDlgItemMessageW(hDlg, IDC_GEN_SYMBOLS, BM_GETCHECK, 0, 0) == BST_CHECKED;
+  (void)hDlg;
+  wchar_t symbolsBuf[512] = {};
+  GetDlgItemTextW(hDlg, IDC_GEN_SYMBOLS_EDIT, symbolsBuf, _countof(symbolsBuf));
+  state->customSymbols = symbolsBuf;
 }
 
 static void RefreshPasswordGenerator(HWND hDlg, GeneratorState *state) {
   state->password = BuildRandomPassword(
       state->includeDigits, state->includeLower, state->includeUpper,
-      state->includeSymbols, state->length);
+      state->customSymbols, state->length);
   SetDlgItemTextW(hDlg, IDC_GEN_PASSWORD_EDIT, state->password.c_str());
   wchar_t lenBuf[16];
   _snwprintf_s(lenBuf, _countof(lenBuf), L"%d", state->length);
@@ -217,6 +489,8 @@ static void RefreshPasswordGenerator(HWND hDlg, GeneratorState *state) {
   HWND hPasswordEdit = GetDlgItem(hDlg, IDC_GEN_PASSWORD_EDIT);
   if (hPasswordEdit)
     InvalidateRect(hPasswordEdit, NULL, TRUE);
+  if (state->hSlider)
+    InvalidateRect(state->hSlider, NULL, TRUE);
   PersistPasswordGeneratorSettings(state);
 }
 
@@ -238,17 +512,35 @@ static bool HandlePasswordGeneratorMessage(HWND hw, UINT message, WPARAM wParam,
   case WM_COMMAND: {
     WORD id = LOWORD(wParam);
     WORD notify = HIWORD(wParam);
-    if ((id == IDC_GEN_DIGITS || id == IDC_GEN_LOWER || id == IDC_GEN_UPPER ||
-         id == IDC_GEN_SYMBOLS) &&
-        notify == BN_CLICKED) {
+    if (IsPasswordGeneratorCheckId(id) && notify == BN_CLICKED) {
+      bool oldState = GetPasswordGeneratorCheckValue(state, id);
+      SetPasswordGeneratorCheckValue(state, id, !oldState);
       SyncPasswordGeneratorFlags(hw, state);
       EnsurePasswordGeneratorHasCharset(hw, state, id);
       RefreshPasswordGenerator(hw, state);
+      InvalidateRect((HWND)lParam, NULL, TRUE);
+      *result = 0;
+      return true;
+    }
+    if (id == IDC_GEN_SYMBOLS_EDIT && notify == EN_CHANGE) {
+      SyncPasswordGeneratorFlags(hw, state);
+      RefreshPasswordGenerator(hw, state);
+      *result = 0;
+      return true;
+    }
+    if (id == IDC_GEN_SYMBOLS_RESET && notify == BN_CLICKED) {
+      SetDlgItemTextW(hw, IDC_GEN_SYMBOLS_EDIT, kDefaultPasswordGeneratorSymbols);
+      SyncPasswordGeneratorFlags(hw, state);
+      RefreshPasswordGenerator(hw, state);
+      HWND hReset = GetDlgItem(hw, IDC_GEN_SYMBOLS_RESET);
+      if (hReset)
+        InvalidateRect(hReset, NULL, TRUE);
       *result = 0;
       return true;
     }
     if (id == IDC_GEN_REFRESH && notify == BN_CLICKED) {
       TriggerPasswordGeneratorRefresh(hw, state);
+      StartPasswordGeneratorRefreshAnimation(hw, state);
       *result = 0;
       return true;
     }
@@ -266,11 +558,17 @@ static bool HandlePasswordGeneratorMessage(HWND hw, UINT message, WPARAM wParam,
     }
     return false;
   }
-  case WM_HSCROLL:
-    if ((HWND)lParam == GetDlgItem(hw, IDC_GEN_LENGTH_SLIDER)) {
-      state->length = (int)SendDlgItemMessageW(hw, IDC_GEN_LENGTH_SLIDER,
-                                               TBM_GETPOS, 0, 0);
-      RefreshPasswordGenerator(hw, state);
+  case WM_TIMER:
+    if (wParam == ID_GEN_REFRESH_ANIM_TIMER) {
+      state->refreshAngle += 24;
+      if (state->refreshAngle >= 360) {
+        state->refreshAngle = 0;
+        state->refreshAnimating = false;
+        KillTimer(hw, ID_GEN_REFRESH_ANIM_TIMER);
+      }
+      HWND hRefresh = GetDlgItem(hw, IDC_GEN_REFRESH);
+      if (hRefresh)
+        InvalidateRect(hRefresh, NULL, TRUE);
       *result = 0;
       return true;
     }
@@ -279,95 +577,34 @@ static bool HandlePasswordGeneratorMessage(HWND hw, UINT message, WPARAM wParam,
     if (wParam == VK_F5 ||
         (wParam == 'R' && (GetKeyState(VK_CONTROL) & 0x8000))) {
       TriggerPasswordGeneratorRefresh(hw, state);
+      StartPasswordGeneratorRefreshAnimation(hw, state);
       *result = 0;
       return true;
     }
     return false;
-  case WM_NOTIFY: {
-    LPNMHDR hdr = reinterpret_cast<LPNMHDR>(lParam);
-    if (!hdr || hdr->idFrom != IDC_GEN_LENGTH_SLIDER ||
-        hdr->code != NM_CUSTOMDRAW) {
-      return false;
-    }
-
-    LPNMCUSTOMDRAW cd = reinterpret_cast<LPNMCUSTOMDRAW>(lParam);
-    if (cd->dwDrawStage != CDDS_PREPAINT) {
-      return false;
-    }
-
-    HDC hdc = cd->hdc;
-    RECT rc = cd->rc;
-    Graphics g(hdc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    SolidBrush bgBrush(Color(255, GetRValue(GetThemeDialogBgColor()),
-                             GetGValue(GetThemeDialogBgColor()),
-                             GetBValue(GetThemeDialogBgColor())));
-    g.FillRectangle(&bgBrush, (INT)rc.left, (INT)rc.top,
-                    (INT)(rc.right - rc.left), (INT)(rc.bottom - rc.top));
-
-    const int minValue =
-        (int)SendMessageW(hdr->hwndFrom, TBM_GETRANGEMIN, 0, 0);
-    const int maxValue =
-        (int)SendMessageW(hdr->hwndFrom, TBM_GETRANGEMAX, 0, 0);
-    const int currentValue =
-        (int)SendMessageW(hdr->hwndFrom, TBM_GETPOS, 0, 0);
-
-    const int thumbSize = 12;
-    const int trackInset = thumbSize / 2 + 2;
-    const int trackHeight = 4;
-    const int centerY = (rc.top + rc.bottom) / 2;
-    const int trackLeft = rc.left + trackInset;
-    const int trackRight = rc.right - trackInset;
-    const int trackWidth = std::max(1, trackRight - trackLeft);
-    const double ratio =
-        (maxValue > minValue)
-            ? (double)(currentValue - minValue) / (double)(maxValue - minValue)
-            : 0.0;
-    const int thumbCenterX = trackLeft + (int)(ratio * trackWidth + 0.5);
-
-    COLORREF inactiveTrackColor =
-        g_isDarkMode ? RGB(70, 74, 82) : RGB(232, 235, 240);
-    COLORREF activeTrackColor = RGB(120, 196, 255);
-    Pen inactivePen(Color(255, GetRValue(inactiveTrackColor),
-                          GetGValue(inactiveTrackColor),
-                          GetBValue(inactiveTrackColor)),
-                    (REAL)trackHeight);
-    inactivePen.SetStartCap(LineCapRound);
-    inactivePen.SetEndCap(LineCapRound);
-    Pen activePen(Color(255, GetRValue(activeTrackColor),
-                        GetGValue(activeTrackColor),
-                        GetBValue(activeTrackColor)),
-                  (REAL)trackHeight);
-    activePen.SetStartCap(LineCapRound);
-    activePen.SetEndCap(LineCapRound);
-    g.DrawLine(&inactivePen, trackLeft, centerY, trackRight, centerY);
-    g.DrawLine(&activePen, trackLeft, centerY, thumbCenterX, centerY);
-
-    COLORREF thumbFillColor = RGB(255, 255, 255);
-    Pen thumbBorderPen(Color(255, GetRValue(activeTrackColor),
-                             GetGValue(activeTrackColor),
-                             GetBValue(activeTrackColor)),
-                       1.8f);
-    SolidBrush thumbFillBrush(Color(255, GetRValue(thumbFillColor),
-                                    GetGValue(thumbFillColor),
-                                    GetBValue(thumbFillColor)));
-    const int thumbX = thumbCenterX - thumbSize / 2;
-    const int thumbY = centerY - thumbSize / 2;
-    g.FillEllipse(&thumbFillBrush, thumbX, thumbY, thumbSize, thumbSize);
-    g.DrawEllipse(&thumbBorderPen, thumbX, thumbY, thumbSize, thumbSize);
-
-    *result = CDRF_SKIPDEFAULT;
-    return true;
-  }
   case WM_DRAWITEM: {
     LPDRAWITEMSTRUCT dis = reinterpret_cast<LPDRAWITEMSTRUCT>(lParam);
     if (!dis) {
       return false;
     }
-    if (dis->CtlID == IDC_GEN_REFRESH) {
+    if (IsPasswordGeneratorCheckId((int)dis->CtlID)) {
+      wchar_t text[64] = {};
+      GetWindowTextW(dis->hwndItem, text, _countof(text));
+      bool checked = GetPasswordGeneratorCheckValue(state, (int)dis->CtlID);
+      bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+      bool focused = (dis->itemState & ODS_FOCUS) != 0;
+      HBRUSH bgBrush = CreateSolidBrush(GetThemeDialogCardBgColor());
+      FillRect(dis->hDC, &dis->rcItem, bgBrush);
+      DeleteObject(bgBrush);
+      DrawPasswordGeneratorCheckButton(dis->hwndItem, dis->hDC, dis->rcItem,
+                                       text, checked, pressed, focused);
+      *result = TRUE;
+      return true;
+    }
+    if (dis->CtlID == IDC_GEN_REFRESH || dis->CtlID == IDC_GEN_SYMBOLS_RESET) {
       HDC hdc = dis->hDC;
       RECT rc = dis->rcItem;
-      HBRUSH bgBrush = CreateSolidBrush(GetThemeDialogBgColor());
+      HBRUSH bgBrush = CreateSolidBrush(GetThemeDialogCardBgColor());
       FillRect(hdc, &rc, bgBrush);
       DeleteObject(bgBrush);
 
@@ -376,14 +613,25 @@ static bool HandlePasswordGeneratorMessage(HWND hw, UINT message, WPARAM wParam,
       bool pressed = (dis->itemState & ODS_SELECTED) != 0;
       bool focused = (dis->itemState & ODS_FOCUS) != 0;
       bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
-      COLORREF fill = GetThemeAccentColor();
+      bool isResetButton = (dis->CtlID == IDC_GEN_SYMBOLS_RESET);
+      COLORREF fill = isResetButton ? (g_isDarkMode ? RGB(44, 46, 52)
+                                                    : RGB(242, 245, 249))
+                                    : GetThemeAccentColor();
       if (pressed) {
-        fill = g_isDarkMode ? RGB(52, 93, 146) : RGB(0, 94, 184);
+        fill = isResetButton ? (g_isDarkMode ? RGB(58, 61, 68)
+                                             : RGB(230, 235, 241))
+                             : (g_isDarkMode ? RGB(52, 93, 146)
+                                             : RGB(0, 94, 184));
       } else if (hover) {
-        fill = g_isDarkMode ? RGB(92, 132, 196) : RGB(28, 120, 214);
+        fill = isResetButton ? (g_isDarkMode ? RGB(52, 55, 62)
+                                             : RGB(236, 240, 246))
+                             : (g_isDarkMode ? RGB(92, 132, 196)
+                                             : RGB(28, 120, 214));
       }
-      COLORREF border = pressed ? fill
-                                : (focused ? RGB(255, 255, 255) : fill);
+      COLORREF border =
+          isResetButton
+              ? (g_isDarkMode ? RGB(84, 88, 96) : RGB(206, 212, 222))
+              : (pressed ? fill : (focused ? RGB(255, 255, 255) : fill));
 
       GraphicsPath path;
       CreateRoundRectPath(&path, rc.left + 1, rc.top + 1,
@@ -396,11 +644,36 @@ static bool HandlePasswordGeneratorMessage(HWND hw, UINT message, WPARAM wParam,
       g.FillPath(&brush, &path);
       g.DrawPath(&pen, &path);
 
-      HFONT oldFont = (HFONT)SelectObject(hdc, state->hRefreshFont);
-      SetBkMode(hdc, TRANSPARENT);
-      SetTextColor(hdc, RGB(255, 255, 255));
-      DrawTextW(hdc, L"刷新", -1, &rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      HFONT oldFont = (HFONT)SelectObject(hdc, state->hIconFont);
+      Graphics g2(hdc);
+      g2.SetSmoothingMode(SmoothingModeAntiAlias);
+      int oldGraphicsState = g2.Save();
+      if (!isResetButton) {
+        PointF center((REAL)((rc.left + rc.right) / 2.0f),
+                      (REAL)((rc.top + rc.bottom) / 2.0f));
+        g2.TranslateTransform(center.X, center.Y);
+        g2.RotateTransform((REAL)state->refreshAngle);
+        g2.TranslateTransform(-center.X, -center.Y);
+      }
+      Font font(hdc, state->hIconFont);
+      SolidBrush textBrush(Color(255,
+                                 isResetButton
+                                     ? (g_isDarkMode ? 226 : 72)
+                                     : 255,
+                                 isResetButton
+                                     ? (g_isDarkMode ? 230 : 78)
+                                     : 255,
+                                 isResetButton
+                                     ? (g_isDarkMode ? 236 : 88)
+                                     : 255));
+      StringFormat format;
+      format.SetAlignment(StringAlignmentCenter);
+      format.SetLineAlignment(StringAlignmentCenter);
+      RectF rcIcon((REAL)rc.left, (REAL)rc.top, (REAL)(rc.right - rc.left),
+                   (REAL)(rc.bottom - rc.top));
+      g2.DrawString(isResetButton ? L"\uE777" : L"\uE72C", -1, &font, rcIcon,
+                    &format, &textBrush);
+      g2.Restore(oldGraphicsState);
       SelectObject(hdc, oldFont);
       *result = TRUE;
       return true;
@@ -974,7 +1247,11 @@ void ShowRandomPasswordGeneratorDialog(HWND hwndParent) {
   state.includeDigits = g_passwordGeneratorIncludeDigits;
   state.includeLower = g_passwordGeneratorIncludeLower;
   state.includeUpper = g_passwordGeneratorIncludeUpper;
-  state.includeSymbols = g_passwordGeneratorIncludeSymbols;
+  state.refreshAnimating = false;
+  state.sliderDragging = false;
+  state.refreshAngle = 0;
+  state.hSlider = NULL;
+  state.customSymbols = g_passwordGeneratorSymbols;
   state.length = ClampPasswordGeneratorLength(g_passwordGeneratorLength);
   state.hResultFont = NULL;
   state.hIconFont = NULL;
@@ -989,11 +1266,12 @@ void ShowRandomPasswordGeneratorDialog(HWND hwndParent) {
   config.primaryButtonText = L"复制密码";
   config.secondaryButtonText = L"关闭";
   config.dlgW = 484;
-  config.dlgH = 344;
+  config.dlgH = 406;
   config.closeBtnId = 6110;
   config.bodyFontDelta = -2;
-  config.cardRect = {14, 78, 470, 276};
-  static const int fieldLabelIds[] = {6201, 6202, 6203};
+  config.drawCardBorder = false;
+  config.cardRect = {14, 78, 470, 352};
+  static const int fieldLabelIds[] = {6201, 6202, 6203, 6204};
   config.fieldLabelIds = fieldLabelIds;
   config.fieldLabelCount = _countof(fieldLabelIds);
   config.doneFlag = &state.done;
@@ -1007,56 +1285,63 @@ void ShowRandomPasswordGeneratorDialog(HWND hwndParent) {
                   WS_CHILD | WS_VISIBLE, 34, 94, 120, 20, hDlg,
                   (HMENU)6201, hInst, NULL);
   HWND hDigits = CreateWindowExW(0, L"BUTTON", L"数字 0-9",
-                                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                 34, 122, 86, 22, hDlg,
+                                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX |
+                                     BS_OWNERDRAW,
+                                 34, 122, 96, 24, hDlg,
                                  (HMENU)IDC_GEN_DIGITS, hInst, NULL);
   HWND hLower = CreateWindowExW(0, L"BUTTON", L"小写 a-z",
-                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                128, 122, 86, 22, hDlg,
+                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX |
+                                    BS_OWNERDRAW,
+                                146, 122, 96, 24, hDlg,
                                 (HMENU)IDC_GEN_LOWER, hInst, NULL);
   HWND hUpper = CreateWindowExW(0, L"BUTTON", L"大写 A-Z",
-                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                222, 122, 92, 22, hDlg,
+                                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX |
+                                    BS_OWNERDRAW,
+                                258, 122, 100, 24, hDlg,
                                 (HMENU)IDC_GEN_UPPER, hInst, NULL);
-  HWND hSymbols = CreateWindowExW(
-      0, L"BUTTON", L"符号 !@#$%",
-      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 322, 122, 116, 22, hDlg,
-      (HMENU)IDC_GEN_SYMBOLS, hInst, NULL);
   SendMessageW(hDigits, BM_SETCHECK,
                state.includeDigits ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(hLower, BM_SETCHECK,
                state.includeLower ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(hUpper, BM_SETCHECK,
                state.includeUpper ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendMessageW(hSymbols, BM_SETCHECK,
-               state.includeSymbols ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"特殊字符",
+                  WS_CHILD | WS_VISIBLE, 34, 162, 120, 20, hDlg,
+                  (HMENU)6204, hInst, NULL);
+  HWND hSymbolsEdit = CreateWindowExW(
+      WS_EX_CLIENTEDGE, L"EDIT", state.customSymbols.c_str(),
+      WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_MULTILINE, 34, 186, 352, 32,
+      hDlg, (HMENU)IDC_GEN_SYMBOLS_EDIT, hInst, NULL);
+  CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 394,
+                  185, 44, 34, hDlg, (HMENU)IDC_GEN_SYMBOLS_RESET, hInst, NULL);
 
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"密码长度",
-                  WS_CHILD | WS_VISIBLE, 34, 164, 120, 20, hDlg,
+                  WS_CHILD | WS_VISIBLE, 34, 232, 120, 20, hDlg,
                   (HMENU)6202, hInst, NULL);
-  HWND hSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-                                 WS_CHILD | WS_VISIBLE | TBS_NOTICKS, 34, 187,
-                                 316, 24, hDlg,
+  HWND hSlider = CreateWindowExW(0, L"STATIC", L"",
+                                 WS_CHILD | WS_VISIBLE | SS_NOTIFY, 34, 254,
+                                 316, 30, hDlg,
                                  (HMENU)IDC_GEN_LENGTH_SLIDER, hInst, NULL);
-  SendMessageW(hSlider, TBM_SETRANGE, TRUE, MAKELPARAM(6, 64));
-  SendMessageW(hSlider, TBM_SETPAGESIZE, 0, 2);
-  SetWindowTheme(hSlider, L"", L"");
+  state.hSlider = hSlider;
+  g_oldPasswordGeneratorSliderProc = (WNDPROC)SetWindowLongPtrW(
+      hSlider, GWLP_WNDPROC, (LONG_PTR)PasswordGeneratorSliderProc);
   CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                   WS_CHILD | WS_VISIBLE | ES_CENTER | ES_NUMBER |
                       ES_AUTOHSCROLL | ES_MULTILINE,
-                  360, 182, 78, 32, hDlg, (HMENU)IDC_GEN_LENGTH_EDIT, hInst,
+                  360, 250, 78, 32, hDlg, (HMENU)IDC_GEN_LENGTH_EDIT, hInst,
                   NULL);
 
   CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", L"随机密码结果",
-                  WS_CHILD | WS_VISIBLE, 34, 224, 180, 20, hDlg,
+                  WS_CHILD | WS_VISIBLE, 34, 286, 180, 20, hDlg,
                   (HMENU)6203, hInst, NULL);
   HWND hPasswordEdit = CreateWindowExW(
       WS_EX_CLIENTEDGE, L"EDIT", L"",
       WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY | ES_MULTILINE, 34,
-      248, 316, 32, hDlg, (HMENU)IDC_GEN_PASSWORD_EDIT, hInst, NULL);
+      308, 316, 32, hDlg, (HMENU)IDC_GEN_PASSWORD_EDIT, hInst, NULL);
   HWND hRefresh = CreateWindowExW(0, L"BUTTON", L"",
-                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 362, 248,
-                                  76, 32, hDlg, (HMENU)IDC_GEN_REFRESH, hInst,
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 362, 307,
+                                  44, 34, hDlg, (HMENU)IDC_GEN_REFRESH, hInst,
                                   NULL);
 
   state.hResultFont = CreateFontW(17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -1076,7 +1361,8 @@ void ShowRandomPasswordGeneratorDialog(HWND hwndParent) {
                                    L"Microsoft YaHei");
   SendMessageW(hPasswordEdit, WM_SETFONT, (WPARAM)state.hResultFont, TRUE);
   SendMessageW(hRefresh, WM_SETFONT, (WPARAM)state.hRefreshFont, TRUE);
-  SendMessageW(hSlider, TBM_SETPOS, TRUE, state.length);
+  SendMessageW(hSymbolsEdit, EM_SETCUEBANNER, TRUE,
+               (LPARAM)L"输入要参与生成的特殊字符");
 
   config.initialFocus = hRefresh;
   RefreshPasswordGenerator(hDlg, &state);

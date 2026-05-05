@@ -310,6 +310,56 @@ static void SyncHotkeyEditTextRect(HWND hwnd) {
   InvalidateRect(hwnd, NULL, TRUE);
 }
 
+static void SyncSettingsNumberEditTextRect(HWND hwnd) {
+  if (!hwnd)
+    return;
+  RECT rcClient = {};
+  GetClientRect(hwnd, &rcClient);
+  if (rcClient.right <= rcClient.left || rcClient.bottom <= rcClient.top)
+    return;
+
+  HDC hdc = GetDC(hwnd);
+  if (!hdc)
+    return;
+
+  HFONT hFont = (HFONT)SendMessageW(hwnd, WM_GETFONT, 0, 0);
+  HFONT hOldFont = NULL;
+  if (hFont)
+    hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+  TEXTMETRICW tm = {};
+  GetTextMetricsW(hdc, &tm);
+  LOGFONTW lf = {};
+  if (hFont)
+    GetObjectW(hFont, sizeof(lf), &lf);
+  if (hOldFont)
+    SelectObject(hdc, hOldFont);
+  ReleaseDC(hwnd, hdc);
+
+  int fontHeight = lf.lfHeight != 0 ? abs(lf.lfHeight) : (int)tm.tmHeight;
+  int textHeight = std::max(1, fontHeight + (int)tm.tmExternalLeading);
+  int availableHeight = (int)(rcClient.bottom - rcClient.top);
+  int topPadding = (availableHeight - textHeight) / 2;
+  if (topPadding < 2)
+    topPadding = 2;
+  topPadding += 1;
+  int bottomPadding = availableHeight - textHeight - topPadding;
+  if (bottomPadding < 2) {
+    bottomPadding = 2;
+    topPadding = std::max(2, availableHeight - textHeight - bottomPadding);
+  }
+
+  RECT rcText = {0,
+                 topPadding,
+                 std::max(1, (int)rcClient.right),
+                 std::max(topPadding + textHeight + 1,
+                          (int)rcClient.bottom - bottomPadding)};
+  SendMessageW(hwnd, EM_SETRECT, 0, (LPARAM)&rcText);
+  SendMessageW(hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+               MAKELONG(0, 0));
+  InvalidateRect(hwnd, NULL, TRUE);
+}
+
 // PLACEHOLDER_SETTINGS_PART3
 
 // ==================== iOS 风格编辑框子类 ====================
@@ -347,6 +397,8 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     LRESULT result = CallWindowProcW(origProc, hwnd, uMsg, wParam, lParam);
     if (hwnd == g_hwndHotkeyEdit || hwnd == g_hwndSearchHotkeyEdit)
       SyncHotkeyEditTextRect(hwnd);
+    else if (hwnd == g_hwndHistoryLimitEdit || hwnd == g_hwndScrollbarTimeoutEdit)
+      SyncSettingsNumberEditTextRect(hwnd);
     return result;
   }
   case WM_NCPAINT: {
@@ -3125,6 +3177,7 @@ void ShowSettingsDialog(HWND hwndParent) {
     SendMessageW(g_hwndScrollbarTimeoutEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
     g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndScrollbarTimeoutEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+    SyncSettingsNumberEditTextRect(g_hwndScrollbarTimeoutEdit);
   }
 
   g_hwndThemeCombo = CreateSettingsCombo(hwndDlg, 4, IDC_THEME_COMBO, 120);
@@ -3148,6 +3201,7 @@ void ShowSettingsDialog(HWND hwndParent) {
     SendMessageW(g_hwndHistoryLimitEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
     g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndHistoryLimitEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+    SyncSettingsNumberEditTextRect(g_hwndHistoryLimitEdit);
   }
   UpdateScrollbarSettingsControls();
 

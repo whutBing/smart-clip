@@ -1,6 +1,7 @@
 #include "smart_action.h"
 #include "history.h"
 #include "themed_dialog.h"
+#include <cwctype>
 #include <fstream>
 #include <regex>
 #include <shlwapi.h>
@@ -147,6 +148,116 @@ CollectTemplateParams(const std::wstring &templateText) {
   } catch (...) {
   }
   return fields;
+}
+
+static std::wstring TrimSmartActionText(const std::wstring &text) {
+  size_t start = 0;
+  while (start < text.size() && iswspace(text[start])) {
+    ++start;
+  }
+  size_t end = text.size();
+  while (end > start && iswspace(text[end - 1])) {
+    --end;
+  }
+  return text.substr(start, end - start);
+}
+
+static bool StartsWithNoCase(const std::wstring &text,
+                             const std::wstring &prefix) {
+  if (text.size() < prefix.size())
+    return false;
+  return _wcsnicmp(text.c_str(), prefix.c_str(), prefix.size()) == 0;
+}
+
+static bool ExtractRemoteDesktopTarget(const std::wstring &cmd,
+                                       std::wstring *target) {
+  if (!target)
+    return false;
+
+  std::wstring trimmed = TrimSmartActionText(cmd);
+  if (!(StartsWithNoCase(trimmed, L"mstsc ") ||
+        StartsWithNoCase(trimmed, L"mstsc.exe "))) {
+    return false;
+  }
+
+  size_t pos = trimmed.find(L"/v:");
+  if (pos == std::wstring::npos) {
+    pos = trimmed.find(L"/V:");
+  }
+  if (pos == std::wstring::npos) {
+    return false;
+  }
+
+  pos += 3;
+  while (pos < trimmed.size() && iswspace(trimmed[pos])) {
+    ++pos;
+  }
+  if (pos >= trimmed.size()) {
+    return false;
+  }
+
+  std::wstring value;
+  if (trimmed[pos] == L'"') {
+    ++pos;
+    size_t endQuote = trimmed.find(L'"', pos);
+    if (endQuote == std::wstring::npos) {
+      value = trimmed.substr(pos);
+    } else {
+      value = trimmed.substr(pos, endQuote - pos);
+    }
+  } else {
+    size_t end = pos;
+    while (end < trimmed.size() && !iswspace(trimmed[end])) {
+      ++end;
+    }
+    value = trimmed.substr(pos, end - pos);
+  }
+
+  value = TrimSmartActionText(value);
+  if (value.empty()) {
+    return false;
+  }
+  *target = value;
+  return true;
+}
+
+static bool LaunchRemoteDesktopEditor(const std::wstring &target) {
+  std::wstring trimmedTarget = TrimSmartActionText(target);
+  if (trimmedTarget.empty()) {
+    return false;
+  }
+
+  std::wstring dataFilePath = GetDataFilePath();
+  size_t lastSlash = dataFilePath.find_last_of(L"\\");
+  if (lastSlash == std::wstring::npos) {
+    return false;
+  }
+
+  std::wstring rdpPath =
+      dataFilePath.substr(0, lastSlash) + L"\\smartclip_remote_desktop.rdp";
+  std::wstring rdpContent =
+      L"full address:s:" + trimmedTarget + L"\r\n"
+      L"prompt for credentials:i:1\r\n"
+      L"username:s:\r\n"
+      L"administrative session:i:0\r\n";
+
+  HANDLE hFile = CreateFileW(rdpPath.c_str(), GENERIC_WRITE, 0, NULL,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  DWORD written = 0;
+  const WORD bom = 0xFEFF;
+  WriteFile(hFile, &bom, sizeof(bom), &written, NULL);
+  WriteFile(hFile, rdpContent.c_str(),
+            (DWORD)(rdpContent.size() * sizeof(wchar_t)), &written, NULL);
+  CloseHandle(hFile);
+
+  std::wstring params = L"/edit \"" + rdpPath + L"\"";
+  HINSTANCE result = ShellExecuteW(NULL, L"open", L"mstsc.exe", params.c_str(),
+                                   NULL, SW_SHOWNORMAL);
+  return (INT_PTR)result > 32;
 }
 
 static bool PromptSmartActionParams(HWND hwndParent, const SmartAction &action,
@@ -511,6 +622,11 @@ bool MatchAndExecute(HWND hwndParent, const std::wstring &text) {
       std::wstring cmd;
       if (!ExpandActionTemplate(hwndParent, a, text, a.customCmd, &cmd))
         return true;
+      std::wstring rdpTarget;
+      if (ExtractRemoteDesktopTarget(cmd, &rdpTarget) &&
+          LaunchRemoteDesktopEditor(rdpTarget)) {
+        return true;
+      }
       // VS Code 的 code 命令需要特殊处理，直接执行而不是通过 cmd.exe
       if (cmd.find(L"code ") == 0) {
         ShellExecuteW(NULL, L"open", cmd.c_str(), NULL, NULL, SW_SHOWNORMAL);

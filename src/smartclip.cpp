@@ -60,7 +60,6 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define IDM_NOTIFICATION 2006
 #define IDM_THEME_LIGHT 2007
 #define IDM_THEME_DARK 2008
-#define IDM_TRAY_PASSWORD_GENERATOR 2009
 #define ID_TOPMOST_BUTTON 1006
 #define ID_DARKMODE_BUTTON 1007
 #define IDM_COPY 3001
@@ -96,8 +95,6 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define ID_FILTER_IMAGE 1103
 #define ID_FILTER_FILE 1104
 #define ID_FILTER_FAVORITE 1105
-#define ID_FILTER_PASSWORD 1106
-
 // 翻页按钮ID
 #define ID_PAGE_UP_BTN 1201
 #define ID_PAGE_DOWN_BTN 1202
@@ -117,8 +114,6 @@ HWND g_hwndFilterText = NULL;
 HWND g_hwndFilterImage = NULL;
 HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
-HWND g_hwndFilterPassword = NULL;
-
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
 // 密码列表：密码可见状态（存储 g_passwords 中的索引）
@@ -223,12 +218,6 @@ int g_linkColorExpandAnimIndex = -1;       // 正在展开动画的项目索引
 float g_linkColorCollapseProgress = 0.0f;  // 颜色收起动画进度 0.0-1.0
 bool g_linkColorCollapseAnimating = false; // 是否正在收起动画
 int g_linkColorCollapseAnimIndex = -1;     // 正在收起动画的项目索引
-bool g_passwordFilterOpenState = true;
-bool g_passwordFilterAnimFromOpen = true;
-bool g_passwordFilterAnimToOpen = true;
-bool g_passwordFilterAnimating = false;
-float g_passwordFilterAnimProgress = 1.0f;
-
 // 文件拖放相关
 bool g_isDragging = false;       // 是否正在拖拽
 POINT g_dragStartPoint = {0, 0}; // 拖拽起始点
@@ -4016,10 +4005,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     g_hwndFilterFavorite = CreateWindowExW(
         0, L"BUTTON", T(STR_FILTER_FAVORITE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
         hwnd, (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
-    g_hwndFilterPassword = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_PASSWORD), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_PASSWORD, GetModuleHandleW(NULL), NULL);
-
     // 设置筛选按钮字体（比UI字体大4px）
     HFONT hFilterFont = CreateFontW(
         g_fontSize + 4, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -4030,13 +4015,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     SendMessageW(g_hwndFilterImage, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFile, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     SendMessageW(g_hwndFilterFavorite, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
-    SendMessageW(g_hwndFilterPassword, WM_SETFONT, (WPARAM)hFilterFont, TRUE);
     ApplyLanguage();
-    g_passwordFilterOpenState = ShouldShowPasswordFilterOpenState();
-    g_passwordFilterAnimFromOpen = g_passwordFilterOpenState;
-    g_passwordFilterAnimToOpen = g_passwordFilterOpenState;
-    g_passwordFilterAnimating = false;
-    g_passwordFilterAnimProgress = 1.0f;
     g_oldFilterFavoriteProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndFilterFavorite, GWLP_WNDPROC, (LONG_PTR)FilterFavoriteBtnProc);
 
@@ -4100,14 +4079,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         hwndTopmostButton, GWLP_WNDPROC, (LONG_PTR)TopmostBtnProc);
 
     // 创建批量编辑按钮
-    HWND hwndBatchEditButton = CreateWindowExW(
-        0, L"BUTTON", L"批量编辑", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0,
-        0, 0, hwnd, (HMENU)ID_BATCH_EDIT_BUTTON, GetModuleHandleW(NULL), NULL);
-    // 子类化批量编辑按钮以处理悬浮效果
-    g_hwndBatchEditBtn = hwndBatchEditButton;
-    g_oldBatchEditBtnProc = (WNDPROC)SetWindowLongPtrW(
-        hwndBatchEditButton, GWLP_WNDPROC, (LONG_PTR)BatchEditBtnProc);
-
     // 创建暗黑模式按钮（已移至设置对话框，此处隐藏）
     HWND hwndDarkmodeButton = CreateWindowExW(
         0, L"BUTTON", L"暗黑", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd,
@@ -4347,12 +4318,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     }
     UpdateSearchClearButtonVisibility();
 
-    // 调整筛选按钮位置（6个按钮，总宽度与列表框对齐）
+    // 调整筛选按钮位置（5个按钮，总宽度与列表框对齐）
     const int filterBtnSpacing = 4;
     const int iconBtnSize = 32;   // 图标按钮大小
     const int iconBtnSpacing = 5; // 按钮间距
     int filterTotalWidth = clientWidth - margin * 2 - iconBtnSize - margin;
-    int filterBtnWidth = (filterTotalWidth - filterBtnSpacing * 5) / 6;
+    int filterBtnWidth = (filterTotalWidth - filterBtnSpacing * 4) / 5;
     int filterY = contentTop + margin + searchHeight + margin;
     MoveWindow(g_hwndFilterAll, margin, filterY, filterBtnWidth, tabHeight,
                TRUE);
@@ -4366,11 +4337,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                filterBtnWidth, tabHeight, TRUE);
     MoveWindow(g_hwndFilterFavorite,
                margin + (filterBtnWidth + filterBtnSpacing) * 4, filterY,
-               filterBtnWidth, tabHeight, TRUE);
-    // 最后一个按钮用剩余宽度，确保右边对齐
-    int lastBtnX = margin + (filterBtnWidth + filterBtnSpacing) * 5;
-    int lastBtnW = filterTotalWidth - (lastBtnX - margin);
-    MoveWindow(g_hwndFilterPassword, lastBtnX, filterY, lastBtnW, tabHeight,
+               filterTotalWidth - (filterBtnWidth + filterBtnSpacing) * 4,
                TRUE);
 
     // 调整列表框大小（右侧留出按钮空间）
@@ -4379,16 +4346,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                clientWidth - margin * 2 - iconBtnSize - margin,
                clientHeight - listBoxTop - margin, TRUE);
 
-    // 右侧垂直排列图标按钮（批量编辑在最上边）
+    // 右侧垂直排列图标按钮
     int btnX = clientWidth - margin - iconBtnSize;
     int btnY = listBoxTop;
 
-    MoveWindow(GetDlgItem(hwnd, ID_BATCH_EDIT_BUTTON), btnX, btnY, iconBtnSize,
+    MoveWindow(GetDlgItem(hwnd, ID_DARKMODE_BUTTON), btnX, btnY, iconBtnSize,
                iconBtnSize, TRUE);
-
-    MoveWindow(GetDlgItem(hwnd, ID_DARKMODE_BUTTON), btnX,
-               btnY + (iconBtnSize + iconBtnSpacing), iconBtnSize, iconBtnSize,
-               TRUE);
 
     // 翻页按钮位置（在列表框右侧，垂直居中）
     int listBoxHeight = clientHeight - listBoxTop - margin;
@@ -4494,7 +4457,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     LPDRAWITEMSTRUCT lpDIS = (LPDRAWITEMSTRUCT)lParam;
 
     // 处理筛选按钮绘制
-    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_PASSWORD) {
+    if (lpDIS->CtlID >= ID_FILTER_ALL && lpDIS->CtlID <= ID_FILTER_FAVORITE) {
       HDC hdc = lpDIS->hDC;
       RECT rc = lpDIS->rcItem;
 
@@ -4534,9 +4497,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       case ID_FILTER_FAVORITE:
         icon = L"\uE734";
         break; // FavoriteStar
-      case ID_FILTER_PASSWORD:
-        icon = g_passwordFilterOpenState ? L"\uE785" : L"\uE72E";
-        break; // Lock
       }
 
       // 创建图标字体
@@ -4560,35 +4520,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       // 绘制图标
       SelectObject(hdc, hIconFont);
-      if (lpDIS->CtlID == ID_FILTER_PASSWORD && g_passwordFilterAnimating) {
-        const wchar_t *fromIcon =
-            g_passwordFilterAnimFromOpen ? L"\uE785" : L"\uE72E";
-        const wchar_t *toIcon = g_passwordFilterAnimToOpen ? L"\uE785" : L"\uE72E";
-
-        int fromOffsetX =
-            (int)((g_passwordFilterAnimToOpen ? -1.0f : 1.0f) *
-                  6.0f * g_passwordFilterAnimProgress);
-        int toOffsetX =
-            (int)((g_passwordFilterAnimToOpen ? 1.0f : -1.0f) *
-                  6.0f * (1.0f - g_passwordFilterAnimProgress));
-
-        SetTextColor(hdc, isSelected ? GetTextColor() : RGB(128, 128, 128));
-        if (g_passwordFilterAnimProgress < 1.0f) {
-          TextOutW(hdc, startX + fromOffsetX, centerY - iconSize.cy / 2,
-                   fromIcon, 1);
-        }
-
-        COLORREF blendColor = isSelected ? GetTextColor() : RGB(128, 128, 128);
-        int boost = (int)(36.0f * g_passwordFilterAnimProgress);
-        int r = std::min(255, (int)GetRValue(blendColor) + boost);
-        int g = std::min(255, (int)GetGValue(blendColor) + boost);
-        int b = std::min(255, (int)GetBValue(blendColor) + boost);
-        SetTextColor(hdc, RGB(r, g, b));
-        TextOutW(hdc, startX + toOffsetX, centerY - iconSize.cy / 2, toIcon, 1);
-        SetTextColor(hdc, isSelected ? GetTextColor() : RGB(128, 128, 128));
-      } else {
-        TextOutW(hdc, startX, centerY - iconSize.cy / 2, icon, 1);
-      }
+      TextOutW(hdc, startX, centerY - iconSize.cy / 2, icon, 1);
 
       // 绘制文本
       SelectObject(hdc, hFont);
@@ -4599,9 +4531,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       return TRUE;
     }
 
-    // 处理功能按钮绘制（置顶、批量编辑、暗黑）
-    if (lpDIS->CtlID == ID_BATCH_EDIT_BUTTON ||
-        lpDIS->CtlID == ID_TOPMOST_BUTTON ||
+    // 处理功能按钮绘制（置顶、暗黑）
+    if (lpDIS->CtlID == ID_TOPMOST_BUTTON ||
         lpDIS->CtlID == ID_DARKMODE_BUTTON) {
       HDC hdc = lpDIS->hDC;
       RECT rc = lpDIS->rcItem;
@@ -4684,93 +4615,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             graphics.DrawImage(img, x, y, drawW, drawH);
           }
         }
-        return TRUE;
-      }
-
-      // 批量编辑按钮：使用图片绘制（带波浪动画）
-      if (lpDIS->CtlID == ID_BATCH_EDIT_BUTTON) {
-        Gdiplus::Graphics graphics(hdc);
-        graphics.SetInterpolationMode(
-            Gdiplus::InterpolationModeHighQualityBicubic);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-
-        int btnW = rc.right - rc.left;
-        int btnH = rc.bottom - rc.top;
-        int diameter = std::min(btnW, btnH) - 1;
-        Gdiplus::REAL clipX = (Gdiplus::REAL)(rc.left + (btnW - diameter) / 2) + 0.5f;
-        Gdiplus::REAL clipY = (Gdiplus::REAL)(rc.top + (btnH - diameter) / 2) + 0.5f;
-        Gdiplus::GraphicsPath buttonClipPath;
-        buttonClipPath.AddEllipse(clipX, clipY, (Gdiplus::REAL)diameter,
-                                  (Gdiplus::REAL)diameter);
-        graphics.SetClip(&buttonClipPath, Gdiplus::CombineModeReplace);
-
-        if (g_batchEditAnimating) {
-          Gdiplus::Image *imgFrom = g_batchEditAnimDirection
-                                        ? g_imgBatchEditUnselected
-                                        : g_imgBatchEditSelected;
-          Gdiplus::Image *imgTo = g_batchEditAnimDirection
-                                      ? g_imgBatchEditSelected
-                                      : g_imgBatchEditUnselected;
-
-          if (imgFrom && imgTo && imgFrom->GetLastStatus() == Gdiplus::Ok &&
-              imgTo->GetLastStatus() == Gdiplus::Ok) {
-            int imgW = imgFrom->GetWidth();
-            int imgH = imgFrom->GetHeight();
-            float scale = std::min((float)btnW / imgW, (float)btnH / imgH);
-            int drawW = (int)(imgW * scale);
-            int drawH = (int)(imgH * scale);
-            int x = rc.left + (btnW - drawW) / 2;
-            int y = rc.top + (btnH - drawH) / 2;
-
-            graphics.DrawImage(imgFrom, x, y, drawW, drawH);
-
-            float maxRadius = sqrtf((float)(drawW * drawW + drawH * drawH));
-            float currentRadius = maxRadius * g_batchEditAnimProgress;
-
-            Gdiplus::GraphicsPath clipPath;
-            // 选中时波浪中心在左上角，取消选中时波浪中心在右下角
-            float centerX, centerY;
-            if (g_batchEditAnimDirection) {
-              // 选中：从左上角扩散
-              centerX = (float)x;
-              centerY = (float)y;
-            } else {
-              // 取消选中：从右下角扩散
-              centerX = (float)(x + drawW);
-              centerY = (float)(y + drawH);
-            }
-            clipPath.AddEllipse(centerX - currentRadius,
-                                centerY - currentRadius, currentRadius * 2,
-                                currentRadius * 2);
-
-            graphics.SetClip(&clipPath);
-            graphics.DrawImage(imgTo, x, y, drawW, drawH);
-            graphics.ResetClip();
-          }
-        } else {
-          Gdiplus::Image *img = g_isBatchEditMode ? g_imgBatchEditSelected
-                                                  : g_imgBatchEditUnselected;
-          if (img && img->GetLastStatus() == Gdiplus::Ok) {
-            int imgW = img->GetWidth();
-            int imgH = img->GetHeight();
-            float scale = std::min((float)btnW / imgW, (float)btnH / imgH);
-            int drawW = (int)(imgW * scale);
-            int drawH = (int)(imgH * scale);
-            int x = rc.left + (btnW - drawW) / 2;
-            int y = rc.top + (btnH - drawH) / 2;
-            graphics.DrawImage(img, x, y, drawW, drawH);
-          }
-        }
-        graphics.ResetClip();
-
-        Gdiplus::Pen edgePen(
-            Gdiplus::Color(g_isDarkMode ? 80 : 120, GetRValue(bgColor), GetGValue(bgColor),
-                           GetBValue(bgColor)),
-            1.2f);
-        graphics.DrawEllipse(&edgePen, clipX, clipY, (Gdiplus::REAL)diameter,
-                             (Gdiplus::REAL)diameter);
         return TRUE;
       }
 
@@ -4960,7 +4804,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       DrawTextW(hdc, icon, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       SelectObject(hdc, hOldFont);
       DeleteObject(hIconFont);
-
       return TRUE;
     }
 

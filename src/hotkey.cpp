@@ -22,8 +22,8 @@ UINT g_passwordGeneratorHotkeyVirtualKey = 0;
 UINT g_passwordGeneratorHotkeyModifiers = 0;
 
 // 快捷粘贴修饰键全局变量定义
-bool g_isQuickPasteEnabled = true;    // 默认启用
-UINT g_quickPasteModifiers = MOD_ALT; // 默认Alt
+bool g_isQuickPasteEnabled = false;
+UINT g_quickPasteModifiers = MOD_ALT;
 
 // 历史记录数量限制
 int g_maxHistoryCount = 100; // 默认100条
@@ -334,10 +334,7 @@ void LoadHotkeySettings() {
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
-            int themeIdValue = (int)wcstol(pLine, NULL, 10);
-            if (themeIdValue >= 0 && themeIdValue <= 3) {
-              g_themeId = (ThemeId)themeIdValue;
-            }
+            g_themeId = APP_THEME_HIGH_CONTRAST;
             if (pEnd != NULL)
               pNextLine = pEnd + 1;
             else
@@ -417,8 +414,8 @@ void LoadHotkeySettings() {
   }
 
   if (!quickPasteSettingsLoaded) {
-    g_isQuickPasteEnabled = true;    // 默认启用
-    g_quickPasteModifiers = MOD_ALT; // 默认Alt
+    g_isQuickPasteEnabled = false;
+    g_quickPasteModifiers = MOD_ALT;
   }
 
   if (!passwordGeneratorHotkeyLoaded) {

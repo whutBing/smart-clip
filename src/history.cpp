@@ -4,6 +4,7 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <ctime>
+#include <set>
 #include "tray.h"
 #include "search.h"  // 添加这个头文件以访问 g_hwndTabControl
 #include "settings.h"  // 添加这个头文件以访问 g_isNotificationEnabled
@@ -97,6 +98,34 @@ std::wstring GetDataFilePath() {
 }
 
 // 保存历史记录到文件（修复编码问题）
+static void CleanupStaleThumbnailFiles() {
+    std::set<std::wstring> validThumbFiles;
+    for (size_t i = 0; i < g_history.size(); ++i) {
+        if (g_history[i].type == TYPE_IMAGE) {
+            validThumbFiles.insert(L"thumb_" + std::to_wstring(i) + L".dat");
+        }
+    }
+
+    std::wstring thumbsPath = GetThumbsPath();
+    std::wstring pattern = thumbsPath + L"\\thumb_*.dat";
+    WIN32_FIND_DATAW findData = {};
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &findData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    do {
+        if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            continue;
+        }
+        if (validThumbFiles.find(findData.cFileName) == validThumbFiles.end()) {
+            std::wstring staleFile = thumbsPath + L"\\" + findData.cFileName;
+            DeleteFileW(staleFile.c_str());
+        }
+    } while (FindNextFileW(hFind, &findData));
+    FindClose(hFind);
+}
+
 void SaveHistory() {
     std::wstring filePath = GetDataFilePath();
 
@@ -180,6 +209,8 @@ void SaveHistory() {
 
         CloseHandle(hFile);
     }
+
+    CleanupStaleThumbnailFiles();
 
     UpdateListBox();
 }
@@ -547,9 +578,6 @@ void ClearNonFavoriteHistory() {
                     std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
                     DeleteFileW(imgFile.c_str());
                 }
-                // 删除缩略图
-                std::wstring thumbFile = thumbsPath + L"\\thumb_" + std::to_wstring(i) + L".dat";
-                DeleteFileW(thumbFile.c_str());
             }
             g_history.erase(g_history.begin() + i);
         }
@@ -583,7 +611,6 @@ void CleanInvalidImageRecords() {
             }
 
             if (isInvalid) {
-                // 删除关联的缩略图文件
                 if (!item.imageFileName.empty()) {
                     std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
                     DeleteFileW(imgFile.c_str());

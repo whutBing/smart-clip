@@ -719,10 +719,13 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
       COLORREF border = g_isDarkMode ? RGB(62, 64, 70) : RGB(222, 225, 230);
       SolidBrush brush(
           Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
-      Pen pen(Color(255, GetRValue(border), GetGValue(border), GetBValue(border)),
-              1.0f);
       g.FillPath(&brush, &cardPath);
-      g.DrawPath(&pen, &cardPath);
+      if (config->drawCardBorder) {
+        Pen pen(Color(255, GetRValue(border), GetGValue(border),
+                      GetBValue(border)),
+                1.0f);
+        g.DrawPath(&pen, &cardPath);
+      }
     }
     EndPaint(hwnd, &ps);
     return 0;

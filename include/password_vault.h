@@ -26,6 +26,7 @@ extern bool g_passwordGeneratorIncludeDigits;
 extern bool g_passwordGeneratorIncludeLower;
 extern bool g_passwordGeneratorIncludeUpper;
 extern bool g_passwordGeneratorIncludeSymbols;
+extern std::wstring g_passwordGeneratorSymbols;
 extern int g_passwordGeneratorLength;
 
 // 密码库文件操作
