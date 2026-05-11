@@ -42,7 +42,6 @@ SRCS := \
     $(SRCDIR)/search.cpp            \
     $(SRCDIR)/text_utils.cpp        \
     $(SRCDIR)/graphics_utils.cpp    \
-    $(SRCDIR)/smart_action.cpp      \
     $(SRCDIR)/password_vault.cpp    \
     $(SRCDIR)/password_panel.cpp    \
     $(SRCDIR)/tag_popup.cpp         \

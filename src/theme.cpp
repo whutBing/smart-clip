@@ -1,6 +1,7 @@
 #include "theme.h"
 #include "history.h"
 #include "search.h"
+#include "tag_popup.h"
 #include "settings.h"
 #include <windows.h>
 
@@ -12,20 +13,20 @@ ThemeMode g_themeMode = THEME_LIGHT;
 ThemeId g_themeId = APP_THEME_HIGH_CONTRAST;
 
 static const ThemePalette kMonoLight = {
-    RGB(245, 245, 245), RGB(255, 255, 255), RGB(248, 248, 248),
-    RGB(0, 0, 0),       RGB(90, 90, 90),    RGB(0, 0, 0),
-    RGB(32, 32, 32),    RGB(245, 245, 245), RGB(245, 245, 245),
-    RGB(230, 230, 230), RGB(220, 220, 220), RGB(140, 140, 140),
-    RGB(255, 255, 255), RGB(235, 235, 235), RGB(255, 255, 255),
-    RGB(255, 255, 255), RGB(255, 255, 255)};
+    RGB(241, 239, 235), RGB(250, 249, 246), RGB(244, 242, 238),
+    RGB(38, 38, 38),    RGB(108, 108, 108), RGB(0, 102, 204),
+    RGB(0, 82, 184),    RGB(241, 239, 235), RGB(236, 234, 230),
+    RGB(226, 223, 218), RGB(214, 211, 206), RGB(150, 150, 150),
+    RGB(252, 251, 248), RGB(238, 235, 231), RGB(248, 247, 244),
+    RGB(250, 249, 246), RGB(250, 249, 246)};
 
 static const ThemePalette kMonoDark = {
-    RGB(12, 12, 12),    RGB(24, 24, 24),    RGB(18, 18, 18),
-    RGB(255, 255, 255), RGB(170, 170, 170), RGB(255, 255, 255),
-    RGB(220, 220, 220), RGB(12, 12, 12),    RGB(12, 12, 12),
-    RGB(28, 28, 28),    RGB(50, 50, 50),    RGB(90, 90, 90),
-    RGB(24, 24, 24),    RGB(36, 36, 36),    RGB(12, 12, 12),
-    RGB(18, 18, 18),    RGB(18, 18, 18)};
+    RGB(24, 25, 28),    RGB(34, 36, 40),    RGB(29, 31, 35),
+    RGB(232, 233, 236), RGB(154, 158, 166), RGB(132, 160, 198),
+    RGB(164, 189, 222), RGB(26, 28, 32),    RGB(27, 29, 33),
+    RGB(39, 42, 48),    RGB(58, 62, 70),    RGB(98, 103, 112),
+    RGB(36, 38, 43),    RGB(46, 49, 56),    RGB(24, 25, 28),
+    RGB(29, 31, 35),    RGB(29, 31, 35)};
 
 static const ThemePalette *ResolvePalette() {
   return g_isDarkMode ? &kMonoDark : &kMonoLight;
@@ -100,5 +101,11 @@ void ApplyTheme() {
   }
   if (g_hwndActiveThemedDialog && IsWindow(g_hwndActiveThemedDialog)) {
     SendMessageW(g_hwndActiveThemedDialog, WM_THEMECHANGED, 0, 0);
+  }
+  if (IsTagPopupVisible()) {
+    HWND hwndTagPopup = GetTagPopupWindow();
+    if (hwndTagPopup && IsWindow(hwndTagPopup)) {
+      SendMessageW(hwndTagPopup, WM_THEMECHANGED, 0, 0);
+    }
   }
 }

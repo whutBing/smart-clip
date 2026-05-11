@@ -2,6 +2,7 @@
 
 #include "history.h"
 #include "themed_dialog.h"
+#include "theme.h"
 #include <commctrl.h>
 #include <string>
 #include <windows.h>
@@ -39,6 +40,135 @@ static const COLORREF g_commonColors[] = {
 };
 static const int g_commonColorsCount =
     sizeof(g_commonColors) / sizeof(g_commonColors[0]);
+static HBRUSH g_tagPopupEditBrush = NULL;
+
+static COLORREF GetTagPopupBgColor() { return GetThemeSurfaceColor(); }
+static COLORREF GetTagPopupBorderColor() { return GetThemeSeparatorColor(); }
+static COLORREF GetTagPopupHoverColor() { return GetThemeDropdownHoverColor(); }
+static COLORREF GetTagPopupTextColor() { return GetThemeTextPrimaryColor(); }
+static COLORREF GetTagPopupMutedTextColor() {
+  return GetThemeTextSecondaryColor();
+}
+static COLORREF GetTagPopupAccentColor() { return GetThemeAccentColor(); }
+static COLORREF GetTagPopupInputBgColor() { return GetThemeInputBgColor(); }
+static COLORREF GetTagPopupTooltipBgColor() { return GetThemeDialogCardBgColor(); }
+static COLORREF GetTagPopupTooltipTextColor() {
+  return GetThemeTextPrimaryColor();
+}
+
+static void RefreshTagPopupTooltipTheme() {
+  if (!g_hwndTagPopupTooltip)
+    return;
+  SendMessageW(g_hwndTagPopupTooltip, TTM_SETTIPBKCOLOR,
+               (WPARAM)GetTagPopupTooltipBgColor(), 0);
+  SendMessageW(g_hwndTagPopupTooltip, TTM_SETTIPTEXTCOLOR,
+               (WPARAM)GetTagPopupTooltipTextColor(), 0);
+}
+
+static void ResizeTagPopupForCurrentState(HWND hwnd, int arrowHeight, int padding,
+                                          int itemHeight) {
+  int newHeight = arrowHeight + padding + itemHeight +
+                  g_tags.size() * itemHeight + padding;
+  if (g_tagPopupEditIndex >= (int)g_tags.size() && g_hwndTagPopupEdit) {
+    newHeight += itemHeight;
+  }
+  if (g_tagPopupColorPickerIndex >= 0) {
+    int colorRows = (g_commonColorsCount + 5) / 6;
+    int colorAreaHeight = 20 + colorRows * 22 + 8;
+    newHeight += colorAreaHeight;
+  }
+
+  RECT rcWindow;
+  GetWindowRect(hwnd, &rcWindow);
+  SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
+               SWP_NOMOVE | SWP_NOZORDER);
+}
+
+static void CloseTagPopupEditControls() {
+  if (g_hwndTagPopupEdit) {
+    DestroyWindow(g_hwndTagPopupEdit);
+    g_hwndTagPopupEdit = NULL;
+  }
+  g_tagPopupEditIndex = -1;
+  g_tagPopupColorPickerIndex = -1;
+}
+
+static bool CommitTagPopupEdit(HWND hwnd, int arrowHeight, int padding,
+                               int itemHeight) {
+  if (!g_hwndTagPopupEdit)
+    return false;
+
+  wchar_t name[256] = {0};
+  GetWindowTextW(g_hwndTagPopupEdit, name, 256);
+
+  if (wcslen(name) > 0) {
+    bool isDuplicate = false;
+    for (int i = 0; i < (int)g_tags.size(); i++) {
+      if (i == g_tagPopupEditIndex)
+        continue;
+      if (g_tags[i].name == name) {
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (isDuplicate) {
+      MessageBoxW(hwnd, L"标签名称已存在，请使用其他名称", L"提示",
+                  MB_OK | MB_ICONWARNING);
+      SetFocus(g_hwndTagPopupEdit);
+      return false;
+    }
+
+    if (g_tagPopupEditIndex >= (int)g_tags.size()) {
+      AddTag(name, g_tagPopupEditColor);
+    } else {
+      g_tags[g_tagPopupEditIndex].name = name;
+      g_tags[g_tagPopupEditIndex].color = g_tagPopupEditColor;
+    }
+    SaveTags();
+  }
+
+  CloseTagPopupEditControls();
+  ResizeTagPopupForCurrentState(hwnd, arrowHeight, padding, itemHeight);
+  InvalidateRect(hwnd, NULL, TRUE);
+  return true;
+}
+
+static void DeleteTagPopupEditWithConfirm(HWND hwnd, int arrowHeight, int padding,
+                                          int itemHeight) {
+  if (g_tagPopupEditIndex < 0 || g_tagPopupEditIndex >= (int)g_tags.size())
+    return;
+
+  int tagId = g_tags[g_tagPopupEditIndex].id;
+  std::wstring tagName = g_tags[g_tagPopupEditIndex].name;
+  std::wstring body =
+      L"将删除分类「" + tagName + L"」。\n该分类下的记录不会被删除。";
+  ThemedConfirmDialogConfig dialog = {
+      L"删除收藏分类",
+      L"删除当前分类",
+      L"分类会被移除，记录本身会保留",
+      body.c_str(),
+      L"删除分类",
+      L"取消",
+      424,
+      252,
+      {14, 78, 410, 186},
+      true};
+  if (!ShowThemedConfirmDialog(hwnd, dialog))
+    return;
+
+  CloseTagPopupEditControls();
+  RemoveTag(tagId);
+  SaveTags();
+  SaveHistory();
+  ResizeTagPopupForCurrentState(hwnd, arrowHeight, padding, itemHeight);
+  InvalidateRect(hwnd, NULL, TRUE);
+
+  if (g_currentFilterTagId == tagId) {
+    g_currentFilterTagId = 0;
+    UpdateListBox();
+  }
+}
 
 static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
                                      LPARAM lParam) {
@@ -55,11 +185,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
         WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
         WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
         CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, GetModuleHandle(NULL), NULL);
-
-    SendMessageW(g_hwndTagPopupTooltip, TTM_SETTIPBKCOLOR,
-                 (WPARAM)RGB(100, 100, 100), 0);
-    SendMessageW(g_hwndTagPopupTooltip, TTM_SETTIPTEXTCOLOR,
-                 (WPARAM)RGB(255, 255, 255), 0);
+    RefreshTagPopupTooltipTheme();
 
     RECT rc;
     GetWindowRect(hwnd, &rc);
@@ -102,17 +228,17 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
     RECT rcClient;
     GetClientRect(hwnd, &rcClient);
 
-    HBRUSH hBgBrush = CreateSolidBrush(RGB(255, 255, 255));
+    HBRUSH hBgBrush = CreateSolidBrush(GetTagPopupBgColor());
     FillRect(hdc, &rcClient, hBgBrush);
     DeleteObject(hBgBrush);
 
-    HPEN hBorderPen = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
+    HPEN hBorderPen = CreatePen(PS_SOLID, 1, GetTagPopupBorderColor());
     HPEN hOldPen = (HPEN)SelectObject(hdc, hBorderPen);
 
     POINT arrowPoints[3] = {{rcClient.right / 2 - arrowWidth / 2, arrowHeight},
                             {rcClient.right / 2, 0},
                             {rcClient.right / 2 + arrowWidth / 2, arrowHeight}};
-    HBRUSH hWhiteBrush = CreateSolidBrush(RGB(255, 255, 255));
+    HBRUSH hWhiteBrush = CreateSolidBrush(GetTagPopupBgColor());
     HBRUSH hOldBrush2 = (HBRUSH)SelectObject(hdc, hWhiteBrush);
     Polygon(hdc, arrowPoints, 3);
     SelectObject(hdc, hOldBrush2);
@@ -123,6 +249,13 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
     RoundRect(hdc, 0, arrowHeight, rcClient.right, rcClient.bottom, cornerRadius,
               cornerRadius);
     SelectObject(hdc, hOldBrush);
+
+    HPEN hSeamPen = CreatePen(PS_SOLID, 2, GetTagPopupBgColor());
+    HPEN hOldSeamPen = (HPEN)SelectObject(hdc, hSeamPen);
+    MoveToEx(hdc, rcClient.right / 2 - arrowWidth / 2 + 1, arrowHeight, NULL);
+    LineTo(hdc, rcClient.right / 2 + arrowWidth / 2, arrowHeight);
+    SelectObject(hdc, hOldSeamPen);
+    DeleteObject(hSeamPen);
 
     SelectObject(hdc, hOldPen);
     DeleteObject(hBorderPen);
@@ -141,7 +274,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
     SelectObject(hdc, hTitleFont);
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(33, 150, 243));
+    SetTextColor(hdc, GetTagPopupAccentColor());
     RECT rcTitle = {padding, y, rcClient.right - padding - 30, y + itemHeight};
     DrawTextW(hdc, L"全部分类", -1, &rcTitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -158,7 +291,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
     if (!g_tagPopupFilterMode) {
       if (g_tagPopupHoverIndex == -2 && !isAddingNew) {
-        HBRUSH hHoverBrush = CreateSolidBrush(RGB(220, 240, 255));
+        HBRUSH hHoverBrush = CreateSolidBrush(GetTagPopupHoverColor());
         SelectObject(hdc, GetStockObject(NULL_PEN));
         RoundRect(hdc, rcAddBtn.left - 2, rcAddBtn.top - 2, rcAddBtn.right + 2,
                   rcAddBtn.bottom + 2, 6, 6);
@@ -172,9 +305,9 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       SelectObject(hdc, hAddFont);
       SetBkMode(hdc, TRANSPARENT);
       if (isAddingNew) {
-        SetTextColor(hdc, RGB(180, 180, 180));
+        SetTextColor(hdc, GetTagPopupMutedTextColor());
       } else {
-        SetTextColor(hdc, RGB(33, 150, 243));
+        SetTextColor(hdc, GetTagPopupAccentColor());
       }
       DrawTextW(hdc, L"+", -1, &rcAddBtn,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -198,20 +331,8 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
         int btnSize = 20;
         int btnY = y + (itemHeight - btnSize) / 2;
-        int deleteX = rcClient.right - padding - btnSize * 3 - 8;
-        int confirmX = rcClient.right - padding - btnSize * 2 - 8;
+        int confirmX = rcClient.right - padding - btnSize * 2 - 4;
         int cancelX = rcClient.right - padding - btnSize;
-
-        HFONT hBtnFont = CreateFontW(
-            14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
-        SelectObject(hdc, hBtnFont);
-
-        SetTextColor(hdc, RGB(158, 158, 158));
-        RECT rcDelete = {deleteX, btnY, deleteX + btnSize, btnY + btnSize};
-        DrawTextW(hdc, L"\uE74D", -1, &rcDelete,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         HFONT hSymFont = CreateFontW(
             16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -230,14 +351,13 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
         SelectObject(hdc, hFont);
         DeleteObject(hSymFont);
-        DeleteObject(hBtnFont);
 
         y += itemHeight;
         continue;
       }
 
       if (g_tagPopupHoverIndex == i && g_tagPopupColorPickerIndex < 0) {
-        HBRUSH hHoverBrush = CreateSolidBrush(RGB(240, 240, 240));
+        HBRUSH hHoverBrush = CreateSolidBrush(GetTagPopupHoverColor());
         FillRect(hdc, &rcTag, hHoverBrush);
         DeleteObject(hHoverBrush);
       }
@@ -253,7 +373,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       FillRect(hdc, &rcColor, hColorBrush);
       DeleteObject(hColorBrush);
 
-      SetTextColor(hdc, RGB(60, 60, 60));
+      SetTextColor(hdc, GetTagPopupTextColor());
       RECT rcName = rcTag;
       rcName.left = rcColor.right + padding;
       rcName.right = rcClient.right - padding;
@@ -291,7 +411,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       HBITMAP hBmpMem =
           CreateCompatibleBitmap(hdc, rcClient.right, rcClient.bottom);
       SelectObject(hdcMem, hBmpMem);
-      HBRUSH hOverlayBrush = CreateSolidBrush(RGB(255, 255, 255));
+      HBRUSH hOverlayBrush = CreateSolidBrush(GetTagPopupBgColor());
       FillRect(hdcMem, &rcOverlay, hOverlayBrush);
       BLENDFUNCTION bf = {AC_SRC_OVER, 0, 200, 0};
       AlphaBlend(hdc, 0, 0, rcClient.right, rcClient.bottom, hdcMem, 0, 0,
@@ -308,11 +428,11 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
       RECT rcColorArea = {padding - 4, colorY - 4, rcClient.right - padding + 4,
                           colorY + colorAreaHeight + 4};
-      HBRUSH hColorAreaBg = CreateSolidBrush(RGB(255, 255, 255));
+      HBRUSH hColorAreaBg = CreateSolidBrush(GetTagPopupBgColor());
       FillRect(hdc, &rcColorArea, hColorAreaBg);
       DeleteObject(hColorAreaBg);
 
-      SetTextColor(hdc, RGB(80, 80, 80));
+      SetTextColor(hdc, GetTagPopupMutedTextColor());
       RECT rcColorLabel = {padding, colorY, rcClient.right - padding,
                            colorY + 16};
       DrawTextW(hdc, L"选择颜色:", -1, &rcColorLabel,
@@ -384,6 +504,26 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
     return 0;
   }
 
+  case WM_CTLCOLOREDIT: {
+    HDC hdcEdit = (HDC)wParam;
+    SetBkColor(hdcEdit, GetTagPopupInputBgColor());
+    SetTextColor(hdcEdit, GetTagPopupTextColor());
+    if (!g_tagPopupEditBrush)
+      g_tagPopupEditBrush = CreateSolidBrush(GetTagPopupInputBgColor());
+    return (INT_PTR)g_tagPopupEditBrush;
+  }
+
+  case WM_THEMECHANGED:
+    if (g_tagPopupEditBrush) {
+      DeleteObject(g_tagPopupEditBrush);
+      g_tagPopupEditBrush = NULL;
+    }
+    RefreshTagPopupTooltipTheme();
+    if (g_hwndTagPopupEdit)
+      InvalidateRect(g_hwndTagPopupEdit, NULL, TRUE);
+    InvalidateRect(hwnd, NULL, TRUE);
+    return 0;
+
   case WM_MOUSEMOVE: {
     int x = LOWORD(lParam);
     int y = HIWORD(lParam);
@@ -447,6 +587,43 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_LBUTTONDOWN: {
     int x = LOWORD(lParam);
     int y = HIWORD(lParam);
+
+    if (g_tagPopupEditIndex >= 0 && g_hwndTagPopupEdit) {
+      int editY;
+      if (g_tagPopupEditIndex >= (int)g_tags.size()) {
+        editY = arrowHeight + padding + itemHeight +
+                g_tags.size() * itemHeight;
+      } else {
+        editY = arrowHeight + padding + itemHeight +
+                g_tagPopupEditIndex * itemHeight;
+      }
+
+      RECT rcClient;
+      GetClientRect(hwnd, &rcClient);
+
+      int btnSize = 20;
+      int btnY = editY + (itemHeight - btnSize) / 2;
+      int confirmX = rcClient.right - padding - btnSize * 2 - 4;
+      int cancelX = rcClient.right - padding - btnSize;
+
+      if (x >= confirmX && x < confirmX + btnSize && y >= btnY &&
+          y < btnY + btnSize) {
+        CommitTagPopupEdit(hwnd, arrowHeight, padding, itemHeight);
+        return 0;
+      }
+
+      if (x >= cancelX && x < cancelX + btnSize && y >= btnY &&
+          y < btnY + btnSize) {
+        if (g_tagPopupEditIndex < (int)g_tags.size()) {
+          DeleteTagPopupEditWithConfirm(hwnd, arrowHeight, padding, itemHeight);
+          return 0;
+        }
+        CloseTagPopupEditControls();
+        ResizeTagPopupForCurrentState(hwnd, arrowHeight, padding, itemHeight);
+        InvalidateRect(hwnd, NULL, TRUE);
+        return 0;
+      }
+    }
 
     int addBtnSize = 24;
     int addBtnX = 200 - padding - addBtnSize;
@@ -610,15 +787,6 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
         editY = arrowHeight + padding + itemHeight + g_tagPopupEditIndex * itemHeight;
       }
 
-      RECT rcClient;
-      GetClientRect(hwnd, &rcClient);
-
-      int btnSize = 20;
-      int btnY = editY + (itemHeight - btnSize) / 2;
-      int deleteX = rcClient.right - padding - btnSize * 3 - 8;
-      int confirmX = rcClient.right - padding - btnSize * 2 - 8;
-      int cancelX = rcClient.right - padding - btnSize;
-
       int colorBoxLeft = padding + padding;
       int colorBoxRight = colorBoxLeft + colorBoxSize;
       int colorBoxTop = editY + (itemHeight - colorBoxSize) / 2;
@@ -647,112 +815,6 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
           SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
                        SWP_NOMOVE | SWP_NOZORDER);
         }
-        InvalidateRect(hwnd, NULL, TRUE);
-        return 0;
-      }
-
-      if (g_tagPopupEditIndex < (int)g_tags.size() && x >= deleteX &&
-          x < deleteX + btnSize && y >= btnY && y < btnY + btnSize) {
-        int tagId = g_tags[g_tagPopupEditIndex].id;
-        std::wstring tagName = g_tags[g_tagPopupEditIndex].name;
-
-        std::wstring body =
-            L"将删除分类「" + tagName + L"」。\n该分类下的记录不会被删除。";
-        ThemedConfirmDialogConfig dialog = {
-            L"删除收藏分类",
-            L"删除当前分类",
-            L"分类会被移除，记录本身会保留",
-            body.c_str(),
-            L"删除分类",
-            L"取消",
-            424,
-            252,
-            {14, 78, 410, 186},
-            true};
-        if (ShowThemedConfirmDialog(hwnd, dialog)) {
-          DestroyWindow(g_hwndTagPopupEdit);
-          g_hwndTagPopupEdit = NULL;
-          g_tagPopupEditIndex = -1;
-          g_tagPopupColorPickerIndex = -1;
-
-          RemoveTag(tagId);
-          SaveTags();
-          SaveHistory();
-
-          int newHeight = arrowHeight + padding + itemHeight +
-                          g_tags.size() * itemHeight + padding;
-          RECT rcWindow;
-          GetWindowRect(hwnd, &rcWindow);
-          SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
-                       SWP_NOMOVE | SWP_NOZORDER);
-          InvalidateRect(hwnd, NULL, TRUE);
-
-          if (g_currentFilterTagId == tagId) {
-            g_currentFilterTagId = 0;
-            UpdateListBox();
-          }
-        }
-        return 0;
-      }
-
-      if (x >= confirmX && x < confirmX + btnSize && y >= btnY &&
-          y < btnY + btnSize) {
-        wchar_t name[256] = {0};
-        GetWindowTextW(g_hwndTagPopupEdit, name, 256);
-
-        if (wcslen(name) > 0) {
-          bool isDuplicate = false;
-          for (int i = 0; i < (int)g_tags.size(); i++) {
-            if (i == g_tagPopupEditIndex)
-              continue;
-            if (g_tags[i].name == name) {
-              isDuplicate = true;
-              break;
-            }
-          }
-
-          if (isDuplicate) {
-            MessageBoxW(hwnd, L"标签名称已存在，请使用其他名称", L"提示",
-                        MB_OK | MB_ICONWARNING);
-            SetFocus(g_hwndTagPopupEdit);
-            return 0;
-          }
-
-          if (g_tagPopupEditIndex >= (int)g_tags.size()) {
-            AddTag(name, g_tagPopupEditColor);
-          } else {
-            g_tags[g_tagPopupEditIndex].name = name;
-            g_tags[g_tagPopupEditIndex].color = g_tagPopupEditColor;
-          }
-          SaveTags();
-        }
-
-        DestroyWindow(g_hwndTagPopupEdit);
-        g_hwndTagPopupEdit = NULL;
-        g_tagPopupEditIndex = -1;
-
-        int newHeight = arrowHeight + padding + itemHeight +
-                        g_tags.size() * itemHeight + padding;
-        RECT rcWindow;
-        GetWindowRect(hwnd, &rcWindow);
-        SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
-                     SWP_NOMOVE | SWP_NOZORDER);
-        InvalidateRect(hwnd, NULL, TRUE);
-        return 0;
-      }
-
-      if (x >= cancelX && x < cancelX + btnSize && y >= btnY &&
-          y < btnY + btnSize) {
-        DestroyWindow(g_hwndTagPopupEdit);
-        g_hwndTagPopupEdit = NULL;
-        g_tagPopupEditIndex = -1;
-
-        int newHeight = arrowHeight + padding + itemHeight +
-                        g_tags.size() * itemHeight + padding;
-        RECT rcWindow;
-        GetWindowRect(hwnd, &rcWindow);
-        SetWindowPos(hwnd, NULL, 0, 0, rcWindow.right - rcWindow.left, newHeight,
-                     SWP_NOMOVE | SWP_NOZORDER);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
       }
@@ -922,7 +984,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       return 0;
     }
     if (wParam == VK_RETURN && g_hwndTagPopupEdit) {
-      SetFocus(hwnd);
+      CommitTagPopupEdit(hwnd, arrowHeight, padding, itemHeight);
       return 0;
     }
     break;
@@ -939,6 +1001,10 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_DESTROY:
     g_hwndTagPopup = NULL;
     g_tagPopupEditIndex = -1;
+    if (g_tagPopupEditBrush) {
+      DeleteObject(g_tagPopupEditBrush);
+      g_tagPopupEditBrush = NULL;
+    }
     if (g_hwndTagPopupEdit) {
       DestroyWindow(g_hwndTagPopupEdit);
       g_hwndTagPopupEdit = NULL;
@@ -995,3 +1061,5 @@ void CloseTagPopup() {
 bool IsTagPopupVisible() {
   return g_hwndTagPopup && IsWindowVisible(g_hwndTagPopup);
 }
+
+HWND GetTagPopupWindow() { return g_hwndTagPopup; }

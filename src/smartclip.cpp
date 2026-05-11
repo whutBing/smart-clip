@@ -9,7 +9,6 @@
 #include "resource.h" // 添加资源头文件
 #include "search.h"
 #include "settings.h"
-#include "smart_action.h"
 #include "tag_popup.h"
 #include "themed_dialog.h"
 #include "text_utils.h"
@@ -114,6 +113,7 @@ HWND g_hwndFilterText = NULL;
 HWND g_hwndFilterImage = NULL;
 HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
+HWND g_hwndFilterPassword = NULL;
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
 // 密码列表：密码可见状态（存储 g_passwords 中的索引）
@@ -528,76 +528,9 @@ WNDPROC g_oldFilterFavoriteProc = NULL;
 HWND g_hwndMainTooltip = NULL;
 bool g_isFavoriteTooltipVisible = false;
 
-// 连续粘贴模式
-bool g_isBatchPasteMode = false;
-std::vector<int> g_batchPasteQueue; // 待粘贴的历史记录索引队列
-int g_batchPasteIndex = 0;          // 当前粘贴到第几条
-static HHOOK g_hBatchPasteHook = NULL;
-
-static void BatchPasteLoadNext() {
-  if (!g_isBatchPasteMode) return;
-  g_batchPasteIndex++;
-  if (g_batchPasteIndex >= (int)g_batchPasteQueue.size()) {
-    g_batchPasteIndex = (int)g_batchPasteQueue.size() - 1;
-    return;
-  }
-  int idx = g_batchPasteQueue[g_batchPasteIndex];
-  if (idx >= 0 && idx < (int)g_history.size()) {
-    const ClipboardItem &item = g_history[idx];
-    if (OpenClipboard(NULL)) {
-      EmptyClipboard();
-      HGLOBAL hGlobal = GlobalAlloc(
-          GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-      if (hGlobal) {
-        wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-        if (pData) {
-          wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
-          GlobalUnlock(hGlobal);
-          SetClipboardData(CF_UNICODETEXT, hGlobal);
-        }
-      }
-      g_isRestoringClipboard = true;
-      CloseClipboard();
-    }
-  }
-}
-
-static LRESULT CALLBACK BatchPasteKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-  if (nCode == HC_ACTION && g_isBatchPasteMode) {
-    KBDLLHOOKSTRUCT *pKb = (KBDLLHOOKSTRUCT *)lParam;
-    if (wParam == WM_KEYUP && pKb->vkCode == 'V' &&
-        (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
-      PostMessageW(g_hwndMain, WM_USER + 200, 0, 0);
-    }
-    // Esc 退出连续粘贴模式
-    if (wParam == WM_KEYDOWN && pKb->vkCode == VK_ESCAPE) {
-      PostMessageW(g_hwndMain, WM_USER + 201, 0, 0);
-    }
-  }
-  return CallNextHookEx(g_hBatchPasteHook, nCode, wParam, lParam);
-}
-
-static void StartBatchPasteHook() {
-  if (g_hBatchPasteHook) return;
-  g_hBatchPasteHook = SetWindowsHookExW(WH_KEYBOARD_LL, BatchPasteKeyboardProc,
-                                         GetModuleHandleW(NULL), 0);
-}
-
-static void StopBatchPasteHook() {
-  if (g_hBatchPasteHook) {
-    UnhookWindowsHookEx(g_hBatchPasteHook);
-    g_hBatchPasteHook = NULL;
-  }
-  g_isBatchPasteMode = false;
-  g_batchPasteQueue.clear();
-  g_batchPasteIndex = 0;
-}
-
 // 按钮图片句柄
 Gdiplus::Image *g_imgTopmostSelected = NULL;
 Gdiplus::Image *g_imgTopmostUnselected = NULL;
-Gdiplus::Image *g_imgBatchEditSelected = NULL;
-Gdiplus::Image *g_imgBatchEditUnselected = NULL;
 Gdiplus::Image *g_imgFolderIcon = NULL;  // 文件夹图标
 Gdiplus::Image *g_imgNoExistIcon = NULL; // 文件不存在图标
 
@@ -638,9 +571,6 @@ bool g_isPageUpBtnHover = false;     // 上一页按钮悬浮状态
 bool g_isPageDownBtnHover = false;   // 下一页按钮悬浮状态
 WNDPROC g_oldPageUpBtnProc = NULL;   // 上一页按钮原始窗口过程
 WNDPROC g_oldPageDownBtnProc = NULL; // 下一页按钮原始窗口过程
-
-// 快捷键提示显示状态（与滚动条同步，滚动时显示，停止1.5s后隐藏）
-bool g_quickPasteHintVisible = false;
 
 // 平滑滚动相关
 #define ID_SMOOTH_SCROLL_TIMER 101
@@ -711,7 +641,6 @@ int GetItemDisplayHeight(int displayIndex) {
 
 static int GetListBoxVisibleHeight(HWND hwnd);
 static void UpdateShortcutEndForUpwardFill(int oldTop);
-static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount);
 
 // 计算从指定索引开始，在可视区域内能完整显示的项目数
 int CalculateVisibleItemCount(int startIndex) {
@@ -742,118 +671,6 @@ int CalculateVisibleItemCount(int startIndex) {
   }
 
   return count > 0 ? count : 1; // 至少返回1
-}
-
-static int GetShortcutIndexForDisplayIndex(int displayIndex) {
-  if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
-    return -1;
-
-  auto collectVisibleShortcutDisplayIndices = [&](int *outIds,
-                                                  int maxCount) -> int {
-    if (!outIds || maxCount <= 0 || g_displayIndexMap.empty())
-      return 0;
-
-    int startHint = g_shortcutStartDisplayIndex;
-    int endHint = g_shortcutEndDisplayIndexExclusive;
-    int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
-    int totalItems = (int)g_displayIndexMap.size();
-    int count = 0;
-    const int headerVisibleThreshold = 9;
-
-    for (int i = 0; i < totalItems && count < maxCount; ++i) {
-      if (startHint >= 0 && i < startHint)
-        continue;
-      if (endHint >= 0 && i >= endHint)
-        break;
-
-      RECT rcItem = {};
-      if (g_hwndListBox &&
-          SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
-              LB_ERR) {
-        int itemHeight = rcItem.bottom - rcItem.top;
-        if (rcItem.bottom <= 0)
-          continue;
-        if (rcItem.top >= 0 && count == 0) {
-          // 第一条真实可见项，直接纳入编号
-        } else if (rcItem.top + headerVisibleThreshold <= 0) {
-          continue;
-        }
-        if (rcItem.top + itemHeight / 2 > GetListBoxVisibleHeight(g_hwndListBox))
-          break;
-      }
-
-      outIds[count++] = i;
-      if (count >= visibleLimit)
-        break;
-    }
-    return count;
-  };
-
-  int visibleIds[10] = {};
-  int visibleCount = collectVisibleShortcutDisplayIndices(visibleIds, 10);
-  for (int i = 0; i < visibleCount; ++i) {
-    if (visibleIds[i] == displayIndex)
-      return i;
-  }
-  return -1;
-}
-
-static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
-  if (!outIds || maxCount <= 0 || g_displayIndexMap.empty())
-    return 0;
-
-  int startHint = g_shortcutStartDisplayIndex;
-  int endHint = g_shortcutEndDisplayIndexExclusive;
-  int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
-  int totalItems = (int)g_displayIndexMap.size();
-  int count = 0;
-  const int headerVisibleThreshold = 9;
-  int visibleHeight = g_hwndListBox ? GetListBoxVisibleHeight(g_hwndListBox) : 0;
-  int startIndex = g_listBoxTopIndex;
-
-  if (startHint >= 0)
-    startIndex = std::max(startIndex, startHint);
-
-  if (g_hwndListBox) {
-    while (startIndex > 0) {
-      RECT rcPrev = {};
-      if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, startIndex - 1,
-                       (LPARAM)&rcPrev) == LB_ERR) {
-        break;
-      }
-      if (rcPrev.bottom <= 0)
-        break;
-      if (startHint >= 0 && startIndex - 1 < startHint)
-        break;
-      --startIndex;
-    }
-  }
-
-  for (int i = startIndex; i < totalItems && count < maxCount; ++i) {
-    if (endHint >= 0 && i >= endHint)
-      break;
-
-    RECT rcItem = {};
-    if (g_hwndListBox &&
-        SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
-            LB_ERR) {
-      int itemHeight = rcItem.bottom - rcItem.top;
-      if (rcItem.bottom <= 0)
-        continue;
-      if (rcItem.top >= 0 && count == 0) {
-        // 第一条真实可见项，直接纳入编号
-      } else if (rcItem.top + headerVisibleThreshold <= 0) {
-        continue;
-      }
-      if (visibleHeight > 0 && rcItem.top + itemHeight / 2 > visibleHeight)
-        break;
-    }
-
-    outIds[count++] = i;
-    if (count >= visibleLimit)
-      break;
-  }
-  return count;
 }
 
 static void UpdateShortcutEndForUpwardFill(int oldTop) {
@@ -1084,12 +901,64 @@ static void InvalidateCustomScrollbarArea(HWND hwnd, BOOL erase = FALSE) {
     InvalidateRect(hwnd, &rcTrack, erase);
 }
 
-static void RedrawCustomScrollbarArea(HWND hwnd) {
-  RECT rcTrack = {};
-  if (GetCustomScrollbarTrackRect(hwnd, &rcTrack)) {
-    RedrawWindow(hwnd, &rcTrack, NULL,
-                 RDW_INVALIDATE | RDW_NOERASE);
+// 滑块状态缓存：仅当状态真的发生变化时才触发重绘，避免重复失效产生闪烁
+static RECT g_lastThumbRect = {0, 0, 0, 0};
+static bool g_lastThumbValid = false;
+static bool g_lastThumbVisible = false;
+static bool g_lastThumbHovered = false;
+static bool g_lastThumbDragging = false;
+
+static void UpdateScrollbarCacheSnapshot(const RECT *thumbRect, bool hasThumb) {
+  if (thumbRect) {
+    g_lastThumbRect = *thumbRect;
+  } else {
+    SetRectEmpty(&g_lastThumbRect);
   }
+  g_lastThumbValid = hasThumb;
+  g_lastThumbVisible = g_scrollbarVisible;
+  g_lastThumbHovered = g_isScrollbarHovered;
+  g_lastThumbDragging = g_isScrollbarDragging;
+}
+
+static void RefreshScrollbarIfChanged(HWND hwnd) {
+  if (!hwnd)
+    return;
+  RECT rcNew = {};
+  bool hasNew =
+      g_scrollbarVisible && GetCustomScrollbarThumbRect(hwnd, &rcNew);
+  bool stateChanged = (g_lastThumbVisible != g_scrollbarVisible) ||
+                      (g_lastThumbHovered != g_isScrollbarHovered) ||
+                      (g_lastThumbDragging != g_isScrollbarDragging);
+  bool rectChanged = (hasNew != g_lastThumbValid) ||
+                     (hasNew && g_lastThumbValid &&
+                      !EqualRect(&rcNew, &g_lastThumbRect));
+  if (!stateChanged && !rectChanged)
+    return;
+
+  RECT rcDirty = {0, 0, 0, 0};
+  bool hasDirty = false;
+  if (g_lastThumbValid) {
+    rcDirty = g_lastThumbRect;
+    hasDirty = true;
+  }
+  if (hasNew) {
+    if (hasDirty) {
+      rcDirty.left = std::min(rcDirty.left, rcNew.left);
+      rcDirty.top = std::min(rcDirty.top, rcNew.top);
+      rcDirty.right = std::max(rcDirty.right, rcNew.right);
+      rcDirty.bottom = std::max(rcDirty.bottom, rcNew.bottom);
+    } else {
+      rcDirty = rcNew;
+      hasDirty = true;
+    }
+  }
+
+  if (hasDirty)
+    InvalidateRect(hwnd, &rcDirty, FALSE);
+  else if (stateChanged)
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
+
+  UpdateScrollbarCacheSnapshot(hasNew ? &rcNew : NULL, hasNew);
 }
 
 static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
@@ -1097,12 +966,20 @@ static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
     return;
 
   int maxTop = GetListBoxMaxTopIndex();
+  RECT rcClip = {};
+  if (GetClipBox(hdc, &rcClip) == NULLREGION)
+    return;
+
   RECT rcTrack = {};
   if (!GetCustomScrollbarTrackRect(hwnd, &rcTrack))
     return;
 
+  RECT rcTrackPaint = {};
+  if (!IntersectRect(&rcTrackPaint, &rcTrack, &rcClip))
+    return;
+
   HBRUSH hTrackBrush = CreateSolidBrush(GetWhiteColor());
-  FillRect(hdc, &rcTrack, hTrackBrush);
+  FillRect(hdc, &rcTrackPaint, hTrackBrush);
   DeleteObject(hTrackBrush);
 
   if (!g_scrollbarVisible || maxTop <= 0)
@@ -1110,6 +987,10 @@ static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
 
   RECT rcThumb = {};
   if (!GetCustomScrollbarThumbRect(hwnd, &rcThumb))
+    return;
+
+  RECT rcThumbPaint = {};
+  if (!IntersectRect(&rcThumbPaint, &rcThumb, &rcClip))
     return;
 
   COLORREF thumbColor =
@@ -1120,16 +1001,15 @@ static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
                                    : (g_isDarkMode ? RGB(102, 108, 118)
                                                    : RGB(180, 180, 180)));
   HBRUSH hThumbBrush = CreateSolidBrush(thumbColor);
-  FillRect(hdc, &rcThumb, hThumbBrush);
+  FillRect(hdc, &rcThumbPaint, hThumbBrush);
   DeleteObject(hThumbBrush);
 }
 
 static void ShowCustomScrollbar(HWND hwnd, bool showQuickPasteHint = true) {
+  (void)showQuickPasteHint;
   if (!NeedsCustomScrollbar())
     return;
   g_scrollbarVisible = true;
-  if (showQuickPasteHint)
-    g_quickPasteHintVisible = true;
   if (!g_isScrollbarDragging)
     StartScrollbarHideTimer(hwnd);
 }
@@ -1153,6 +1033,11 @@ static void ApplyListBoxTopIndex(HWND hwnd, int newTop) {
 
   InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
   InvalidateRect(g_hwndPageDownBtn, NULL, TRUE);
+}
+
+static bool ShouldAnimateLinkText(const std::wstring &text) {
+  LinkType linkType = GetLinkType(text);
+  return linkType == LINK_URL || linkType == LINK_FILE_PATH;
 }
 
 static bool IsSelectableDisplayIndex(int index) {
@@ -1348,6 +1233,7 @@ static void EnsureListSelectionVisible(int index) {
     g_smoothScrollExpectedEndExclusive = -1;
     ApplyListBoxTopIndex(g_hwndListBox, newTop);
     ShowCustomScrollbar(g_hwndListBox);
+    RefreshScrollbarIfChanged(g_hwndListBox);
   }
 }
 
@@ -1423,70 +1309,25 @@ static void InvalidateMainFilterButtons() {
     InvalidateRect(g_hwndFilterFile, NULL, TRUE);
   if (g_hwndFilterFavorite)
     InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
-  if (g_hwndFilterPassword)
-    InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
-}
-
-static bool ShouldShowPasswordFilterOpenState() {
-  if (!g_vaultProtectionEnabled)
-    return true;
-  if (!IsMasterPasswordSet())
-    return true;
-  return g_vaultUnlocked;
 }
 
 static void UpdatePasswordFilterLockVisual(HWND hwnd, bool animate) {
-  bool targetOpen = ShouldShowPasswordFilterOpenState();
-  if (animate && targetOpen != g_passwordFilterOpenState) {
-    g_passwordFilterAnimFromOpen = g_passwordFilterOpenState;
-    g_passwordFilterAnimToOpen = targetOpen;
-    g_passwordFilterAnimating = true;
-    g_passwordFilterAnimProgress = 0.0f;
-    SetTimer(hwnd, ID_PASSWORD_FILTER_LOCK_TIMER, 16, NULL);
-  } else {
-    g_passwordFilterAnimating = false;
-    g_passwordFilterAnimProgress = 1.0f;
-    g_passwordFilterAnimFromOpen = targetOpen;
-    g_passwordFilterAnimToOpen = targetOpen;
-  }
-  g_passwordFilterOpenState = targetOpen;
-  if (g_hwndFilterPassword)
-    InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
+  (void)hwnd;
+  (void)animate;
+  return;
 }
 
-static bool SwitchMainPanel(HWND hwnd, int newTab, bool resetFavoriteFilter) {
-  if (newTab < 0 || newTab > 5)
+static bool SwitchMainPanel(HWND /*hwnd*/, int newTab, bool resetFavoriteFilter) {
+  if (newTab < 0 || newTab > 4)
     return false;
 
   int oldTab = g_currentTab;
-  if (newTab == 5 && oldTab != 5) {
-    if (!g_vaultUnlocked) {
-      if (g_vaultProtectionEnabled) {
-        if (!AuthenticateVaultAccess(hwnd))
-          return false;
-      } else {
-        g_vaultUnlocked = true;
-      }
-      LoadVault();
-    }
-  }
 
   g_currentTab = newTab;
   if (newTab == 4 && oldTab != 4 && resetFavoriteFilter)
     g_currentFilterTagId = 0;
-
-  if (oldTab == 5 && newTab != 5 && g_vaultUnlocked) {
-    g_vaultUnlocked = false;
-    g_passwords.clear();
-  }
-
-  UpdatePasswordFilterLockVisual(hwnd, oldTab == 5 || newTab == 5);
   InvalidateMainFilterButtons();
-  if (g_currentTab == 5) {
-    UpdatePasswordListBox();
-  } else {
-    UpdateListBox();
-  }
+  UpdateListBox();
   if (g_hwndListBox) {
     RedrawWindow(g_hwndListBox, NULL, NULL,
                  RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
@@ -1500,8 +1341,8 @@ static bool CycleMainPanel(HWND hwnd, int delta) {
   if (delta == 0)
     return false;
 
-  for (int attempt = 0; attempt < 6; ++attempt) {
-    int nextTab = (g_currentTab + delta + 6) % 6;
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    int nextTab = (g_currentTab + delta + 5) % 5;
     if (SwitchMainPanel(hwnd, nextTab, true))
       return true;
     if (nextTab == g_currentTab)
@@ -1569,8 +1410,9 @@ static bool HandleMainNavigationKey(const MSG &msg) {
       ClearShortcutDisplayBounds();
       UpdateShortcutEndForUpwardFill(oldTop);
       RedrawWindow(g_hwndListBox, NULL, NULL,
-                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                   RDW_INVALIDATE | RDW_NOERASE);
       ShowCustomScrollbar(g_hwndListBox);
+      RefreshScrollbarIfChanged(g_hwndListBox);
       handled = true;
     }
     break;
@@ -1586,8 +1428,9 @@ static bool HandleMainNavigationKey(const MSG &msg) {
         g_shortcutEndDisplayIndexExclusive = -1;
         g_smoothScrollExpectedEndExclusive = -1;
         RedrawWindow(g_hwndListBox, NULL, NULL,
-                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                     RDW_INVALIDATE | RDW_NOERASE);
         ShowCustomScrollbar(g_hwndListBox);
+        RefreshScrollbarIfChanged(g_hwndListBox);
         handled = true;
       }
     }
@@ -2019,8 +1862,6 @@ static PasswordHoverField HitTestPasswordInteractiveField(
 }
 
 static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
-  RECT rcOldThumb = {};
-  bool hadOldThumb = GetCustomScrollbarThumbRect(hwnd, &rcOldThumb);
   RECT rcTrack;
   RECT rcThumb;
   if (!GetCustomScrollbarTrackRect(hwnd, &rcTrack) ||
@@ -2058,7 +1899,7 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
         g_shortcutEndDisplayIndexExclusive != -1) {
       ClearShortcutDisplayBounds();
       RedrawWindow(hwnd, NULL, NULL,
-                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                   RDW_INVALIDATE | RDW_NOERASE);
       return;
     }
   }
@@ -2067,23 +1908,7 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
     ClearShortcutDisplayBounds();
   }
   g_scrollbarVisible = true;
-
-  RECT rcNewThumb = {};
-  bool hasNewThumb = GetCustomScrollbarThumbRect(hwnd, &rcNewThumb);
-  if (hadOldThumb && hasNewThumb) {
-    RECT rcDirty = {
-        std::min(rcOldThumb.left, rcNewThumb.left),
-        std::min(rcOldThumb.top, rcNewThumb.top),
-        std::max(rcOldThumb.right, rcNewThumb.right),
-        std::max(rcOldThumb.bottom, rcNewThumb.bottom)};
-    InvalidateRect(hwnd, &rcDirty, FALSE);
-  } else if (hadOldThumb) {
-    InvalidateRect(hwnd, &rcOldThumb, FALSE);
-  } else if (hasNewThumb) {
-    InvalidateRect(hwnd, &rcNewThumb, FALSE);
-  } else {
-    InvalidateCustomScrollbarArea(hwnd, FALSE);
-  }
+  RefreshScrollbarIfChanged(hwnd);
 }
 
 static void HideNativeListBoxScrollbar(HWND hwnd) {
@@ -2103,9 +1928,19 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     HDC hdc = (HDC)wParam;
     RECT rcClient = {};
     GetClientRect(hwnd, &rcClient);
+    // 排除自绘滚动条 track 区域，避免先涂白再画滑块导致闪烁
+    RECT rcTrack = {};
+    int savedDC = 0;
+    if (g_scrollbarVisible && GetCustomScrollbarTrackRect(hwnd, &rcTrack)) {
+      savedDC = SaveDC(hdc);
+      ExcludeClipRect(hdc, rcTrack.left, rcTrack.top, rcTrack.right,
+                      rcTrack.bottom);
+    }
     HBRUSH hBrush = CreateSolidBrush(GetWhiteColor());
     FillRect(hdc, &rcClient, hBrush);
     DeleteObject(hBrush);
+    if (savedDC)
+      RestoreDC(hdc, savedDC);
     return 1;
   }
 
@@ -2149,11 +1984,9 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       ApplyListBoxTopIndex(hwnd, newTop);
       ClearShortcutDisplayBounds();
       RedrawWindow(hwnd, NULL, NULL,
-                   RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                   RDW_INVALIDATE | RDW_NOERASE);
       return 0;
     }
-
-    InvalidateCustomScrollbarArea(hwnd, FALSE);
     return 0;                          // 已处理，不再传递给默认处理
   }
 
@@ -2186,7 +2019,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
           ClearShortcutDisplayBounds();
         }
         RedrawWindow(hwnd, NULL, NULL,
-                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                     RDW_INVALIDATE | RDW_NOERASE);
       } else {
         g_smoothScrollCurrent += step;
         // 设置滚动位置
@@ -2194,8 +2027,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         ApplyListBoxTopIndex(hwnd, newPos);
       }
 
-      ShowCustomScrollbar(hwnd);
-      InvalidateCustomScrollbarArea(hwnd, FALSE);
     }
     return 0;
   }
@@ -2214,7 +2045,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       if (s_lastScrollPos != g_listBoxTopIndex || oldTop != g_listBoxTopIndex) {
         s_lastScrollPos = g_listBoxTopIndex;
         ShowCustomScrollbar(hwnd);
-        InvalidateCustomScrollbarArea(hwnd, FALSE);
+        RefreshScrollbarIfChanged(hwnd);
       }
     }
     if (!g_smoothScrollActive)
@@ -2240,21 +2071,52 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     }
     KillTimer(hwnd, ID_SCROLLBAR_HIDE_TIMER);
     g_scrollbarVisible = false;
-    g_quickPasteHintVisible = false;
     HideNativeListBoxScrollbar(hwnd);
-    InvalidateCustomScrollbarArea(hwnd, FALSE);
+    RefreshScrollbarIfChanged(hwnd);
     return 0;
   }
 
   if (message == WM_PAINT) {
-    LRESULT result =
-        CallWindowProcW(g_oldListBoxProc, hwnd, message, wParam, lParam);
-    HDC hdc = GetDC(hwnd);
-    if (hdc) {
-      PaintCustomScrollbarOverlay(hwnd, hdc);
-      ReleaseDC(hwnd, hdc);
+    PAINTSTRUCT ps = {};
+    HDC hdc = BeginPaint(hwnd, &ps);
+    if (!hdc)
+      return 0;
+
+    RECT rcClient = {};
+    GetClientRect(hwnd, &rcClient);
+    int width = rcClient.right - rcClient.left;
+    int height = rcClient.bottom - rcClient.top;
+    if (width <= 0 || height <= 0) {
+      EndPaint(hwnd, &ps);
+      return 0;
     }
-    return result;
+
+    HDC hdcMem = CreateCompatibleDC(hdc);
+    HBITMAP hbmMem = CreateCompatibleBitmap(hdc, width, height);
+    HGDIOBJ hOldBmp = NULL;
+    if (hdcMem && hbmMem) {
+      hOldBmp = SelectObject(hdcMem, hbmMem);
+      RECT rcPaint = ps.rcPaint;
+      HBRUSH hBgBrush = CreateSolidBrush(GetWhiteColor());
+      FillRect(hdcMem, &rcPaint, hBgBrush);
+      DeleteObject(hBgBrush);
+
+      SendMessageW(hwnd, WM_PRINTCLIENT, (WPARAM)hdcMem,
+                   PRF_CLIENT | PRF_ERASEBKGND);
+      PaintCustomScrollbarOverlay(hwnd, hdcMem);
+      BitBlt(hdc, rcPaint.left, rcPaint.top, rcPaint.right - rcPaint.left,
+             rcPaint.bottom - rcPaint.top, hdcMem, rcPaint.left, rcPaint.top,
+             SRCCOPY);
+    }
+
+    if (hOldBmp)
+      SelectObject(hdcMem, hOldBmp);
+    if (hbmMem)
+      DeleteObject(hbmMem);
+    if (hdcMem)
+      DeleteDC(hdcMem);
+    EndPaint(hwnd, &ps);
+    return 0;
   }
 
   // 处理光标设置，防止手指光标闪烁
@@ -2306,15 +2168,14 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_isScrollbarHovered = isOverScrollbar;
       if (g_isScrollbarHovered) {
         ShowCustomScrollbar(hwnd, false);
-        InvalidateCustomScrollbarArea(hwnd, FALSE);
       } else if (g_scrollbarVisible) {
         StartScrollbarHideTimer(hwnd);
-        InvalidateCustomScrollbarArea(hwnd, FALSE);
       }
+      RefreshScrollbarIfChanged(hwnd);
     }
     if (!g_isScrollbarHovered && !g_scrollbarVisible && NeedsCustomScrollbar()) {
       ShowCustomScrollbar(hwnd, false);
-      InvalidateCustomScrollbarArea(hwnd, FALSE);
+      RefreshScrollbarIfChanged(hwnd);
     }
 
     // 启用鼠标追踪以接收 WM_MOUSELEAVE
@@ -2499,7 +2360,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               }
             }
 
-            if (IsLinkText(contentText) && HasEnabledMatch(contentText)) {
+            if (ShouldAnimateLinkText(contentText)) {
               // 文本区域：标题下方
               RECT rcLinkText;
               rcLinkText.left = rcItem.left + 10;
@@ -2858,6 +2719,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       ShowCustomScrollbar(hwnd, false);
       if (GetCustomScrollbarThumbRect(hwnd, &rcThumb) && PtInRect(&rcThumb, pt)) {
         g_scrollbarDragOffsetY = pt.y - rcThumb.top;
+        RefreshScrollbarIfChanged(hwnd);
       } else {
         g_scrollbarDragOffsetY =
             std::max(0, (int)((rcThumb.bottom - rcThumb.top) / 2));
@@ -3005,7 +2867,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       if (GetCapture() == hwnd)
         ReleaseCapture();
       StartScrollbarHideTimer(hwnd);
-      InvalidateCustomScrollbarArea(hwnd, FALSE);
+      RefreshScrollbarIfChanged(hwnd);
       return 0;
     }
     g_dragItemIndex = -1;
@@ -3024,7 +2886,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL,
                           SW_SHOWNORMAL);
           }
-          StartPasswordBatchCopy(pwIdx, g_hwndMain);
+          CopyTextToClipboard(entry.account + L"\n" + entry.password);
           return 0;
         }
         if (field == PW_HOVER_ACCOUNT) {
@@ -3071,12 +2933,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             contentText = contentText.substr(0, spacePos);
           }
 
-          // 优先使用智能操作规则
-          if (MatchAndExecute(hwnd, contentText)) {
-            return 0;
-          }
-
-          // 没有匹配的规则时，使用默认行为
           LinkType linkType = GetLinkType(contentText);
           if (linkType == LINK_FILE_PATH) {
             DWORD attrs = GetFileAttributesW(contentText.c_str());
@@ -3091,19 +2947,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               }
             }
             return 0;
-          } else if (linkType == LINK_URL) {
-            std::wstring url = contentText;
-            if (_wcsnicmp(url.c_str(), L"www.", 4) == 0) {
-              url = L"https://" + url;
-            }
-            ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL,
-                          SW_SHOWNORMAL);
-            return 0;
-          } else if (linkType == LINK_IP) {
-            std::wstring cmd = L"/c ping " + contentText + L" & pause";
-            ShellExecuteW(NULL, L"open", L"cmd.exe", cmd.c_str(), NULL,
-                          SW_SHOWNORMAL);
-            return 0;
           }
         }
       }
@@ -3114,8 +2957,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     if (g_isScrollbarDragging) {
       g_isScrollbarDragging = false;
       StartScrollbarHideTimer(hwnd);
-      InvalidateCustomScrollbarArea(hwnd, FALSE);
-      RedrawCustomScrollbarArea(hwnd);
+      RefreshScrollbarIfChanged(hwnd);
     }
   }
 
@@ -3511,8 +3353,6 @@ Gdiplus::Image *LoadImageFromResource(int resourceId) {
 void LoadButtonImages() {
   g_imgTopmostSelected = LoadImageFromResource(IDB_TOPMOST_SELECTED);
   g_imgTopmostUnselected = LoadImageFromResource(IDB_TOPMOST_UNSELECTED);
-  g_imgBatchEditSelected = LoadImageFromResource(IDB_BATCH_EDIT_SELECTED);
-  g_imgBatchEditUnselected = LoadImageFromResource(IDB_BATCH_EDIT_UNSELECTED);
   g_imgFolderIcon = LoadImageFromResource(IDB_FOLDER_ICON);
   g_imgNoExistIcon = LoadImageFromResource(IDB_NOEXIST_ICON);
 }
@@ -3526,14 +3366,6 @@ void FreeButtonImages() {
   if (g_imgTopmostUnselected) {
     delete g_imgTopmostUnselected;
     g_imgTopmostUnselected = NULL;
-  }
-  if (g_imgBatchEditSelected) {
-    delete g_imgBatchEditSelected;
-    g_imgBatchEditSelected = NULL;
-  }
-  if (g_imgBatchEditUnselected) {
-    delete g_imgBatchEditUnselected;
-    g_imgBatchEditUnselected = NULL;
   }
   if (g_imgFolderIcon) {
     delete g_imgFolderIcon;
@@ -3937,9 +3769,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 加载密码库设置
     LoadVaultSettings();
 
-    // 加载智能操作规则
-    LoadSmartActions();
-
     // 加载粘贴次数统计
     LoadPasteCount();
 
@@ -3950,9 +3779,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 首次创建阶段可能因窗口尚未稳定而短暂失败，延迟到首次显示后重试。
       g_hotkeyRegisterPendingRetry = g_isHotkeyEnabled;
     }
-
-    // 注册快捷粘贴快捷键
-    RegisterQuickPasteHotkeys(hwnd);
 
     // 创建搜索栏（使用ES_MULTILINE以支持EM_SETRECT垂直居中）
     g_hwndSearchBox = CreateWindowExW(
@@ -4122,10 +3948,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     ti.lpszText = (LPWSTR)L"置顶";
     SendMessageW(hwndTooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 
-    ti.uId = (UINT_PTR)hwndBatchEditButton;
-    ti.lpszText = (LPWSTR)L"批量编辑";
-    SendMessageW(hwndTooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-
     ti.uId = (UINT_PTR)hwndDarkmodeButton;
     ti.lpszText = (LPWSTR)L"暗黑模式";
     SendMessageW(hwndTooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
@@ -4194,7 +4016,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 为按钮设置字体
     SendMessageW(hwndTopmostButton, WM_SETFONT, (WPARAM)hUIFont, TRUE);
-    SendMessageW(hwndBatchEditButton, WM_SETFONT, (WPARAM)hUIFont, TRUE);
     SendMessageW(hwndDarkmodeButton, WM_SETFONT, (WPARAM)hUIFont, TRUE);
 
     LoadCustomDataDir(); // 加载自定义数据目录配置
@@ -4244,7 +4065,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_hotkeyRegisterPendingRetry = false;
         }
       }
-      if (g_isQuickPasteEnabled) RegisterQuickPasteHotkeys(hwnd);
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
   }
@@ -4321,7 +4141,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 调整筛选按钮位置（5个按钮，总宽度与列表框对齐）
     const int filterBtnSpacing = 4;
     const int iconBtnSize = 32;   // 图标按钮大小
-    const int iconBtnSpacing = 5; // 按钮间距
     int filterTotalWidth = clientWidth - margin * 2 - iconBtnSize - margin;
     int filterBtnWidth = (filterTotalWidth - filterBtnSpacing * 4) / 5;
     int filterY = contentTop + margin + searchHeight + margin;
@@ -4338,7 +4157,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     MoveWindow(g_hwndFilterFavorite,
                margin + (filterBtnWidth + filterBtnSpacing) * 4, filterY,
                filterTotalWidth - (filterBtnWidth + filterBtnSpacing) * 4,
-               TRUE);
+               tabHeight, TRUE);
 
     // 调整列表框大小（右侧留出按钮空间）
     int listBoxTop = contentTop + margin + searchHeight + margin + tabHeight;
@@ -5148,22 +4967,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             }
           }
 
-          // 在标题行右侧绘制快捷键提示（一直显示，位置随滚动更新）
-          if (g_isQuickPasteEnabled) {
-            int shortcutIndex =
-                GetShortcutIndexForDisplayIndex((int)lpDIS->itemID);
-            if (shortcutIndex >= 0 && shortcutIndex < 10) {
-              wchar_t keyChar =
-                  (shortcutIndex == 9) ? L'0' : L'1' + shortcutIndex;
-              std::wstring shortcutText = GetQuickPasteModifierText() + keyChar;
-              RECT rcShortcut = rcHeader;
-              rcShortcut.right -= 4;
-              SetTextColor(hdc, RGB(100, 149, 237)); // 淡蓝色
-              DrawTextW(hdc, shortcutText.c_str(), -1, &rcShortcut,
-                        DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-            }
-          }
-
           // 在快捷键下方绘制分类标签（所有标签页都显示）
           if (!item.tagIds.empty()) {
             HFONT hTagFont = CreateFontW(
@@ -5550,7 +5353,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 DrawDetectedColorDot(hdc, rcPathText, text);
               } else {
                 // 普通文本或文件，检查是否为链接并应用颜色动画
-                bool isLink = IsLinkText(text);
+                bool isLink = ShouldAnimateLinkText(text);
                 bool isLinkHovered =
                     isLink && (g_isHoveringLink &&
                                g_hoverLinkIndex == (int)lpDIS->itemID);
@@ -5751,10 +5554,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_currentFilterTagId = 0; // 重置为显示全部收藏
           filterChanged = true;
         }
-      } else if (wID == ID_FILTER_PASSWORD) {
-        if (g_currentTab != 5 && SwitchMainPanel(hwnd, 5, true)) {
-          filterChanged = true;
-        }
       }
 
       if (filterChanged) {
@@ -5770,12 +5569,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(g_hwndFilterImage, NULL, TRUE);
         InvalidateRect(g_hwndFilterFile, NULL, TRUE);
         InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
-        InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
-        if (g_currentTab == 5) {
-          UpdatePasswordListBox();
-        } else {
-          UpdateListBox();
-        }
+        UpdateListBox();
       }
     }
 
@@ -5800,8 +5594,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             return 0;
           }
           if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
-            // 连续复制账号→密码
-            StartPasswordBatchCopy(pwIdx, g_hwndMain);
+            CopyTextToClipboard(g_passwords[pwIdx].account + L"\n" +
+                                g_passwords[pwIdx].password);
             if (!g_isTopmost) {
               ShowWindow(hwnd, SW_HIDE);
             }
@@ -5986,13 +5780,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollListBox = g_hwndListBox;
           g_smoothScrollExpectedTop = topIndex;
           g_smoothScrollExpectedEndExclusive = oldTop;
+          ShowCustomScrollbar(g_hwndListBox);
+          RefreshScrollbarIfChanged(g_hwndListBox);
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
           ClearShortcutDisplayBounds();
           UpdateShortcutEndForUpwardFill(oldTop);
           RedrawWindow(g_hwndListBox, NULL, NULL,
-                       RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                       RDW_INVALIDATE | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
@@ -6017,13 +5813,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           g_smoothScrollListBox = g_hwndListBox;
           g_smoothScrollExpectedTop = expectedNextTop;
           g_smoothScrollExpectedEndExclusive = -1;
+          ShowCustomScrollbar(g_hwndListBox);
+          RefreshScrollbarIfChanged(g_hwndListBox);
           SetTimer(g_hwndListBox, ID_SMOOTH_SCROLL_TIMER, 16, NULL);
         } else {
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
           g_shortcutStartDisplayIndex = expectedNextTop;
           g_shortcutEndDisplayIndexExclusive = -1;
           RedrawWindow(g_hwndListBox, NULL, NULL,
-                       RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+                       RDW_INVALIDATE | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
@@ -6453,61 +6251,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           }
         }
       }
-    } else if (wID == IDM_BATCH_PASTE_ASC || wID == IDM_BATCH_PASTE_DESC) {
-      // 连续粘贴模式
-      if (g_isBatchEditMode && !g_selectedItems.empty()) {
-        g_batchPasteQueue.clear();
-        std::vector<int> sorted = g_selectedItems;
-        if (wID == IDM_BATCH_PASTE_DESC) {
-          std::reverse(sorted.begin(), sorted.end());
-        }
-        g_batchPasteQueue = sorted;
-        g_batchPasteIndex = 0;
-        g_isBatchPasteMode = true;
-
-        // 把第一条放入剪贴板
-        if (g_batchPasteIndex < (int)g_batchPasteQueue.size()) {
-          int idx = g_batchPasteQueue[g_batchPasteIndex];
-          if (idx >= 0 && idx < (int)g_history.size()) {
-            const ClipboardItem &item = g_history[idx];
-            if (OpenClipboard(NULL)) {
-              EmptyClipboard();
-              HGLOBAL hGlobal = GlobalAlloc(
-                  GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-              if (hGlobal) {
-                wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-                if (pData) {
-                  wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_UNICODETEXT, hGlobal);
-                }
-              }
-              g_isRestoringClipboard = true;
-              CloseClipboard();
-            }
-          }
-        }
-
-        // 退出批量编辑模式，隐藏窗口
-        g_isBatchEditMode = false;
-        g_selectedItems.clear();
-        g_batchSelectionAnchorDisplayIndex = LB_ERR;
-        InvalidateRect(g_hwndListBox, NULL, TRUE);
-        InvalidateRect(g_hwndBatchEditBtn, NULL, TRUE);
-
-        if (!g_isTopmost) {
-          ShowWindow(hwnd, SW_HIDE);
-        }
-
-        StartBatchPasteHook();
-
-        if (g_isNotificationEnabled) {
-          wchar_t msg[64];
-          _snwprintf_s(msg, 64, L"连续粘贴模式：共 %d 条，按 Ctrl+V 逐条粘贴",
-                       (int)g_batchPasteQueue.size());
-          ShowTrayBalloon(hwnd, L"连续粘贴", msg);
-        }
-      }
     } else if (wID >= IDM_BATCH_ADD_TAG) {
       // 批量编辑模式：批量加入标签（处理二级菜单选择）
       if (g_isBatchEditMode && !g_selectedItems.empty()) {
@@ -6556,8 +6299,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           SendMessageW(g_hwndSettingsDlg, WM_THEMECHANGED, 0, 0);
         }
       }
-    } else if (wID == IDM_TRAY_PASSWORD_GENERATOR) {
-      ShowRandomPasswordGeneratorDialog(hwnd);
     }
     break;
   }
@@ -6600,15 +6341,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         KillTimer(hwnd, ID_BATCH_EDIT_ANIM_TIMER);
       }
       InvalidateRect(g_hwndBatchEditBtn, NULL, TRUE);
-    } else if (wParam == ID_PASSWORD_FILTER_LOCK_TIMER) {
-      g_passwordFilterAnimProgress += 0.14f;
-      if (g_passwordFilterAnimProgress >= 1.0f) {
-        g_passwordFilterAnimProgress = 1.0f;
-        g_passwordFilterAnimating = false;
-        KillTimer(hwnd, ID_PASSWORD_FILTER_LOCK_TIMER);
-      }
-      if (g_hwndFilterPassword)
-        InvalidateRect(g_hwndFilterPassword, NULL, TRUE);
     }
     break;
   }
@@ -6714,19 +6446,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         mii.cbSize = sizeof(MENUITEMINFOW);
         mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
 
-        // 连续粘贴（二级菜单）
-        HBITMAP hPasteIcon = CreateMenuIconBitmap(L"");
-        HMENU hPasteSubMenu = CreatePopupMenu();
-        AppendMenuW(hPasteSubMenu, MF_STRING, IDM_BATCH_PASTE_ASC, L"正序");
-        AppendMenuW(hPasteSubMenu, MF_STRING, IDM_BATCH_PASTE_DESC, L"反序");
-        mii.fMask = MIIM_STRING | MIIM_SUBMENU | MIIM_BITMAP;
-        mii.hSubMenu = hPasteSubMenu;
-        mii.dwTypeData = (LPWSTR)L"连续粘贴";
-        mii.hbmpItem = hPasteIcon;
-        InsertMenuItemW(hMenu, 1, TRUE, &mii);
-        mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
-        mii.hSubMenu = NULL;
-
         // 批量加入标签（二级菜单）
         HMENU hTagSubMenu = CreatePopupMenu();
         if (!g_tags.empty()) {
@@ -6760,7 +6479,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 释放位图资源
         DeleteObject(hDeleteIcon);
         DeleteObject(hTagIcon);
-        DeleteObject(hPasteIcon);
       } else if (g_contextMenuIndex >= 0 &&
                  g_contextMenuIndex < (int)g_displayIndexMap.size()) {
         int actualIndex = g_displayIndexMap[g_contextMenuIndex]; // 获取实际索引
@@ -7022,7 +6740,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     RemoveClipboardFormatListener(hwnd);
     RemoveTrayIcon();
     UnregisterHotkey(hwnd);
-    UnregisterQuickPasteHotkeys(hwnd);
     SaveHistory();
     // 清理图标缓存
     ClearIconCache();
@@ -7030,30 +6747,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     FreeButtonImages();
     // 确保重置剪贴板恢复标志，避免下次启动时无法录入
     g_isRestoringClipboard = false;
-    StopBatchPasteHook();
     PostQuitMessage(0);
     break;
   }
-  // 连续粘贴：Ctrl+V 后加载下一条
-  case WM_USER + 200: {
-    BatchPasteLoadNext();
-    IncrementPasteCount();
-    return 0;
-  }
-  // 连续粘贴：Esc 退出
-  case WM_USER + 201: {
-    StopBatchPasteHook();
-    if (g_isNotificationEnabled) {
-      ShowTrayBalloon(hwnd, L"连续粘贴", L"已退出连续粘贴模式");
-    }
-    return 0;
-  }
 
   case WM_CLIPBOARDUPDATE: {
-    // 外部剪贴板变化，退出连续粘贴模式
-    if (g_isBatchPasteMode && !g_isRestoringClipboard && !g_isTransferStationPasting) {
-      StopBatchPasteHook();
-    }
     if (!g_isRestoringClipboard && !g_isTransferStationPasting &&
         OpenClipboard(NULL)) {
       // 优先处理文件路径
@@ -7216,8 +6914,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       HBITMAP hNotificationIcon = CreateMenuIconBitmap(
           g_isNotificationEnabled ? L"\uEA8F" : L"\uE7ED", RGB(60, 60, 60),
           3); // Ringer/RingerOff
-      HBITMAP hPasswordIcon =
-          CreateMenuIconBitmap(L"\uE192", RGB(60, 60, 60), 3); // Key
       HBITMAP hLightModeIcon =
           CreateMenuIconBitmap(L"\uE706", RGB(60, 60, 60), 3); // Brightness (太阳)
       HBITMAP hDarkModeIcon =
@@ -7243,13 +6939,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       InsertMenuItemW(hTrayMenu, 1, TRUE, &mii);
 
       int insertIndex = 2;
-      if (g_trayPasswordGeneratorEnabled) {
-        mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
-        mii.wID = IDM_TRAY_PASSWORD_GENERATOR;
-        mii.dwTypeData = (LPWSTR)T(STR_TRAY_MENU_PASSWORD_GENERATOR);
-        mii.hbmpItem = hPasswordIcon;
-        InsertMenuItemW(hTrayMenu, insertIndex++, TRUE, &mii);
-      }
 
       // 主题切换：只显示对立模式
       mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
@@ -7282,7 +6971,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       DestroyMenu(hTrayMenu);
       DeleteObject(hSettingsIcon);
       DeleteObject(hNotificationIcon);
-      DeleteObject(hPasswordIcon);
       DeleteObject(hLightModeIcon);
       DeleteObject(hDarkModeIcon);
       DeleteObject(hExitIcon);
@@ -7310,114 +6998,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE);
         }
-      }
-    }
-    else if (wParam == ID_HOTKEY_PASSWORD_GENERATOR) {
-      QuickGenerateConfiguredPassword(hwnd);
-    }
-    // 处理快捷粘贴快捷键（修饰键+1~9，以及第10个用0）
-    else if (wParam >= ID_HOTKEY_PASTE_1 && wParam <= ID_HOTKEY_PASTE_10) {
-      int pasteOffset =
-          (int)(wParam - ID_HOTKEY_PASTE_1); // 0-9，相对于可见区域的偏移
-
-      int visibleItemIndex = -1;
-      int visibleIds[10] = {};
-      int visibleCount = CollectVisibleShortcutDisplayIndices(visibleIds, 10);
-      if (pasteOffset >= 0 && pasteOffset < visibleCount)
-        visibleItemIndex = visibleIds[pasteOffset];
-
-      // 使用 g_displayIndexMap 获取实际的历史记录索引
-      if (visibleItemIndex >= 0 &&
-          visibleItemIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[visibleItemIndex];
-        const ClipboardItem &item = g_history[actualIndex];
-
-        // 记录当前活动窗口
-        HWND hwndTarget = GetForegroundWindow();
-
-        // 复制内容到剪贴板
-        if (OpenClipboard(NULL)) {
-          EmptyClipboard();
-
-          if (item.type == TYPE_TEXT) {
-            // 文本类型：粘贴文本内容
-            HGLOBAL hGlobal = GlobalAlloc(
-                GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-            if (hGlobal != NULL) {
-              wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-              if (pData != NULL) {
-                wcscpy_s(pData, item.content.length() + 1,
-                         item.content.c_str());
-                GlobalUnlock(hGlobal);
-                SetClipboardData(CF_UNICODETEXT, hGlobal);
-              }
-            }
-          } else if (item.type == TYPE_FILE) {
-            // 文件类型：粘贴文件路径
-            HGLOBAL hGlobal = GlobalAlloc(
-                GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-            if (hGlobal != NULL) {
-              wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-              if (pData != NULL) {
-                wcscpy_s(pData, item.content.length() + 1,
-                         item.content.c_str());
-                GlobalUnlock(hGlobal);
-                SetClipboardData(CF_UNICODETEXT, hGlobal);
-              }
-            }
-          } else if (item.type == TYPE_IMAGE) {
-            // 图像类型：粘贴文件路径
-            std::wstring imagePath;
-            if (!item.imageFilePath.empty()) {
-              imagePath = item.imageFilePath;
-            } else if (!item.imageFileName.empty()) {
-              imagePath = GetImagesPath() + L"\\" + item.imageFileName;
-            }
-
-            if (!imagePath.empty()) {
-              HGLOBAL hGlobal = GlobalAlloc(
-                  GMEM_MOVEABLE, (imagePath.length() + 1) * sizeof(wchar_t));
-              if (hGlobal != NULL) {
-                wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-                if (pData != NULL) {
-                  wcscpy_s(pData, imagePath.length() + 1, imagePath.c_str());
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_UNICODETEXT, hGlobal);
-                }
-              }
-            }
-          }
-
-          g_isRestoringClipboard = true;
-          CloseClipboard();
+        if (g_hwndSearchBox) {
+          SetFocus(g_hwndSearchBox);
+          SendMessageW(g_hwndSearchBox, EM_SETSEL, 0, -1);
         }
-
-        // 等待用户释放快捷键的修饰键
-        Sleep(100);
-
-        // 确保修饰键已释放（等待 Alt/Ctrl/Shift 键释放）
-        while ((GetAsyncKeyState(VK_MENU) & 0x8000) ||
-               (GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
-               (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-          Sleep(10);
-        }
-
-        // 确保目标窗口在前台
-        if (hwndTarget != NULL && IsWindow(hwndTarget)) {
-          SetForegroundWindow(hwndTarget);
-          Sleep(50);
-        }
-
-        // 模拟 Ctrl+V 粘贴
-        keybd_event(VK_CONTROL, 0, 0, 0);
-        keybd_event('V', 0, 0, 0);
-        keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
-        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
-
-        if (g_isNotificationEnabled) {
-          ShowTrayBalloon(hwnd, L"快捷粘贴", L"已粘贴");
-        }
-        IncrementPasteCount();
       }
     }
     break;

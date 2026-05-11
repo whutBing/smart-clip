@@ -65,6 +65,3 @@ bool UpdatePasswordEntry(int id, const std::wstring &name,
                          const std::wstring &password);
 bool DeletePasswordEntry(int id);
 bool IsUrlTitle(const std::wstring &title);
-
-// 连续复制（账号→密码）
-void StartPasswordBatchCopy(int entryIndex, HWND hwnd);

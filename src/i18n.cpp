@@ -9,7 +9,6 @@ extern HWND g_hwndFilterText;
 extern HWND g_hwndFilterImage;
 extern HWND g_hwndFilterFile;
 extern HWND g_hwndFilterFavorite;
-extern HWND g_hwndFilterPassword;
 
 AppLanguage g_appLanguage = LANG_ZH_CN;
 
@@ -236,8 +235,6 @@ void ApplyLanguage() {
       SetWindowTextW(g_hwndFilterFile, T(STR_FILTER_FILE));
     if (g_hwndFilterFavorite)
       SetWindowTextW(g_hwndFilterFavorite, T(STR_FILTER_FAVORITE));
-    if (g_hwndFilterPassword)
-      SetWindowTextW(g_hwndFilterPassword, T(STR_FILTER_PASSWORD));
     InvalidateRect(g_hwndMain, NULL, TRUE);
   }
 
