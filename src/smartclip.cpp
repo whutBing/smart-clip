@@ -4,23 +4,21 @@
 #include "hotkey.h"
 #include "i18n.h"
 #include "image_handler.h"
-#include "password_panel.h"
-#include "password_vault.h"
 #include "resource.h" // 添加资源头文件
 #include "search.h"
 #include "settings.h"
 #include "tag_popup.h"
-#include "themed_dialog.h"
 #include "text_utils.h"
 #include "theme.h"
+#include "themed_dialog.h"
 #include "tray.h"
 #include <algorithm> // 用于std::remove_if
 #include <cmath>     // 用于sin函数
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
-#include <objidl.h>   // MinGW 下必须在 gdiplus.h 之前,提供 PROPID
-#include <ole2.h>     // 用于OLE拖放
+#include <objidl.h> // MinGW 下必须在 gdiplus.h 之前,提供 PROPID
+#include <ole2.h>   // 用于OLE拖放
 #include <regex>
 #include <set>
 #include <shellapi.h> // 用于 ShellExecuteW
@@ -70,17 +68,11 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 
 // 标签菜单ID（动态分配，从3100开始）
 #define IDM_TAG_BASE 3100
-#define IDM_TAG_FILTER_ALL 3200  // 全部收藏筛选
-#define IDM_TAG_FILTER_BASE 3201 // 标签筛选基础ID
-#define IDM_TAG_ADD_NEW 3300     // 新增标签
+#define IDM_TAG_FILTER_ALL 3200   // 全部收藏筛选
+#define IDM_TAG_FILTER_BASE 3201  // 标签筛选基础ID
+#define IDM_TAG_ADD_NEW 3300      // 新增标签
 #define IDM_BATCH_PASTE_ASC 3400  // 连续粘贴-正序
 #define IDM_BATCH_PASTE_DESC 3401 // 连续粘贴-反序
-
-// 密码库菜单ID
-#define IDM_PW_ADD 3500
-#define IDM_PW_EDIT 3501
-#define IDM_PW_DELETE 3502
-#define IDM_PW_COPY 3503
 
 // 增加新的控件ID定义
 #define ID_TAB_CONTROL 103
@@ -113,11 +105,8 @@ HWND g_hwndFilterText = NULL;
 HWND g_hwndFilterImage = NULL;
 HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
-HWND g_hwndFilterPassword = NULL;
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
-// 密码列表：密码可见状态（存储 g_passwords 中的索引）
-std::set<int> g_pwVisibleSet;
 // 剪贴板恢复标志
 static bool g_isTransferStationPasting = false;
 // 主窗口句柄
@@ -149,21 +138,11 @@ WNDPROC g_oldTitleMaximizeProc = NULL;
 WNDPROC g_oldTitleCloseProc = NULL;
 
 // 获取当前模式的颜色
-inline COLORREF GetBgColor() {
-  return GetThemeWindowBgColor();
-}
-inline COLORREF GetWhiteColor() {
-  return GetThemeSurfaceColor();
-}
-inline COLORREF GetTextColor() {
-  return GetThemeTextPrimaryColor();
-}
-inline COLORREF GetAccentColor() {
-  return GetThemeAccentColor();
-}
-inline COLORREF GetAccentStrongColor() {
-  return GetThemeAccentStrongColor();
-}
+inline COLORREF GetBgColor() { return GetThemeWindowBgColor(); }
+inline COLORREF GetWhiteColor() { return GetThemeSurfaceColor(); }
+inline COLORREF GetTextColor() { return GetThemeTextPrimaryColor(); }
+inline COLORREF GetAccentColor() { return GetThemeAccentColor(); }
+inline COLORREF GetAccentStrongColor() { return GetThemeAccentStrongColor(); }
 
 // 当前右键选中的索引
 int g_contextMenuIndex = -1;
@@ -174,25 +153,15 @@ HWND g_previousActiveWindow = NULL;
 
 // 列表框子类化
 WNDPROC g_oldListBoxProc = NULL;
-HWND g_hwndListBoxTooltip = NULL; // 列表框 Tooltip
-int g_lastTooltipIndex = -1;      // 上次显示 Tooltip 的项目索引
-int g_hoverIconIndex = -1;        // 鼠标悬浮的图标所在项目索引
-bool g_isHoveringIcon = false;    // 鼠标是否悬浮在图标上
-int g_hoverFolderIndex = -1;      // 鼠标悬浮的文件夹所在项目索引
-bool g_isHoveringFolder = false;  // 鼠标是否悬浮在文件夹名称上
-int g_hoverImageIndex = -1;       // 鼠标悬浮的图像所在项目索引
-bool g_isHoveringImage = false;   // 鼠标是否悬浮在图像上
-enum PasswordHoverField {
-  PW_HOVER_NONE = 0,
-  PW_HOVER_URL,
-  PW_HOVER_ACCOUNT,
-  PW_HOVER_PASSWORD,
-  PW_HOVER_EYE,
-  PW_HOVER_ADD
-};
-int g_hoverPasswordRowIndex = -1;              // 鼠标悬浮的密码列表显示索引
-PasswordHoverField g_hoverPasswordField = PW_HOVER_NONE;
-static std::wstring g_listBoxTooltipText;      // 跟踪 Tooltip 文本缓存
+HWND g_hwndListBoxTooltip = NULL;         // 列表框 Tooltip
+int g_lastTooltipIndex = -1;              // 上次显示 Tooltip 的项目索引
+int g_hoverIconIndex = -1;                // 鼠标悬浮的图标所在项目索引
+bool g_isHoveringIcon = false;            // 鼠标是否悬浮在图标上
+int g_hoverFolderIndex = -1;              // 鼠标悬浮的文件夹所在项目索引
+bool g_isHoveringFolder = false;          // 鼠标是否悬浮在文件夹名称上
+int g_hoverImageIndex = -1;               // 鼠标悬浮的图像所在项目索引
+bool g_isHoveringImage = false;           // 鼠标是否悬浮在图像上
+static std::wstring g_listBoxTooltipText; // 跟踪 Tooltip 文本缓存
 
 // 文件夹下划线动画（展开）
 #define ID_FOLDER_UNDERLINE_TIMER 203
@@ -209,7 +178,6 @@ int g_folderCollapseAnimIndex = -1;     // 正在收起动画的项目索引
 // 链接文本（URL/路径）颜色动画
 #define ID_LINK_COLOR_EXPAND_TIMER 205     // 链接文本颜色展开动画
 #define ID_LINK_COLOR_COLLAPSE_TIMER 206   // 链接文本颜色收起动画
-#define ID_PASSWORD_FILTER_LOCK_TIMER 207  // 密码标签开/闭锁动画
 int g_hoverLinkIndex = -1;                 // 鼠标悬浮的链接所在项目索引
 bool g_isHoveringLink = false;             // 鼠标是否悬浮在链接文本上
 float g_linkColorExpandProgress = 0.0f;    // 颜色展开动画进度 0.0-1.0
@@ -521,8 +489,8 @@ HWND g_hwndTopmostBtn = NULL;
 WNDPROC g_oldBatchEditBtnProc = NULL;
 HWND g_hwndBatchEditBtn = NULL;
 bool g_isBatchEditBtnHover = false;
-bool g_isBatchEditMode = false;   // 批量编辑模式状态
-std::vector<int> g_selectedItems; // 批量编辑模式下选中的记录索引
+bool g_isBatchEditMode = false;                  // 批量编辑模式状态
+std::vector<int> g_selectedItems;                // 批量编辑模式下选中的记录索引
 int g_batchSelectionAnchorDisplayIndex = LB_ERR; // Shift 范围选择锚点
 WNDPROC g_oldFilterFavoriteProc = NULL;
 HWND g_hwndMainTooltip = NULL;
@@ -593,7 +561,8 @@ static float g_smoothScrollCurrent = 0.0f; // 当前滚动位置
 static bool g_smoothScrollActive = false;  // 是否正在平滑滚动
 static HWND g_smoothScrollListBox = NULL;  // 正在滚动的列表框
 static int g_smoothScrollExpectedTop = -1; // 平滑翻页后快捷键编号的起始索引
-static int g_smoothScrollExpectedEndExclusive = -1; // 平滑向上翻页后的旧记录截止索引
+static int g_smoothScrollExpectedEndExclusive =
+    -1; // 平滑向上翻页后的旧记录截止索引
 static DWORD g_vimNavPendingGTick = 0;
 
 static void ClearShortcutDisplayBounds() {
@@ -658,7 +627,8 @@ static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
   int totalItems = (int)g_displayIndexMap.size();
   int count = 0;
   const int headerVisibleThreshold = 9;
-  int visibleHeight = g_hwndListBox ? GetListBoxVisibleHeight(g_hwndListBox) : 0;
+  int visibleHeight =
+      g_hwndListBox ? GetListBoxVisibleHeight(g_hwndListBox) : 0;
   int startIndex = g_listBoxTopIndex;
 
   if (startHint >= 0)
@@ -684,9 +654,8 @@ static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
       break;
 
     RECT rcItem = {};
-    if (g_hwndListBox &&
-        SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
-            LB_ERR) {
+    if (g_hwndListBox && SendMessageW(g_hwndListBox, LB_GETITEMRECT, i,
+                                      (LPARAM)&rcItem) != LB_ERR) {
       int itemHeight = rcItem.bottom - rcItem.top;
       if (rcItem.bottom <= 0)
         continue;
@@ -725,8 +694,8 @@ static bool PasteHistoryItemByDisplayIndex(HWND hwnd, int displayIndex) {
   EmptyClipboard();
 
   if (item.type == TYPE_TEXT || item.type == TYPE_FILE) {
-    HGLOBAL hGlobal = GlobalAlloc(
-        GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
+    HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, (item.content.length() + 1) *
+                                                     sizeof(wchar_t));
     if (hGlobal != NULL) {
       wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
       if (pData != NULL) {
@@ -744,8 +713,8 @@ static bool PasteHistoryItemByDisplayIndex(HWND hwnd, int displayIndex) {
     }
 
     if (!imagePath.empty()) {
-      HGLOBAL hGlobal = GlobalAlloc(
-          GMEM_MOVEABLE, (imagePath.length() + 1) * sizeof(wchar_t));
+      HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE,
+                                    (imagePath.length() + 1) * sizeof(wchar_t));
       if (hGlobal != NULL) {
         wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
         if (pData != NULL) {
@@ -788,15 +757,6 @@ static bool PasteHistoryItemByDisplayIndex(HWND hwnd, int displayIndex) {
 int GetItemDisplayHeight(int displayIndex) {
   if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size()) {
     return 57; // 默认文本高度
-  }
-
-  if (g_currentTab == 5) {
-    int mapVal = g_displayIndexMap[displayIndex];
-    if (mapVal == -2)
-      return 46;
-    if (mapVal == -1)
-      return 54;
-    return 58;
   }
 
   int actualIndex = g_displayIndexMap[displayIndex];
@@ -1121,14 +1081,13 @@ static void RefreshScrollbarIfChanged(HWND hwnd) {
   if (!hwnd)
     return;
   RECT rcNew = {};
-  bool hasNew =
-      g_scrollbarVisible && GetCustomScrollbarThumbRect(hwnd, &rcNew);
+  bool hasNew = g_scrollbarVisible && GetCustomScrollbarThumbRect(hwnd, &rcNew);
   bool stateChanged = (g_lastThumbVisible != g_scrollbarVisible) ||
                       (g_lastThumbHovered != g_isScrollbarHovered) ||
                       (g_lastThumbDragging != g_isScrollbarDragging);
-  bool rectChanged = (hasNew != g_lastThumbValid) ||
-                     (hasNew && g_lastThumbValid &&
-                      !EqualRect(&rcNew, &g_lastThumbRect));
+  bool rectChanged =
+      (hasNew != g_lastThumbValid) ||
+      (hasNew && g_lastThumbValid && !EqualRect(&rcNew, &g_lastThumbRect));
   if (!stateChanged && !rectChanged)
     return;
 
@@ -1191,12 +1150,11 @@ static void PaintCustomScrollbarOverlay(HWND hwnd, HDC hdc) {
     return;
 
   COLORREF thumbColor =
-      g_isScrollbarDragging ? GetAccentStrongColor()
-                            : (g_isScrollbarHovered
-                                   ? (g_isDarkMode ? RGB(142, 148, 158)
-                                                   : RGB(155, 155, 160))
-                                   : (g_isDarkMode ? RGB(102, 108, 118)
-                                                   : RGB(180, 180, 180)));
+      g_isScrollbarDragging
+          ? GetAccentStrongColor()
+          : (g_isScrollbarHovered
+                 ? (g_isDarkMode ? RGB(142, 148, 158) : RGB(155, 155, 160))
+                 : (g_isDarkMode ? RGB(102, 108, 118) : RGB(180, 180, 180)));
   HBRUSH hThumbBrush = CreateSolidBrush(thumbColor);
   FillRect(hdc, &rcThumbPaint, hThumbBrush);
   DeleteObject(hThumbBrush);
@@ -1240,8 +1198,6 @@ static bool ShouldAnimateLinkText(const std::wstring &text) {
 static bool IsSelectableDisplayIndex(int index) {
   if (index < 0 || index >= (int)g_displayIndexMap.size())
     return false;
-  if (g_currentTab == 5)
-    return g_displayIndexMap[index] != -2;
   return true;
 }
 
@@ -1315,10 +1271,6 @@ static int GetBatchSelectableItemIndexFromDisplayIndex(int displayIndex) {
     return -1;
 
   int itemIndex = g_displayIndexMap[displayIndex];
-  if (g_currentTab == 5) {
-    return (itemIndex >= 0 && itemIndex < (int)g_passwords.size()) ? itemIndex
-                                                                    : -1;
-  }
   return (itemIndex >= 0 && itemIndex < (int)g_history.size()) ? itemIndex : -1;
 }
 
@@ -1336,7 +1288,8 @@ static void AddBatchSelectionItem(int itemIndex) {
 }
 
 static void RemoveBatchSelectionItem(int itemIndex) {
-  auto it = std::find(g_selectedItems.begin(), g_selectedItems.end(), itemIndex);
+  auto it =
+      std::find(g_selectedItems.begin(), g_selectedItems.end(), itemIndex);
   if (it != g_selectedItems.end()) {
     g_selectedItems.erase(it);
   }
@@ -1382,7 +1335,8 @@ static void ApplyBatchSelectionFromDisplayIndex(int displayIndex,
 
   g_batchSelectionAnchorDisplayIndex = displayIndex;
   if (ctrlPressed) {
-    auto it = std::find(g_selectedItems.begin(), g_selectedItems.end(), itemIndex);
+    auto it =
+        std::find(g_selectedItems.begin(), g_selectedItems.end(), itemIndex);
     if (it != g_selectedItems.end()) {
       g_selectedItems.erase(it);
     } else {
@@ -1463,8 +1417,7 @@ static bool MoveListSelection(int delta) {
   if (target == LB_ERR)
     return false;
   bool selected = SelectListDisplayIndex(target);
-  if (selected && g_isBatchEditMode &&
-      (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+  if (selected && g_isBatchEditMode && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
     if (!IsBatchSelectableDisplayIndex(g_batchSelectionAnchorDisplayIndex) &&
         IsBatchSelectableDisplayIndex(current)) {
       g_batchSelectionAnchorDisplayIndex = current;
@@ -1476,15 +1429,15 @@ static bool MoveListSelection(int delta) {
 }
 
 static bool JumpListSelectionToBoundary(bool toBottom) {
-  int target =
-      toBottom ? GetLastSelectableDisplayIndex() : GetFirstSelectableDisplayIndex();
+  int target = toBottom ? GetLastSelectableDisplayIndex()
+                        : GetFirstSelectableDisplayIndex();
   if (target == LB_ERR)
     return false;
-  int current = g_hwndListBox ? (int)SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0)
-                              : LB_ERR;
+  int current = g_hwndListBox
+                    ? (int)SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0)
+                    : LB_ERR;
   bool selected = SelectListDisplayIndex(target);
-  if (selected && g_isBatchEditMode &&
-      (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+  if (selected && g_isBatchEditMode && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
     if (!IsBatchSelectableDisplayIndex(g_batchSelectionAnchorDisplayIndex) &&
         IsBatchSelectableDisplayIndex(current)) {
       g_batchSelectionAnchorDisplayIndex = current;
@@ -1508,13 +1461,8 @@ static void InvalidateMainFilterButtons() {
     InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
 }
 
-static void UpdatePasswordFilterLockVisual(HWND hwnd, bool animate) {
-  (void)hwnd;
-  (void)animate;
-  return;
-}
-
-static bool SwitchMainPanel(HWND /*hwnd*/, int newTab, bool resetFavoriteFilter) {
+static bool SwitchMainPanel(HWND /*hwnd*/, int newTab,
+                            bool resetFavoriteFilter) {
   if (newTab < 0 || newTab > 4)
     return false;
 
@@ -1606,8 +1554,7 @@ static bool HandleMainNavigationKey(const MSG &msg) {
                            CalculatePrevPageIndex(g_listBoxTopIndex));
       ClearShortcutDisplayBounds();
       UpdateShortcutEndForUpwardFill(oldTop);
-      RedrawWindow(g_hwndListBox, NULL, NULL,
-                   RDW_INVALIDATE | RDW_NOERASE);
+      RedrawWindow(g_hwndListBox, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
       ShowCustomScrollbar(g_hwndListBox);
       RefreshScrollbarIfChanged(g_hwndListBox);
       handled = true;
@@ -1624,8 +1571,7 @@ static bool HandleMainNavigationKey(const MSG &msg) {
         g_smoothScrollExpectedTop = -1;
         g_shortcutEndDisplayIndexExclusive = -1;
         g_smoothScrollExpectedEndExclusive = -1;
-        RedrawWindow(g_hwndListBox, NULL, NULL,
-                     RDW_INVALIDATE | RDW_NOERASE);
+        RedrawWindow(g_hwndListBox, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
         ShowCustomScrollbar(g_hwndListBox);
         RefreshScrollbarIfChanged(g_hwndListBox);
         handled = true;
@@ -1659,37 +1605,6 @@ static bool HandleMainNavigationKey(const MSG &msg) {
   return handled;
 }
 
-static bool GetPasswordAddButtonRect(const RECT &rcItem, RECT *rcPlus) {
-  if (!rcPlus)
-    return false;
-  const int rowInset = 8;
-  RECT rcAction = {rcItem.left + rowInset, rcItem.top + 4,
-                   rcItem.right - rowInset, rcItem.bottom - 4};
-  rcPlus->left = rcAction.left + 14;
-  rcPlus->top = rcAction.top + 4;
-  rcPlus->right = rcPlus->left + 30;
-  rcPlus->bottom = rcAction.bottom - 4;
-  return true;
-}
-
-static bool GetPasswordAddRowRect(const RECT &rcItem, RECT *rcAction) {
-  if (!rcAction)
-    return false;
-  const int rowInset = 8;
-  rcAction->left = rcItem.left + rowInset;
-  rcAction->top = rcItem.top + 4;
-  rcAction->right = rcItem.right - rowInset;
-  rcAction->bottom = rcItem.bottom - 4;
-  return true;
-}
-
-struct PasswordRowHitRects {
-  RECT urlRect;
-  RECT accountRect;
-  RECT passwordRect;
-  RECT eyeRect;
-};
-
 static void HideListBoxTrackingTooltip() {
   if (g_hwndListBoxTooltip == NULL)
     return;
@@ -1699,53 +1614,6 @@ static void HideListBoxTrackingTooltip() {
   ti.hwnd = g_hwndListBox;
   ti.uId = 0;
   SendMessageW(g_hwndListBoxTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
-}
-
-static void ShowListBoxTrackingTooltip(const wchar_t *text) {
-  if (g_hwndListBoxTooltip == NULL || !text || !*text)
-    return;
-
-  g_listBoxTooltipText = text;
-  TOOLINFOW ti = {};
-  ti.cbSize = TTTOOLINFOW_V1_SIZE;
-  ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
-  ti.hwnd = g_hwndListBox;
-  ti.uId = 0;
-  ti.lpszText = (LPWSTR)g_listBoxTooltipText.c_str();
-  SendMessageW(g_hwndListBoxTooltip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
-
-  POINT ptMouse;
-  GetCursorPos(&ptMouse);
-  POINT ptScreen = {ptMouse.x - 20, ptMouse.y - 25};
-  SendMessageW(g_hwndListBoxTooltip, TTM_TRACKPOSITION, 0,
-               MAKELPARAM(ptScreen.x, ptScreen.y));
-  SendMessageW(g_hwndListBoxTooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
-}
-
-static bool CopyTextToClipboard(const std::wstring &text) {
-  if (text.empty() || !OpenClipboard(NULL))
-    return false;
-
-  EmptyClipboard();
-  HGLOBAL hGlobal =
-      GlobalAlloc(GMEM_MOVEABLE, (text.length() + 1) * sizeof(wchar_t));
-  if (!hGlobal) {
-    CloseClipboard();
-    return false;
-  }
-
-  wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-  if (!pData) {
-    GlobalFree(hGlobal);
-    CloseClipboard();
-    return false;
-  }
-
-  wcscpy_s(pData, text.length() + 1, text.c_str());
-  GlobalUnlock(hGlobal);
-  SetClipboardData(CF_UNICODETEXT, hGlobal);
-  CloseClipboard();
-  return true;
 }
 
 static COLORREF BlendColorWithBackground(COLORREF color, BYTE alpha,
@@ -1774,7 +1642,8 @@ static BYTE ParseHexByte(wchar_t high, wchar_t low) {
   return (BYTE)((hi << 4) | lo);
 }
 
-static bool TryParseHexColorToken(const std::wstring &token, COLORREF *outColor) {
+static bool TryParseHexColorToken(const std::wstring &token,
+                                  COLORREF *outColor) {
   if (!outColor || token.empty() || token[0] != L'#')
     return false;
 
@@ -1787,9 +1656,9 @@ static bool TryParseHexColorToken(const std::wstring &token, COLORREF *outColor)
       return false;
     color = RGB(r * 17, g * 17, b * 17);
   } else if (token.length() == 7) {
-    color = RGB(ParseHexByte(token[1], token[2]),
-                ParseHexByte(token[3], token[4]),
-                ParseHexByte(token[5], token[6]));
+    color =
+        RGB(ParseHexByte(token[1], token[2]), ParseHexByte(token[3], token[4]),
+            ParseHexByte(token[5], token[6]));
   } else if (token.length() == 9) {
     COLORREF raw =
         RGB(ParseHexByte(token[1], token[2]), ParseHexByte(token[3], token[4]),
@@ -1901,7 +1770,8 @@ static void DrawDetectedColorDot(HDC hdc, const RECT &rcText,
   SIZE prefixSize = {};
   SIZE tokenSize = {};
   if (!prefix.empty()) {
-    GetTextExtentPoint32W(hdc, prefix.c_str(), (int)prefix.length(), &prefixSize);
+    GetTextExtentPoint32W(hdc, prefix.c_str(), (int)prefix.length(),
+                          &prefixSize);
   }
   if (!colorToken.empty()) {
     GetTextExtentPoint32W(hdc, colorToken.c_str(), (int)colorToken.length(),
@@ -1911,22 +1781,20 @@ static void DrawDetectedColorDot(HDC hdc, const RECT &rcText,
   const int dotDiameter = 10;
   const int dotGap = 6;
   int dotX = rcText.left + prefixSize.cx + tokenSize.cx + dotGap;
-  int verticalOffset =
-      (int)(((rcText.bottom - rcText.top) - dotDiameter) / 2);
+  int verticalOffset = (int)(((rcText.bottom - rcText.top) - dotDiameter) / 2);
   int dotY = rcText.top + std::max(0, verticalOffset);
   if (dotX + dotDiameter > rcText.right - 2)
     return;
 
   Gdiplus::Graphics graphics(hdc);
   graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-  Gdiplus::SolidBrush fillBrush(
-      Gdiplus::Color(255, GetRValue(dotColor), GetGValue(dotColor),
-                     GetBValue(dotColor)));
+  Gdiplus::SolidBrush fillBrush(Gdiplus::Color(
+      255, GetRValue(dotColor), GetGValue(dotColor), GetBValue(dotColor)));
   graphics.FillEllipse(&fillBrush, dotX, dotY, dotDiameter, dotDiameter);
 }
 
-static void PromoteHistoryItemsToFrontInOrder(
-    const std::vector<int> &selectionOrder) {
+static void
+PromoteHistoryItemsToFrontInOrder(const std::vector<int> &selectionOrder) {
   if (selectionOrder.empty() || g_history.empty())
     return;
 
@@ -1957,105 +1825,6 @@ static void PromoteHistoryItemsToFrontInOrder(
 static void UpdateSearchClearButtonVisibility() {
   if (g_hwndSearchBox)
     InvalidateRect(g_hwndSearchBox, NULL, FALSE);
-}
-
-static std::wstring NormalizePasswordEntryUrl(const std::wstring &url) {
-  if (_wcsnicmp(url.c_str(), L"www.", 4) == 0)
-    return L"https://" + url;
-  return url;
-}
-
-static const wchar_t *GetPasswordVisibilityIcon(bool visible) {
-  return visible ? L"\uED1A" : L"\uE7B3";
-}
-
-static bool GetPasswordRowHitRects(HWND hwnd, int displayIndex,
-                                   PasswordRowHitRects *rects) {
-  if (!hwnd || !rects || displayIndex < 0 ||
-      displayIndex >= (int)g_displayIndexMap.size())
-    return false;
-
-  int mapVal = g_displayIndexMap[displayIndex];
-  if (mapVal < 0 || mapVal >= (int)g_passwords.size())
-    return false;
-
-  RECT rcItem = {};
-  if (SendMessageW(hwnd, LB_GETITEMRECT, displayIndex, (LPARAM)&rcItem) ==
-      LB_ERR)
-    return false;
-
-  int pad = 16;
-  int eyeW = 34;
-  int actionGap = 12;
-  int contentLeft = rcItem.left + pad;
-  int contentRight =
-      rcItem.right - pad - GetCustomScrollbarReservedWidth();
-  if (contentRight < contentLeft + 120)
-    contentRight = contentLeft + 120;
-  int contentWidth = contentRight - contentLeft;
-  int col1 = contentLeft + contentWidth * 26 / 100;
-  int col2 = contentLeft + contentWidth * 57 / 100;
-  int col3 = contentLeft + contentWidth * 78 / 100;
-  int colEnd = contentRight;
-  RECT rcRow = {rcItem.left + 8, rcItem.top + 3, rcItem.right - 8,
-                rcItem.bottom - 3};
-  int textTop = rcRow.top;
-  int textBottom = rcRow.bottom;
-
-  rects->urlRect = {col1 + 4, textTop, col2 - 8, textBottom};
-  rects->accountRect = {col2 + 4, textTop, col3 - 8, textBottom};
-  rects->passwordRect = {col3 + 4, textTop, colEnd - eyeW - actionGap,
-                         textBottom};
-  rects->eyeRect = {colEnd - eyeW, textTop, colEnd, textBottom};
-  return true;
-}
-
-static PasswordHoverField HitTestPasswordInteractiveField(
-    HWND hwnd, POINT pt, int *outDisplayIndex = NULL, int *outPasswordIndex = NULL) {
-  if (!hwnd || g_currentTab != 5 || !g_vaultUnlocked)
-    return PW_HOVER_NONE;
-
-  int hit = (int)SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
-  if (HIWORD(hit) != 0)
-    return PW_HOVER_NONE;
-
-  int displayIndex = LOWORD(hit);
-  if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
-    return PW_HOVER_NONE;
-
-  int pwIdx = g_displayIndexMap[displayIndex];
-  if (outDisplayIndex)
-    *outDisplayIndex = displayIndex;
-  if (outPasswordIndex)
-    *outPasswordIndex = pwIdx;
-
-  if (pwIdx == -1) {
-    RECT rcItem = {};
-    if (SendMessageW(hwnd, LB_GETITEMRECT, displayIndex, (LPARAM)&rcItem) ==
-        LB_ERR)
-      return PW_HOVER_NONE;
-    RECT rcAction = {};
-    GetPasswordAddRowRect(rcItem, &rcAction);
-    return PtInRect(&rcAction, pt) ? PW_HOVER_ADD : PW_HOVER_NONE;
-  }
-
-  if (pwIdx < 0 || pwIdx >= (int)g_passwords.size())
-    return PW_HOVER_NONE;
-
-  PasswordRowHitRects rects = {};
-  if (!GetPasswordRowHitRects(hwnd, displayIndex, &rects))
-    return PW_HOVER_NONE;
-
-  const PasswordEntry &entry = g_passwords[pwIdx];
-  if (PtInRect(&rects.eyeRect, pt))
-    return PW_HOVER_EYE;
-  if (entry.isUrl && !entry.title.empty() && PtInRect(&rects.urlRect, pt))
-    return PW_HOVER_URL;
-  if (!entry.account.empty() && PtInRect(&rects.accountRect, pt))
-    return PW_HOVER_ACCOUNT;
-  if (!entry.password.empty() && PtInRect(&rects.passwordRect, pt))
-    return PW_HOVER_PASSWORD;
-  return PW_HOVER_NONE;
 }
 
 static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
@@ -2095,8 +1864,7 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
     if (g_shortcutStartDisplayIndex != -1 ||
         g_shortcutEndDisplayIndexExclusive != -1) {
       ClearShortcutDisplayBounds();
-      RedrawWindow(hwnd, NULL, NULL,
-                   RDW_INVALIDATE | RDW_NOERASE);
+      RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
       return;
     }
   }
@@ -2109,7 +1877,8 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
 }
 
 static void HideNativeListBoxScrollbar(HWND hwnd) {
-  if (!hwnd) return;
+  if (!hwnd)
+    return;
   ShowScrollBar(hwnd, SB_VERT, FALSE);
 }
 
@@ -2180,11 +1949,10 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_smoothScrollExpectedEndExclusive = -1;
       ApplyListBoxTopIndex(hwnd, newTop);
       ClearShortcutDisplayBounds();
-      RedrawWindow(hwnd, NULL, NULL,
-                   RDW_INVALIDATE | RDW_NOERASE);
+      RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
       return 0;
     }
-    return 0;                          // 已处理，不再传递给默认处理
+    return 0; // 已处理，不再传递给默认处理
   }
 
   // 处理平滑滚动定时器
@@ -2215,15 +1983,13 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         } else {
           ClearShortcutDisplayBounds();
         }
-        RedrawWindow(hwnd, NULL, NULL,
-                     RDW_INVALIDATE | RDW_NOERASE);
+        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
       } else {
         g_smoothScrollCurrent += step;
         // 设置滚动位置
         int newPos = (int)(g_smoothScrollCurrent + 0.5f);
         ApplyListBoxTopIndex(hwnd, newPos);
       }
-
     }
     return 0;
   }
@@ -2260,7 +2026,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     return result;
   }
 
-    // 定时器触发时隐藏滚动条和快捷键提示
+  // 定时器触发时隐藏滚动条和快捷键提示
   if (message == WM_TIMER && wParam == ID_SCROLLBAR_HIDE_TIMER) {
     if (g_isScrollbarDragging || g_isScrollbarHovered) {
       StartScrollbarHideTimer(hwnd);
@@ -2327,23 +2093,16 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     ScreenToClient(hwnd, &pt);
     RECT rcTrack;
     RECT rcThumb;
-    if ((GetCustomScrollbarThumbRect(hwnd, &rcThumb) && PtInRect(&rcThumb, pt)) ||
-        (GetCustomScrollbarTrackRect(hwnd, &rcTrack) && PtInRect(&rcTrack, pt))) {
+    if ((GetCustomScrollbarThumbRect(hwnd, &rcThumb) &&
+         PtInRect(&rcThumb, pt)) ||
+        (GetCustomScrollbarTrackRect(hwnd, &rcTrack) &&
+         PtInRect(&rcTrack, pt))) {
       SetCursor(LoadCursor(NULL, IDC_ARROW));
       return TRUE;
     }
     if (g_isHoveringLink || g_isHoveringFolder || g_isHoveringIcon) {
       SetCursor(LoadCursor(NULL, IDC_HAND));
       return TRUE;
-    }
-    if (g_currentTab == 5 && g_vaultUnlocked) {
-      POINT pt;
-      GetCursorPos(&pt);
-      ScreenToClient(hwnd, &pt);
-      if (HitTestPasswordInteractiveField(hwnd, pt) != PW_HOVER_NONE) {
-        SetCursor(LoadCursor(NULL, IDC_HAND));
-        return TRUE;
-      }
     }
   }
 
@@ -2370,7 +2129,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
       RefreshScrollbarIfChanged(hwnd);
     }
-    if (!g_isScrollbarHovered && !g_scrollbarVisible && NeedsCustomScrollbar()) {
+    if (!g_isScrollbarHovered && !g_scrollbarVisible &&
+        NeedsCustomScrollbar()) {
       ShowCustomScrollbar(hwnd, false);
       RefreshScrollbarIfChanged(hwnd);
     }
@@ -2390,8 +2150,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     int oldFolderHoverIndex = g_hoverFolderIndex;
     bool wasHoveringLink = g_isHoveringLink;
     int oldLinkHoverIndex = g_hoverLinkIndex;
-    int oldPasswordHoverIndex = g_hoverPasswordRowIndex;
-    PasswordHoverField oldPasswordHoverField = g_hoverPasswordField;
 
     // 重置文件夹悬浮状态
     g_isHoveringFolder = false;
@@ -2402,36 +2160,9 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     // 重置链接悬浮状态
     g_isHoveringLink = false;
     g_hoverLinkIndex = -1;
-    g_hoverPasswordRowIndex = -1;
-    g_hoverPasswordField = PW_HOVER_NONE;
 
-    if (g_currentTab == 5 && g_vaultUnlocked) {
-      int displayIndex = -1;
-      int pwIdx = -1;
-      PasswordHoverField field =
-          HitTestPasswordInteractiveField(hwnd, pt, &displayIndex, &pwIdx);
-      if (field != PW_HOVER_NONE) {
-        g_hoverPasswordRowIndex = displayIndex;
-        g_hoverPasswordField = field;
-        SetCursor(LoadCursor(NULL, IDC_HAND));
-
-        if (field == PW_HOVER_URL) {
-          ShowListBoxTrackingTooltip(L"单击打开网址并复制账号和密码");
-        } else if (field == PW_HOVER_ACCOUNT) {
-          ShowListBoxTrackingTooltip(L"单击复制账号");
-        } else if (field == PW_HOVER_PASSWORD) {
-          ShowListBoxTrackingTooltip(L"单击复制密码");
-        } else {
-          HideListBoxTrackingTooltip();
-        }
-      } else {
-        HideListBoxTrackingTooltip();
-      }
-    }
-
-    if (g_currentTab != 5 || !g_vaultUnlocked) {
-      if (HIWORD(index) == 0) {
-        index = LOWORD(index);
+    if (HIWORD(index) == 0) {
+      index = LOWORD(index);
 
       bool iconFound = false;
       if (index >= 0 && index < (int)g_displayIndexMap.size()) {
@@ -2688,18 +2419,15 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       // 如果没有找到图标悬浮且没有图像悬浮，隐藏 tooltip
-      if (!iconFound && !g_isHoveringImage &&
-          g_hoverPasswordField == PW_HOVER_NONE) {
+      if (!iconFound && !g_isHoveringImage) {
         g_isHoveringIcon = false;
         g_hoverIconIndex = -1;
         HideListBoxTrackingTooltip();
       }
-      } else {
-        g_isHoveringIcon = false;
-        g_hoverIconIndex = -1;
-        if (g_hoverPasswordField == PW_HOVER_NONE)
-          HideListBoxTrackingTooltip();
-      }
+    } else {
+      g_isHoveringIcon = false;
+      g_hoverIconIndex = -1;
+      HideListBoxTrackingTooltip();
     }
 
     // 如果悬浮状态变化，重绘相关项目
@@ -2802,25 +2530,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(hwnd, &rcNew, FALSE);
       }
     }
-
-    if (oldPasswordHoverIndex != g_hoverPasswordRowIndex ||
-        oldPasswordHoverField != g_hoverPasswordField) {
-      if (oldPasswordHoverIndex >= 0) {
-        RECT rcOld = {};
-        if (SendMessageW(hwnd, LB_GETITEMRECT, oldPasswordHoverIndex,
-                         (LPARAM)&rcOld) != LB_ERR) {
-          InvalidateRect(hwnd, &rcOld, FALSE);
-        }
-      }
-      if (g_hoverPasswordRowIndex >= 0 &&
-          g_hoverPasswordRowIndex != oldPasswordHoverIndex) {
-        RECT rcNew = {};
-        if (SendMessageW(hwnd, LB_GETITEMRECT, g_hoverPasswordRowIndex,
-                         (LPARAM)&rcNew) != LB_ERR) {
-          InvalidateRect(hwnd, &rcNew, FALSE);
-        }
-      }
-    }
   }
 
   // 鼠标离开时隐藏 Tooltip 并重置悬浮状态
@@ -2838,9 +2547,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     g_hoverFolderIndex = -1;
     g_isHoveringLink = false;
     g_hoverLinkIndex = -1;
-    int oldPasswordHoverIndex = g_hoverPasswordRowIndex;
-    g_hoverPasswordRowIndex = -1;
-    g_hoverPasswordField = PW_HOVER_NONE;
 
     // 启动收起动画（鼠标离开列表框）- 文件夹也用蓝色文字动画
     if (oldFolderHoverIndex >= 0) {
@@ -2889,15 +2595,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       SendMessageW(hwnd, LB_GETITEMRECT, oldLinkHoverIndex, (LPARAM)&rcOld);
       InvalidateRect(hwnd, &rcOld, FALSE);
     }
-    if (oldPasswordHoverIndex >= 0 && oldPasswordHoverIndex != oldHoverIndex &&
-        oldPasswordHoverIndex != oldFolderHoverIndex &&
-        oldPasswordHoverIndex != oldLinkHoverIndex) {
-      RECT rcOld = {};
-      if (SendMessageW(hwnd, LB_GETITEMRECT, oldPasswordHoverIndex,
-                       (LPARAM)&rcOld) != LB_ERR) {
-        InvalidateRect(hwnd, &rcOld, FALSE);
-      }
-    }
   }
 
   // 处理鼠标按下 - 记录拖拽起始点
@@ -2914,7 +2611,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_smoothScrollActive = false;
       KillTimer(hwnd, ID_SMOOTH_SCROLL_TIMER);
       ShowCustomScrollbar(hwnd, false);
-      if (GetCustomScrollbarThumbRect(hwnd, &rcThumb) && PtInRect(&rcThumb, pt)) {
+      if (GetCustomScrollbarThumbRect(hwnd, &rcThumb) &&
+          PtInRect(&rcThumb, pt)) {
         g_scrollbarDragOffsetY = pt.y - rcThumb.top;
         RefreshScrollbarIfChanged(hwnd);
       } else {
@@ -2924,37 +2622,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       }
       SetCapture(hwnd);
       return 0;
-    }
-
-    // 密码列表：可交互区域点击
-    if (g_currentTab == 5 && g_vaultUnlocked) {
-      int displayIndex = -1;
-      int pwIdx = -1;
-      PasswordHoverField field =
-          HitTestPasswordInteractiveField(hwnd, pt, &displayIndex, &pwIdx);
-      if (displayIndex >= 0) {
-        RECT rcItem = {};
-        SendMessageW(hwnd, LB_GETITEMRECT, displayIndex, (LPARAM)&rcItem);
-        if (pwIdx == -1) {
-          if (field == PW_HOVER_ADD) {
-            SendMessageW(hwnd, LB_SETCURSEL, displayIndex, 0);
-            ShowPasswordEntryDialog(g_hwndMain);
-          } else {
-            SendMessageW(hwnd, LB_SETCURSEL, (WPARAM)-1, 0);
-            InvalidateRect(hwnd, &rcItem, FALSE);
-          }
-          return 0;
-        }
-        if (pwIdx >= 0 && pwIdx < (int)g_passwords.size() &&
-            field == PW_HOVER_EYE) {
-          if (g_pwVisibleSet.count(pwIdx))
-            g_pwVisibleSet.erase(pwIdx);
-          else
-            g_pwVisibleSet.insert(pwIdx);
-          InvalidateRect(hwnd, &rcItem, FALSE);
-          return 0;
-        }
-      }
     }
 
     int index = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
@@ -3068,34 +2735,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       return 0;
     }
     g_dragItemIndex = -1;
-
-    if (g_currentTab == 5 && g_vaultUnlocked) {
-      POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-      int displayIndex = -1;
-      int pwIdx = -1;
-      PasswordHoverField field =
-          HitTestPasswordInteractiveField(hwnd, pt, &displayIndex, &pwIdx);
-      if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
-        const PasswordEntry &entry = g_passwords[pwIdx];
-        if (field == PW_HOVER_URL) {
-          std::wstring url = NormalizePasswordEntryUrl(entry.title);
-          if (!url.empty()) {
-            ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL,
-                          SW_SHOWNORMAL);
-          }
-          CopyTextToClipboard(entry.account + L"\n" + entry.password);
-          return 0;
-        }
-        if (field == PW_HOVER_ACCOUNT) {
-          CopyTextToClipboard(entry.account);
-          return 0;
-        }
-        if (field == PW_HOVER_PASSWORD) {
-          CopyTextToClipboard(entry.password);
-          return 0;
-        }
-      }
-    }
 
     if (g_isHoveringFolder && g_hoverFolderIndex >= 0) {
       // 获取文件夹路径
@@ -3773,12 +3412,12 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       int caretY = 5;
 
       // 创建渐变画刷
-      LinearGradientBrush brush(
-          Point(caretX, caretY), Point(caretX, caretY + caretHeight),
-          g_isDarkMode ? Color(255, 255, 255, 255)
-                       : Color(255, 0x65, 0x47, 0xFF),
-          g_isDarkMode ? Color(255, 255, 255, 255)
-                       : Color(255, 0x00, 0x90, 0xFE));
+      LinearGradientBrush brush(Point(caretX, caretY),
+                                Point(caretX, caretY + caretHeight),
+                                g_isDarkMode ? Color(255, 255, 255, 255)
+                                             : Color(255, 0x65, 0x47, 0xFF),
+                                g_isDarkMode ? Color(255, 255, 255, 255)
+                                             : Color(255, 0x00, 0x90, 0xFE));
 
       Pen pen(&brush, 1.0f);
       graphics.DrawLine(&pen, caretX, caretY, caretX, caretY + caretHeight);
@@ -3792,23 +3431,19 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       if (g_isSearchClearBtnHover) {
         fill = g_isDarkMode ? RGB(148, 152, 162) : RGB(188, 194, 202);
       }
-      SolidBrush fillBrush(
-          Color(g_isDarkMode ? 235 : 210, GetRValue(fill), GetGValue(fill),
-                GetBValue(fill)));
+      SolidBrush fillBrush(Color(g_isDarkMode ? 235 : 210, GetRValue(fill),
+                                 GetGValue(fill), GetBValue(fill)));
       graphics.FillEllipse(&fillBrush, (INT)rcClear.left, (INT)rcClear.top,
                            (INT)(rcClear.right - rcClear.left),
                            (INT)(rcClear.bottom - rcClear.top));
-      Pen xPen(g_isDarkMode ? Color(255, 24, 26, 30)
-                            : Color(220, 88, 96, 108),
+      Pen xPen(g_isDarkMode ? Color(255, 24, 26, 30) : Color(220, 88, 96, 108),
                1.6f);
       int inset = 6;
-      graphics.DrawLine(&xPen, (INT)(rcClear.left + inset),
-                        (INT)(rcClear.top + inset),
-                        (INT)(rcClear.right - inset),
-                        (INT)(rcClear.bottom - inset));
+      graphics.DrawLine(
+          &xPen, (INT)(rcClear.left + inset), (INT)(rcClear.top + inset),
+          (INT)(rcClear.right - inset), (INT)(rcClear.bottom - inset));
       graphics.DrawLine(&xPen, (INT)(rcClear.right - inset),
-                        (INT)(rcClear.top + inset),
-                        (INT)(rcClear.left + inset),
+                        (INT)(rcClear.top + inset), (INT)(rcClear.left + inset),
                         (INT)(rcClear.bottom - inset));
     }
 
@@ -3854,7 +3489,8 @@ LRESULT CALLBACK SearchClearBtnProc(HWND hwnd, UINT message, WPARAM wParam,
     return 0;
   }
   }
-  return CallWindowProcW(g_oldSearchClearBtnProc, hwnd, message, wParam, lParam);
+  return CallWindowProcW(g_oldSearchClearBtnProc, hwnd, message, wParam,
+                         lParam);
 }
 
 // 窗口过程
@@ -3963,9 +3599,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 加载快捷键设置
     LoadHotkeySettings();
 
-    // 加载密码库设置
-    LoadVaultSettings();
-
     // 加载粘贴次数统计
     LoadPasteCount();
 
@@ -4008,29 +3641,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     g_oldSearchBoxProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndSearchBox, GWLP_WNDPROC, (LONG_PTR)SearchBoxProc);
 
-    g_hwndSearchClearBtn = CreateWindowExW(
-        0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0, hwnd,
-        NULL, GetModuleHandleW(NULL), NULL);
+    g_hwndSearchClearBtn =
+        CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, 0, 0, 0, 0,
+                        hwnd, NULL, GetModuleHandleW(NULL), NULL);
     g_oldSearchClearBtnProc = (WNDPROC)SetWindowLongPtrW(
         g_hwndSearchClearBtn, GWLP_WNDPROC, (LONG_PTR)SearchClearBtnProc);
     ShowWindow(g_hwndSearchClearBtn, SW_HIDE);
 
     // 创建筛选按钮（自绘样式）
     g_hwndFilterAll = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_ALL), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_ALL, GetModuleHandleW(NULL), NULL);
+        0, L"BUTTON", T(STR_FILTER_ALL), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0, hwnd, (HMENU)ID_FILTER_ALL, GetModuleHandleW(NULL), NULL);
     g_hwndFilterText = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_TEXT), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_TEXT, GetModuleHandleW(NULL), NULL);
+        0, L"BUTTON", T(STR_FILTER_TEXT), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0, hwnd, (HMENU)ID_FILTER_TEXT, GetModuleHandleW(NULL), NULL);
     g_hwndFilterImage = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_IMAGE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_IMAGE, GetModuleHandleW(NULL), NULL);
+        0, L"BUTTON", T(STR_FILTER_IMAGE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0, hwnd, (HMENU)ID_FILTER_IMAGE, GetModuleHandleW(NULL), NULL);
     g_hwndFilterFile = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_FILE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_FILE, GetModuleHandleW(NULL), NULL);
+        0, L"BUTTON", T(STR_FILTER_FILE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 0, 0, hwnd, (HMENU)ID_FILTER_FILE, GetModuleHandleW(NULL), NULL);
     g_hwndFilterFavorite = CreateWindowExW(
-        0, L"BUTTON", T(STR_FILTER_FAVORITE), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0,
-        hwnd, (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
+        0, L"BUTTON", T(STR_FILTER_FAVORITE),
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 0, 0, hwnd,
+        (HMENU)ID_FILTER_FAVORITE, GetModuleHandleW(NULL), NULL);
     // 设置筛选按钮字体（比UI字体大4px）
     HFONT hFilterFont = CreateFontW(
         g_fontSize + 4, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -4343,7 +3977,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 调整筛选按钮位置（5个按钮，总宽度与列表框对齐）
     const int filterBtnSpacing = 4;
-    const int iconBtnSize = 32;   // 图标按钮大小
+    const int iconBtnSize = 32; // 图标按钮大小
     int filterTotalWidth = clientWidth - margin * 2 - iconBtnSize - margin;
     int filterBtnWidth = (filterTotalWidth - filterBtnSpacing * 4) / 5;
     int filterY = contentTop + margin + searchHeight + margin;
@@ -4407,20 +4041,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_MEASUREITEM: {
     LPMEASUREITEMSTRUCT lpMIS = (LPMEASUREITEMSTRUCT)lParam;
     if (lpMIS->CtlID == ID_LISTBOX) {
-      // 密码列表项高度
-      if (g_currentTab == 5) {
-        int idx = (int)lpMIS->itemID;
-        if (idx >= 0 && idx < (int)g_displayIndexMap.size()) {
-          int v = g_displayIndexMap[idx];
-          if (v == -2) lpMIS->itemHeight = 46;       // 标题行
-          else if (v == -1) lpMIS->itemHeight = 54;  // 新增按钮
-          else lpMIS->itemHeight = 58;               // 数据行
-        } else {
-          lpMIS->itemHeight = 42;
-        }
-        return TRUE;
-      }
-
       // 动态获取列表框宽度
       RECT rcListBox;
       GetClientRect(g_hwndListBox, &rcListBox);
@@ -4692,18 +4312,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
         const int btnW = rc.right - rc.left;
         const int btnH = rc.bottom - rc.top;
-        const Gdiplus::REAL centerX =
-            (Gdiplus::REAL)(rc.left + btnW / 2.0f);
-        const Gdiplus::REAL centerY =
-            (Gdiplus::REAL)(rc.top + btnH / 2.0f);
+        const Gdiplus::REAL centerX = (Gdiplus::REAL)(rc.left + btnW / 2.0f);
+        const Gdiplus::REAL centerY = (Gdiplus::REAL)(rc.top + btnH / 2.0f);
         const Gdiplus::REAL glowRadius =
             (Gdiplus::REAL)(std::min(btnW, btnH) * 0.48f);
 
         Gdiplus::GraphicsPath clipPath;
-        clipPath.AddEllipse((Gdiplus::REAL)rc.left + 1.0f,
-                            (Gdiplus::REAL)rc.top + 1.0f,
-                            (Gdiplus::REAL)btnW - 2.0f,
-                            (Gdiplus::REAL)btnH - 2.0f);
+        clipPath.AddEllipse(
+            (Gdiplus::REAL)rc.left + 1.0f, (Gdiplus::REAL)rc.top + 1.0f,
+            (Gdiplus::REAL)btnW - 2.0f, (Gdiplus::REAL)btnH - 2.0f);
         graphics.SetClip(&clipPath, Gdiplus::CombineModeReplace);
 
         Gdiplus::GraphicsPath glowPath;
@@ -4845,15 +4462,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (g_isSearchClearBtnHover) {
         fill = g_isDarkMode ? RGB(148, 152, 162) : RGB(188, 194, 202);
       }
-      SolidBrush fillBrush(
-          Color(g_isDarkMode ? 235 : 210, GetRValue(fill), GetGValue(fill),
-                GetBValue(fill)));
+      SolidBrush fillBrush(Color(g_isDarkMode ? 235 : 210, GetRValue(fill),
+                                 GetGValue(fill), GetBValue(fill)));
       graphics.FillEllipse(&fillBrush, (INT)rc.left, (INT)rc.top,
                            (INT)(rc.right - rc.left),
                            (INT)(rc.bottom - rc.top));
 
-      Pen xPen(g_isDarkMode ? Color(255, 24, 26, 30)
-                            : Color(220, 88, 96, 108),
+      Pen xPen(g_isDarkMode ? Color(255, 24, 26, 30) : Color(220, 88, 96, 108),
                1.6f);
       int inset = 6;
       graphics.DrawLine(&xPen, (INT)(rc.left + inset), (INT)(rc.top + inset),
@@ -4864,173 +4479,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     }
 
     if (lpDIS->CtlID == ID_LISTBOX) {
-      // 密码列表绘制（表格式一行平铺）
-      if (g_currentTab == 5 && g_vaultUnlocked) {
-        HDC hdc = lpDIS->hDC;
-        RECT rcItem = lpDIS->rcItem;
-        int idx = (int)lpDIS->itemID;
-        int pad = 16;
-        int rowInset = 8;
-        int eyeW = 34;
-        int actionGap = 12;
-        int contentLeft = rcItem.left + pad;
-        int contentRight =
-            rcItem.right - pad - GetCustomScrollbarReservedWidth();
-        if (contentRight < contentLeft + 120)
-          contentRight = contentLeft + 120;
-        int contentWidth = contentRight - contentLeft;
-        int col0 = contentLeft;
-        int col1 = contentLeft + contentWidth * 26 / 100;
-        int col2 = contentLeft + contentWidth * 57 / 100;
-        int col3 = contentLeft + contentWidth * 78 / 100;
-        int colEnd = contentRight;
-
-        SetBkMode(hdc, TRANSPARENT);
-
-        if (idx >= (int)g_displayIndexMap.size()) { return TRUE; }
-        int mapVal = g_displayIndexMap[idx];
-
-        if (mapVal == -2) {
-          // 标题行
-          HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
-          FillRect(hdc, &rcItem, hBr);
-          DeleteObject(hBr);
-
-          RECT rcHeaderCard = {rcItem.left + rowInset, rcItem.top + 4,
-                               rcItem.right - rowInset, rcItem.bottom - 2};
-          COLORREF headerBg = g_isDarkMode ? RGB(38, 38, 43) : RGB(246, 247, 249);
-          COLORREF headerBorder = g_isDarkMode ? RGB(54, 54, 60) : RGB(228, 230, 234);
-          HPEN hHeaderPen = CreatePen(PS_SOLID, 1, headerBorder);
-          HBRUSH hHeaderBrush = CreateSolidBrush(headerBg);
-          HGDIOBJ hOldPen = SelectObject(hdc, hHeaderPen);
-          HGDIOBJ hOldBrush = SelectObject(hdc, hHeaderBrush);
-          RoundRect(hdc, rcHeaderCard.left, rcHeaderCard.top, rcHeaderCard.right,
-                    rcHeaderCard.bottom, 12, 12);
-          SelectObject(hdc, hOldPen);
-          SelectObject(hdc, hOldBrush);
-          DeleteObject(hHeaderPen);
-          DeleteObject(hHeaderBrush);
-
-          HFONT hF = CreateFontW(g_fontSize + 1, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
-          HFONT hOld = (HFONT)SelectObject(hdc, hF);
-          SetTextColor(hdc, g_isDarkMode ? RGB(162, 164, 170) : RGB(104, 110, 120));
-          int headerTop = rcHeaderCard.top;
-          int headerBottom = rcHeaderCard.bottom;
-          RECT r0 = {col0 + 4, headerTop, col1 - 8, headerBottom};
-          RECT r1 = {col1 + 4, headerTop, col2 - 8, headerBottom};
-          RECT r2 = {col2 + 4, headerTop, col3 - 8, headerBottom};
-          RECT r3 = {col3 + 4, headerTop, colEnd - eyeW - actionGap, headerBottom};
-          DrawTextW(hdc, L"名称", -1, &r0, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-          DrawTextW(hdc, L"网址/应用", -1, &r1, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-          DrawTextW(hdc, L"账户", -1, &r2, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-          DrawTextW(hdc, L"密码", -1, &r3, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-          SelectObject(hdc, hOld);
-          DeleteObject(hF);
-        } else if (mapVal == -1) {
-          // 新增按钮
-          HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
-          FillRect(hdc, &rcItem, hBr);
-          DeleteObject(hBr);
-
-          RECT rcAction = {rcItem.left + rowInset, rcItem.top + 4,
-                           rcItem.right - rowInset, rcItem.bottom - 4};
-          HBRUSH hActionBrush = CreateSolidBrush(g_isDarkMode ? RGB(40, 48, 60) : RGB(237, 245, 255));
-          HPEN hActionPen = CreatePen(PS_SOLID, 1, g_isDarkMode ? RGB(86, 108, 138) : RGB(166, 204, 247));
-          HGDIOBJ hOldBrush = SelectObject(hdc, hActionBrush);
-          HGDIOBJ hOldPen = SelectObject(hdc, hActionPen);
-          RoundRect(hdc, rcAction.left, rcAction.top, rcAction.right, rcAction.bottom, 12, 12);
-          SelectObject(hdc, hOldBrush);
-          SelectObject(hdc, hOldPen);
-          DeleteObject(hActionBrush);
-          DeleteObject(hActionPen);
-
-          HFONT hIcon = CreateFontW(g_fontSize + 1, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                                    L"Segoe MDL2 Assets");
-          HFONT hIconOld = (HFONT)SelectObject(hdc, hIcon);
-          SetTextColor(hdc, GetAccentStrongColor());
-          RECT rcPlus = {};
-          GetPasswordAddButtonRect(rcItem, &rcPlus);
-          DrawTextW(hdc, L"\uE710", 1, &rcPlus, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-          SelectObject(hdc, hIconOld);
-          DeleteObject(hIcon);
-        } else if (mapVal >= 0 && mapVal < (int)g_passwords.size()) {
-          // 数据行
-          HBRUSH hBr = CreateSolidBrush(GetWhiteColor());
-          FillRect(hdc, &rcItem, hBr);
-          DeleteObject(hBr);
-
-          RECT rcRow = {rcItem.left + rowInset, rcItem.top + 3, rcItem.right - rowInset, rcItem.bottom - 3};
-          bool isSelected =
-              g_isBatchEditMode &&
-              (std::find(g_selectedItems.begin(), g_selectedItems.end(),
-                         mapVal) != g_selectedItems.end());
-          COLORREF rowBg = g_isDarkMode ? RGB(40, 40, 45) : RGB(250, 251, 252);
-          COLORREF rowBorder = isSelected
-                                   ? GetAccentColor()
-                                   : (g_isDarkMode ? RGB(54, 54, 60)
-                                                   : RGB(229, 231, 235));
-          HPEN hCardPen = CreatePen(PS_SOLID, 1, rowBorder);
-          HBRUSH hCardBrush = CreateSolidBrush(rowBg);
-          HGDIOBJ hOldPen = SelectObject(hdc, hCardPen);
-          HGDIOBJ hOldBrush = SelectObject(hdc, hCardBrush);
-          RoundRect(hdc, rcRow.left, rcRow.top, rcRow.right, rcRow.bottom, 10, 10);
-          SelectObject(hdc, hOldPen);
-          SelectObject(hdc, hOldBrush);
-          DeleteObject(hCardPen);
-          DeleteObject(hCardBrush);
-
-          const PasswordEntry &entry = g_passwords[mapVal];
-          HFONT hF = CreateFontW(g_fontSize + 2, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
-          HFONT hOld = (HFONT)SelectObject(hdc, hF);
-          int textTop = rcRow.top;
-          int textBottom = rcRow.bottom;
-          // 名称
-          SetTextColor(hdc, GetTextColor());
-          RECT r0 = {col0 + 4, textTop, col1 - 8, textBottom};
-          DrawTextW(hdc, entry.name.c_str(), -1, &r0,
-                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-          // 网址/应用
-          SetTextColor(hdc, entry.isUrl ? RGB(26, 115, 232) : (g_isDarkMode ? RGB(220, 220, 224) : GetTextColor()));
-          RECT r1 = {col1 + 4, textTop, col2 - 8, textBottom};
-          DrawTextW(hdc, entry.title.c_str(), -1, &r1,
-                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-          // 账户
-          SetTextColor(hdc, GetTextColor());
-          RECT r2 = {col2 + 4, textTop, col3 - 8, textBottom};
-          DrawTextW(hdc, entry.account.c_str(), -1, &r2,
-                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-          // 密码 + 眼睛图标
-          bool visible = (g_pwVisibleSet.count(mapVal) > 0);
-          std::wstring pwText = visible ? entry.password : L"••••••";
-          SetTextColor(hdc, GetTextColor());
-          RECT r3 = {col3 + 4, textTop, colEnd - eyeW - actionGap, textBottom};
-          DrawTextW(hdc, pwText.c_str(), -1, &r3,
-                    DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-          SelectObject(hdc, hOld);
-          DeleteObject(hF);
-          // 眼睛图标 (Segoe MDL2 Assets)
-          HFONT hEye = CreateFontW(17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                                    L"Segoe MDL2 Assets");
-          HFONT hEyeOld = (HFONT)SelectObject(hdc, hEye);
-          SetTextColor(hdc, g_isDarkMode ? RGB(150, 150, 156) : RGB(136, 136, 142));
-          RECT rEye = {colEnd - eyeW, textTop, colEnd, textBottom};
-          const wchar_t *eyeIcon = GetPasswordVisibilityIcon(visible);
-          DrawTextW(hdc, eyeIcon, 1, &rEye, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-          SelectObject(hdc, hEyeOld);
-          DeleteObject(hEye);
-        }
-
-        return TRUE;
-      }
-
       // 获取设备上下文
       HDC hdc = lpDIS->hDC;
       RECT rcItem = lpDIS->rcItem;
@@ -5056,17 +4504,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       // 绘制内容区域
       RECT rcContent = rcItem;
-      rcContent.left += 10;  // 左边距
-      rcContent.right -= 6;  // 右边距
-      rcContent.top += 2;    // 顶部边距
+      rcContent.left += 10; // 左边距
+      rcContent.right -= 6; // 右边距
+      rcContent.top += 2;   // 顶部边距
       rcContent.right -= GetCustomScrollbarReservedWidth();
       if (rcContent.right < rcContent.left + 80)
         rcContent.right = rcContent.left + 80;
 
       // 如果选中，绘制蓝色边框，但给右侧自定义滚动条和底部分隔线留出空间
       if (isSelected) {
-        RECT rcSelection = {rcItem.left + 1, rcItem.top + 1, rcContent.right + 4,
-                            rcItem.bottom - 8};
+        RECT rcSelection = {rcItem.left + 1, rcItem.top + 1,
+                            rcContent.right + 4, rcItem.bottom - 8};
         if (rcSelection.right <= rcSelection.left + 8)
           rcSelection.right = rcSelection.left + 8;
         if (rcSelection.bottom <= rcSelection.top + 8)
@@ -5149,8 +4597,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 tempGraphics.SetInterpolationMode(
                     Gdiplus::InterpolationModeHighQualityBicubic);
                 HDC tempHdc = tempGraphics.GetHDC();
-                DrawIconEx(tempHdc, 0, 0, hAppIcon, iconSize, iconSize, 0,
-                           NULL, DI_NORMAL);
+                DrawIconEx(tempHdc, 0, 0, hAppIcon, iconSize, iconSize, 0, NULL,
+                           DI_NORMAL);
                 tempGraphics.ReleaseHDC(tempHdc);
               }
 
@@ -5161,18 +4609,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               Gdiplus::ImageAttributes imageAttr;
               const float brighten = g_isDarkMode ? 0.14f : 0.10f;
               const Gdiplus::ColorMatrix colorMatrix = {
-                  0.299f, 0.299f, 0.299f, 0.0f, 0.0f,
-                  0.587f, 0.587f, 0.587f, 0.0f, 0.0f,
-                  0.114f, 0.114f, 0.114f, 0.0f, 0.0f,
-                  0.0f,   0.0f,   0.0f,   0.82f, 0.0f,
-                  brighten, brighten, brighten, 0.0f, 1.0f};
-              imageAttr.SetColorMatrix(
-                  &colorMatrix, Gdiplus::ColorMatrixFlagsDefault,
-                  Gdiplus::ColorAdjustTypeBitmap);
+                  0.299f,   0.299f,   0.299f, 0.0f,   0.0f,   0.587f, 0.587f,
+                  0.587f,   0.0f,     0.0f,   0.114f, 0.114f, 0.114f, 0.0f,
+                  0.0f,     0.0f,     0.0f,   0.0f,   0.82f,  0.0f,   brighten,
+                  brighten, brighten, 0.0f,   1.0f};
+              imageAttr.SetColorMatrix(&colorMatrix,
+                                       Gdiplus::ColorMatrixFlagsDefault,
+                                       Gdiplus::ColorAdjustTypeBitmap);
               graphics.DrawImage(
-                  &iconBitmap,
-                  Gdiplus::Rect(iconX, iconY, iconSize, iconSize), 0, 0,
-                  iconBitmap.GetWidth(), iconBitmap.GetHeight(),
+                  &iconBitmap, Gdiplus::Rect(iconX, iconY, iconSize, iconSize),
+                  0, 0, iconBitmap.GetWidth(), iconBitmap.GetHeight(),
                   Gdiplus::UnitPixel, &imageAttr);
             }
           }
@@ -5352,8 +4798,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                   DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
               HFONT hPrevTextFont = (HFONT)SelectObject(hdc, hTextFont);
-              std::wstring displayText =
-                  !item.imageFileName.empty() ? item.imageFileName : L"图片预览不可用";
+              std::wstring displayText = !item.imageFileName.empty()
+                                             ? item.imageFileName
+                                             : L"图片预览不可用";
               SetTextColor(hdc, RGB(150, 150, 150));
               DrawTextW(hdc, displayText.c_str(), -1, &rcContent,
                         DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX |
@@ -5405,8 +4852,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 Gdiplus::Graphics graphics(hdc);
                 graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 Gdiplus::GraphicsPath clipPath;
-                CreateRoundRectPath(&clipPath, x, y, displayWidth, displayHeight,
-                                    imageRadius);
+                CreateRoundRectPath(&clipPath, x, y, displayWidth,
+                                    displayHeight, imageRadius);
                 graphics.SetClip(&clipPath, Gdiplus::CombineModeReplace);
               }
               StretchDIBits(hdc, x, y, displayWidth, displayHeight, 0, 0,
@@ -5551,29 +4998,44 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 if (linkAnimProgress > 0.001f && linkAnimProgress < 0.999f) {
                   // 动画中：左侧蓝色，右侧原色
                   SIZE textSize;
-                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(), &textSize);
-                  int textPixelWidth = std::min((int)textSize.cx, (int)(rcPathText.right - rcPathText.left));
-                  int splitX = rcPathText.left + (int)(textPixelWidth * linkAnimProgress);
+                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
+                                        &textSize);
+                  int textPixelWidth =
+                      std::min((int)textSize.cx,
+                               (int)(rcPathText.right - rcPathText.left));
+                  int splitX = rcPathText.left +
+                               (int)(textPixelWidth * linkAnimProgress);
 
-                  HRGN hLeftRgn = CreateRectRgn(rcPathText.left, rcPathText.top, splitX, rcPathText.bottom);
+                  HRGN hLeftRgn = CreateRectRgn(rcPathText.left, rcPathText.top,
+                                                splitX, rcPathText.bottom);
                   SelectClipRgn(hdc, hLeftRgn);
                   SetTextColor(hdc, RGB(0, 102, 204));
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                DT_END_ELLIPSIS | DT_NOPREFIX);
 
-                  HRGN hRightRgn = CreateRectRgn(splitX, rcPathText.top, rcPathText.right, rcPathText.bottom);
+                  HRGN hRightRgn =
+                      CreateRectRgn(splitX, rcPathText.top, rcPathText.right,
+                                    rcPathText.bottom);
                   SelectClipRgn(hdc, hRightRgn);
                   SetTextColor(hdc, GetTextColor());
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                DT_END_ELLIPSIS | DT_NOPREFIX);
 
                   SelectClipRgn(hdc, NULL);
                   DeleteObject(hLeftRgn);
                   DeleteObject(hRightRgn);
                 } else if (linkAnimProgress >= 0.999f) {
                   SetTextColor(hdc, RGB(0, 102, 204));
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                DT_END_ELLIPSIS | DT_NOPREFIX);
                 } else {
                   SetTextColor(hdc, GetTextColor());
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                DT_END_ELLIPSIS | DT_NOPREFIX);
                 }
                 DrawDetectedColorDot(hdc, rcPathText, text);
               } else {
@@ -5687,11 +5149,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       // 绘制底部分隔线；选中项不画，避免与蓝色边框重叠闪烁
       if (!isSelected) {
-        int separatorRight = rcItem.right - 10 - GetCustomScrollbarReservedWidth();
+        int separatorRight =
+            rcItem.right - 10 - GetCustomScrollbarReservedWidth();
         if (separatorRight < rcItem.left + 10)
           separatorRight = rcItem.left + 10;
-        HPEN hPen = CreatePen(PS_DOT, 1,
-                              g_isDarkMode ? RGB(96, 96, 102) : RGB(200, 200, 200));
+        HPEN hPen = CreatePen(
+            PS_DOT, 1, g_isDarkMode ? RGB(96, 96, 102) : RGB(200, 200, 200));
         HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
 
         MoveToEx(hdc, rcItem.left + 10, rcItem.bottom - 5, NULL);
@@ -5724,21 +5187,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
     // 处理列表框选择变化
     if (wID == ID_LISTBOX && wNotifyCode == LBN_SELCHANGE) {
-      // 密码列表单击处理
-      if (g_currentTab == 5 && g_vaultUnlocked) {
-        int index = SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0);
-        if (g_isBatchEditMode) {
-          if (index != LB_ERR && index < (int)g_displayIndexMap.size()) {
-            bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-            bool isCtrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            ApplyBatchSelectionFromDisplayIndex(index, isShiftPressed,
-                                                isCtrlPressed);
-            RedrawBatchSelectionUI();
-          }
-        }
-        return 0;
-      }
-
       if (g_isBatchEditMode) {
         bool isShiftPressed = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         bool isCtrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -5782,12 +5230,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       if (filterChanged) {
-        // 离开密码页时自动锁定
-        if (g_currentTab != 5 && g_vaultUnlocked) {
-          g_vaultUnlocked = false;
-          g_passwords.clear();
-        }
-        UpdatePasswordFilterLockVisual(hwnd, true);
         // 重绘所有筛选按钮以更新选中状态
         InvalidateRect(g_hwndFilterAll, NULL, TRUE);
         InvalidateRect(g_hwndFilterText, NULL, TRUE);
@@ -5802,32 +5244,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wID == ID_LISTBOX && wNotifyCode == LBN_DBLCLK) {
       int index = SendMessageW(g_hwndListBox, LB_GETCURSEL, 0, 0);
       if (index != LB_ERR && index < (int)g_displayIndexMap.size()) {
-        // 密码列表双击处理
-        if (g_currentTab == 5 && g_vaultUnlocked) {
-          int pwIdx = g_displayIndexMap[index];
-          if (g_isBatchEditMode) {
-            if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
-              if (std::find(g_selectedItems.begin(), g_selectedItems.end(),
-                            pwIdx) != g_selectedItems.end()) {
-                RemoveBatchSelectionItem(pwIdx);
-              } else {
-                AddBatchSelectionItem(pwIdx);
-              }
-              g_batchSelectionAnchorDisplayIndex = index;
-              RedrawBatchSelectionUI();
-            }
-            return 0;
-          }
-          if (pwIdx >= 0 && pwIdx < (int)g_passwords.size()) {
-            CopyTextToClipboard(g_passwords[pwIdx].account + L"\n" +
-                                g_passwords[pwIdx].password);
-            if (!g_isTopmost) {
-              ShowWindow(hwnd, SW_HIDE);
-            }
-          }
-          return 0;
-        }
-
         // 批量编辑模式下，双击切换选择状态
         if (g_isBatchEditMode) {
           int actualIndex = g_displayIndexMap[index];
@@ -6012,8 +5428,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
           ClearShortcutDisplayBounds();
           UpdateShortcutEndForUpwardFill(oldTop);
-          RedrawWindow(g_hwndListBox, NULL, NULL,
-                       RDW_INVALIDATE | RDW_NOERASE);
+          RedrawWindow(g_hwndListBox, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
@@ -6045,8 +5460,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           ApplyListBoxTopIndex(g_hwndListBox, topIndex);
           g_shortcutStartDisplayIndex = expectedNextTop;
           g_shortcutEndDisplayIndexExclusive = -1;
-          RedrawWindow(g_hwndListBox, NULL, NULL,
-                       RDW_INVALIDATE | RDW_NOERASE);
+          RedrawWindow(g_hwndListBox, NULL, NULL, RDW_INVALIDATE | RDW_NOERASE);
         }
         // 更新按钮状态
         InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
@@ -6371,38 +5785,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
     } else if (wID == IDM_DELETE) {
       // 右键菜单：删除
-      if (g_currentTab == 5 && g_vaultUnlocked && g_isBatchEditMode &&
-          !g_selectedItems.empty()) {
-        ThemedConfirmDialogConfig dialog = {
-            L"批量删除密码",
-            L"删除选中的密码记录",
-            L"该操作不可撤销",
-            L"这些密码记录将从密码库中永久移除，请确认是否继续。",
-            L"删除",
-            L"取消",
-            424,
-            246,
-            {14, 78, 410, 180},
-            true};
-        if (ShowThemedConfirmDialog(hwnd, dialog)) {
-          std::vector<int> selectedPasswordIds;
-          selectedPasswordIds.reserve(g_selectedItems.size());
-          for (int pwIndex : g_selectedItems) {
-            if (pwIndex >= 0 && pwIndex < (int)g_passwords.size()) {
-              selectedPasswordIds.push_back(g_passwords[pwIndex].id);
-            }
-          }
-          for (int id : selectedPasswordIds) {
-            DeletePasswordEntry(id);
-          }
-          g_selectedItems.clear();
-          g_batchSelectionAnchorDisplayIndex = LB_ERR;
-          UpdatePasswordListBox();
-          if (g_isNotificationEnabled) {
-            ShowTrayBalloon(hwnd, L"提示", L"已批量删除密码");
-          }
-        }
-      } else if (g_isBatchEditMode && !g_selectedItems.empty()) {
+      if (g_isBatchEditMode && !g_selectedItems.empty()) {
         // 批量删除
         ThemedConfirmDialogConfig dialog = {
             L"批量删除项目",
@@ -6422,10 +5805,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
               // 删除关联的图片文件
               const ClipboardItem &delItem = g_history[actualIndex];
-              if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
-                std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
+              if (delItem.type == TYPE_IMAGE &&
+                  !delItem.imageFileName.empty()) {
+                std::wstring imgFile =
+                    GetImagesPath() + L"\\" + delItem.imageFileName;
                 DeleteFileW(imgFile.c_str());
-                std::wstring thumbFile = GetThumbsPath() + L"\\" + delItem.imageFileName;
+                std::wstring thumbFile =
+                    GetThumbsPath() + L"\\" + delItem.imageFileName;
                 DeleteFileW(thumbFile.c_str());
               }
               g_history.erase(g_history.begin() + actualIndex);
@@ -6463,9 +5849,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           // 删除关联的图片文件
           const ClipboardItem &delItem = g_history[actualIndex];
           if (delItem.type == TYPE_IMAGE && !delItem.imageFileName.empty()) {
-            std::wstring imgFile = GetImagesPath() + L"\\" + delItem.imageFileName;
+            std::wstring imgFile =
+                GetImagesPath() + L"\\" + delItem.imageFileName;
             DeleteFileW(imgFile.c_str());
-            std::wstring thumbFile = GetThumbsPath() + L"\\" + delItem.imageFileName;
+            std::wstring thumbFile =
+                GetThumbsPath() + L"\\" + delItem.imageFileName;
             DeleteFileW(thumbFile.c_str());
           }
           g_history.erase(g_history.begin() + actualIndex);
@@ -6612,8 +6000,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               actualIndex = g_displayIndexMap[g_contextMenuIndex];
             }
             if (actualIndex >= 0) {
-              auto it = std::find(g_selectedItems.begin(), g_selectedItems.end(),
-                                  actualIndex);
+              auto it = std::find(g_selectedItems.begin(),
+                                  g_selectedItems.end(), actualIndex);
               if (it == g_selectedItems.end()) {
                 g_selectedItems.clear();
                 g_selectedItems.push_back(actualIndex);
@@ -6630,42 +6018,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       // 创建右键菜单
-      // 密码列表右键菜单
-      if (g_currentTab == 5 && g_vaultUnlocked) {
-        if (g_isBatchEditMode && !g_selectedItems.empty()) {
-          HMENU hMenu = CreatePopupMenu();
-          HBITMAP hDeleteIcon =
-              CreateMenuIconBitmap(L"\uE74D", RGB(200, 60, 60));
-          MENUITEMINFOW mii = {};
-          mii.cbSize = sizeof(MENUITEMINFOW);
-          mii.fMask = MIIM_ID | MIIM_STRING | MIIM_BITMAP;
-          mii.wID = IDM_DELETE;
-          mii.dwTypeData = (LPWSTR)L"批量删除";
-          mii.hbmpItem = hDeleteIcon;
-          InsertMenuItemW(hMenu, 0, TRUE, &mii);
-          SetForegroundWindow(hwnd);
-          TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
-          DeleteObject(hDeleteIcon);
-          DestroyMenu(hMenu);
-        } else if (g_contextMenuIndex >= 0 &&
-                   g_contextMenuIndex < (int)g_displayIndexMap.size()) {
-          int pwIdx = g_displayIndexMap[g_contextMenuIndex];
-          if (pwIdx >= 0) {
-            POINT menuPt = pt;
-            ScreenToClient(g_hwndListBox, &menuPt);
-            ShowPasswordContextMenu(g_hwndListBox, pwIdx, menuPt);
-          }
-        }
-        return 0;
-      }
-
       HMENU hMenu = CreatePopupMenu();
       if (g_isBatchEditMode && !g_selectedItems.empty()) {
         // 批量编辑模式下的右键菜单
         // 创建菜单图标
         HBITMAP hDeleteIcon =
             CreateMenuIconBitmap(L"\uE74D", RGB(200, 60, 60)); // Delete (红色)
-        HBITMAP hTagIcon = CreateMenuIconBitmap(L"\uE719"); // Tag
+        HBITMAP hTagIcon = CreateMenuIconBitmap(L"\uE719");    // Tag
 
         MENUITEMINFOW mii = {};
         mii.cbSize = sizeof(MENUITEMINFOW);
@@ -6920,9 +6279,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                   radius * 2, 90, 90);
       path.CloseFigure();
 
-      SolidBrush fillBrush(
-          Color(255, GetRValue(GetWhiteColor()), GetGValue(GetWhiteColor()),
-                GetBValue(GetWhiteColor())));
+      SolidBrush fillBrush(Color(255, GetRValue(GetWhiteColor()),
+                                 GetGValue(GetWhiteColor()),
+                                 GetBValue(GetWhiteColor())));
       graphics.FillPath(&fillBrush, &path);
 
       if (g_isDarkMode) {
@@ -7136,12 +6495,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       HMENU hTrayMenu = CreatePopupMenu();
 
       // 创建菜单图标
-      HBITMAP hSettingsIcon = CreateMenuIconBitmap(L"\uE713", RGB(60, 60, 60), 3); // Settings
+      HBITMAP hSettingsIcon =
+          CreateMenuIconBitmap(L"\uE713", RGB(60, 60, 60), 3); // Settings
       HBITMAP hNotificationIcon = CreateMenuIconBitmap(
           g_isNotificationEnabled ? L"\uEA8F" : L"\uE7ED", RGB(60, 60, 60),
           3); // Ringer/RingerOff
-      HBITMAP hLightModeIcon =
-          CreateMenuIconBitmap(L"\uE706", RGB(60, 60, 60), 3); // Brightness (太阳)
+      HBITMAP hLightModeIcon = CreateMenuIconBitmap(L"\uE706", RGB(60, 60, 60),
+                                                    3); // Brightness (太阳)
       HBITMAP hDarkModeIcon =
           CreateMenuIconBitmap(L"\uE708", RGB(60, 60, 60), 3); // Moon (月亮)
       HBITMAP hExitIcon =

@@ -26,7 +26,6 @@
 #define IDC_COLOR_DOT_CHECK 130
 #define IDC_THEME_STYLE_COMBO 131
 #define IDC_LANGUAGE_COMBO 132
-#define IDC_PASSWORD_GENERATOR_HOTKEY_EDIT 133
 
 // 图片预览质量枚举
 enum ImagePreviewQuality {
