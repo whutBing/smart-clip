@@ -157,35 +157,10 @@ HWND g_hwndListBoxTooltip = NULL;         // 列表框 Tooltip
 int g_lastTooltipIndex = -1;              // 上次显示 Tooltip 的项目索引
 int g_hoverIconIndex = -1;                // 鼠标悬浮的图标所在项目索引
 bool g_isHoveringIcon = false;            // 鼠标是否悬浮在图标上
-int g_hoverFolderIndex = -1;              // 鼠标悬浮的文件夹所在项目索引
-bool g_isHoveringFolder = false;          // 鼠标是否悬浮在文件夹名称上
 int g_hoverImageIndex = -1;               // 鼠标悬浮的图像所在项目索引
 bool g_isHoveringImage = false;           // 鼠标是否悬浮在图像上
 static std::wstring g_listBoxTooltipText; // 跟踪 Tooltip 文本缓存
 
-// 文件夹下划线动画（展开）
-#define ID_FOLDER_UNDERLINE_TIMER 203
-float g_folderUnderlineProgress = 0.0f;  // 下划线动画进度 0.0-1.0
-bool g_folderUnderlineAnimating = false; // 是否正在动画
-int g_folderUnderlineAnimIndex = -1;     // 正在动画的项目索引
-
-// 文件夹下划线动画（收起）
-#define ID_FOLDER_COLLAPSE_TIMER 204
-float g_folderCollapseProgress = 0.0f;  // 收起动画进度 0.0-1.0
-bool g_folderCollapseAnimating = false; // 是否正在收起动画
-int g_folderCollapseAnimIndex = -1;     // 正在收起动画的项目索引
-
-// 链接文本（URL/路径）颜色动画
-#define ID_LINK_COLOR_EXPAND_TIMER 205     // 链接文本颜色展开动画
-#define ID_LINK_COLOR_COLLAPSE_TIMER 206   // 链接文本颜色收起动画
-int g_hoverLinkIndex = -1;                 // 鼠标悬浮的链接所在项目索引
-bool g_isHoveringLink = false;             // 鼠标是否悬浮在链接文本上
-float g_linkColorExpandProgress = 0.0f;    // 颜色展开动画进度 0.0-1.0
-bool g_linkColorExpandAnimating = false;   // 是否正在展开动画
-int g_linkColorExpandAnimIndex = -1;       // 正在展开动画的项目索引
-float g_linkColorCollapseProgress = 0.0f;  // 颜色收起动画进度 0.0-1.0
-bool g_linkColorCollapseAnimating = false; // 是否正在收起动画
-int g_linkColorCollapseAnimIndex = -1;     // 正在收起动画的项目索引
 // 文件拖放相关
 bool g_isDragging = false;       // 是否正在拖拽
 POINT g_dragStartPoint = {0, 0}; // 拖拽起始点
@@ -1091,28 +1066,34 @@ static void RefreshScrollbarIfChanged(HWND hwnd) {
   if (!stateChanged && !rectChanged)
     return;
 
-  RECT rcDirty = {0, 0, 0, 0};
-  bool hasDirty = false;
-  if (g_lastThumbValid) {
-    rcDirty = g_lastThumbRect;
-    hasDirty = true;
-  }
-  if (hasNew) {
-    if (hasDirty) {
-      rcDirty.left = std::min(rcDirty.left, rcNew.left);
-      rcDirty.top = std::min(rcDirty.top, rcNew.top);
-      rcDirty.right = std::max(rcDirty.right, rcNew.right);
-      rcDirty.bottom = std::max(rcDirty.bottom, rcNew.bottom);
-    } else {
-      rcDirty = rcNew;
+  // 拖动时滑块可能跨越大范围移动，仅失效旧/新滑块的并集会留下残影。
+  // 直接失效整个滚动条轨道，确保旧位置被彻底清除。
+  if (g_isScrollbarDragging && g_scrollbarVisible) {
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
+  } else {
+    RECT rcDirty = {0, 0, 0, 0};
+    bool hasDirty = false;
+    if (g_lastThumbValid) {
+      rcDirty = g_lastThumbRect;
       hasDirty = true;
     }
-  }
+    if (hasNew) {
+      if (hasDirty) {
+        rcDirty.left = std::min(rcDirty.left, rcNew.left);
+        rcDirty.top = std::min(rcDirty.top, rcNew.top);
+        rcDirty.right = std::max(rcDirty.right, rcNew.right);
+        rcDirty.bottom = std::max(rcDirty.bottom, rcNew.bottom);
+      } else {
+        rcDirty = rcNew;
+        hasDirty = true;
+      }
+    }
 
-  if (hasDirty)
-    InvalidateRect(hwnd, &rcDirty, FALSE);
-  else if (stateChanged)
-    InvalidateCustomScrollbarArea(hwnd, FALSE);
+    if (hasDirty)
+      InvalidateRect(hwnd, &rcDirty, FALSE);
+    else if (stateChanged)
+      InvalidateCustomScrollbarArea(hwnd, FALSE);
+  }
 
   UpdateScrollbarCacheSnapshot(hasNew ? &rcNew : NULL, hasNew);
 }
@@ -1188,11 +1169,6 @@ static void ApplyListBoxTopIndex(HWND hwnd, int newTop) {
 
   InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
   InvalidateRect(g_hwndPageDownBtn, NULL, TRUE);
-}
-
-static bool ShouldAnimateLinkText(const std::wstring &text) {
-  LinkType linkType = GetLinkType(text);
-  return linkType == LINK_URL || linkType == LINK_FILE_PATH;
 }
 
 static bool IsSelectableDisplayIndex(int index) {
@@ -1869,6 +1845,10 @@ static void DragCustomScrollbarTo(HWND hwnd, int mouseY) {
     }
   }
   if (newTop != oldTop) {
+    // 在改变列表顶部索引前，先失效整个滚动条轨道。
+    // LB_SETTOPINDEX 可能触发同步重绘，此时 PaintCustomScrollbarOverlay
+    // 会用新位置绘制滑块；若旧滑块位置不在失效区域内就会留下残影。
+    InvalidateCustomScrollbarArea(hwnd, FALSE);
     ApplyListBoxTopIndex(hwnd, newTop);
     ClearShortcutDisplayBounds();
   }
@@ -2100,7 +2080,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       SetCursor(LoadCursor(NULL, IDC_ARROW));
       return TRUE;
     }
-    if (g_isHoveringLink || g_isHoveringFolder || g_isHoveringIcon) {
+    if (g_isHoveringIcon) {
       SetCursor(LoadCursor(NULL, IDC_HAND));
       return TRUE;
     }
@@ -2146,20 +2126,10 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     int index = SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
     bool wasHoveringIcon = g_isHoveringIcon;
     int oldHoverIndex = g_hoverIconIndex;
-    bool wasHoveringFolder = g_isHoveringFolder;
-    int oldFolderHoverIndex = g_hoverFolderIndex;
-    bool wasHoveringLink = g_isHoveringLink;
-    int oldLinkHoverIndex = g_hoverLinkIndex;
 
-    // 重置文件夹悬浮状态
-    g_isHoveringFolder = false;
-    g_hoverFolderIndex = -1;
     // 重置图像悬浮状态
     g_isHoveringImage = false;
     g_hoverImageIndex = -1;
-    // 重置链接悬浮状态
-    g_isHoveringLink = false;
-    g_hoverLinkIndex = -1;
 
     if (HIWORD(index) == 0) {
       index = LOWORD(index);
@@ -2230,96 +2200,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               // 激活 tooltip
               SendMessageW(g_hwndListBoxTooltip, TTM_TRACKACTIVATE, TRUE,
                            (LPARAM)&ti);
-            }
-          }
-
-          // 检查是否悬浮在文件夹名称区域
-          if (!iconFound && item.type == TYPE_FILE) {
-            DWORD attrs = GetFileAttributesW(item.content.c_str());
-            if (attrs != INVALID_FILE_ATTRIBUTES &&
-                (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-              // 这是一个文件夹，检查鼠标是否在文件夹名称文字区域（不包括图标）
-              // 文件夹名称区域：标题下方，左边距10 + 图标22，高度22
-              RECT rcFolderName;
-              rcFolderName.left =
-                  rcItem.left + 10 + 22;              // 左边距 + 文件夹图标宽度
-              rcFolderName.top = rcItem.top + 2 + 20; // 顶部边距 + 标题高度
-              rcFolderName.right = rcItem.right - 10; // 右边距
-              rcFolderName.bottom = rcFolderName.top + 22;
-
-              // 计算文字实际宽度
-              HDC hdc = GetDC(hwnd);
-              HFONT hFont = CreateFontW(
-                  20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-              HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-              SIZE textSize;
-              GetTextExtentPoint32W(hdc, item.content.c_str(),
-                                    (int)item.content.length(), &textSize);
-              SelectObject(hdc, hOldFont);
-              DeleteObject(hFont);
-              ReleaseDC(hwnd, hdc);
-
-              // 限制文字区域宽度为实际文字宽度
-              int maxTextWidth = rcFolderName.right - rcFolderName.left;
-              int actualTextWidth = std::min((int)textSize.cx, maxTextWidth);
-              rcFolderName.right = rcFolderName.left + actualTextWidth;
-
-              if (PtInRect(&rcFolderName, pt)) {
-                g_isHoveringFolder = true;
-                g_hoverFolderIndex = index;
-                // 设置手型光标
-                SetCursor(LoadCursor(NULL, IDC_HAND));
-              }
-            }
-          }
-
-          // 检查是否悬浮在链接文本上（URL
-          // 或本地盘符路径）（批量编辑模式下禁用）
-          if (!g_isBatchEditMode && !iconFound && !g_isHoveringFolder &&
-              (item.type == TYPE_TEXT || item.type == TYPE_FILE)) {
-            // 获取文本内容
-            std::wstring contentText = item.content;
-            // 替换换行符为空格
-            for (size_t ci = 0; ci < contentText.length(); ci++) {
-              if (contentText[ci] == L'\r' || contentText[ci] == L'\n') {
-                contentText[ci] = L' ';
-              }
-            }
-
-            if (ShouldAnimateLinkText(contentText)) {
-              // 文本区域：标题下方
-              RECT rcLinkText;
-              rcLinkText.left = rcItem.left + 10;
-              rcLinkText.top = rcItem.top + 2 + 20; // 顶部边距 + 标题高度
-              rcLinkText.right = rcItem.right - 10;
-              rcLinkText.bottom = rcLinkText.top + 22;
-
-              // 计算文字实际宽度
-              HDC hdc = GetDC(hwnd);
-              HFONT hFont = CreateFontW(
-                  20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-              HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-              SIZE textSize;
-              GetTextExtentPoint32W(hdc, contentText.c_str(),
-                                    (int)contentText.length(), &textSize);
-              SelectObject(hdc, hOldFont);
-              DeleteObject(hFont);
-              ReleaseDC(hwnd, hdc);
-
-              // 限制文字区域宽度为实际文字宽度
-              int maxTextWidth = rcLinkText.right - rcLinkText.left;
-              int actualTextWidth = std::min((int)textSize.cx, maxTextWidth);
-              rcLinkText.right = rcLinkText.left + actualTextWidth;
-
-              if (PtInRect(&rcLinkText, pt)) {
-                g_isHoveringLink = true;
-                g_hoverLinkIndex = index;
-                SetCursor(LoadCursor(NULL, IDC_HAND));
-              }
             }
           }
 
@@ -2444,92 +2324,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(hwnd, &rcNew, FALSE);
       }
     }
-
-    // 如果文件夹悬浮状态变化，使用蓝色文字动画（与链接一致）
-    if (wasHoveringFolder != g_isHoveringFolder ||
-        oldFolderHoverIndex != g_hoverFolderIndex) {
-      // 启动收起动画（鼠标离开文件夹）
-      if (wasHoveringFolder && oldFolderHoverIndex >= 0 &&
-          oldFolderHoverIndex != g_hoverFolderIndex) {
-        g_linkColorCollapseAnimating = true;
-        g_linkColorCollapseAnimIndex = oldFolderHoverIndex;
-        g_linkColorCollapseProgress = 1.0f;
-        SetTimer(hwnd, ID_LINK_COLOR_COLLAPSE_TIMER, 16, NULL);
-      }
-      // 启动展开动画（鼠标进入新文件夹）
-      if (g_isHoveringFolder && g_hoverFolderIndex >= 0) {
-        g_linkColorExpandAnimating = true;
-        g_linkColorExpandAnimIndex = g_hoverFolderIndex;
-        g_linkColorExpandProgress = 0.0f;
-        SetTimer(hwnd, ID_LINK_COLOR_EXPAND_TIMER, 16, NULL);
-      }
-
-      if (oldFolderHoverIndex >= 0) {
-        RECT rcOld;
-        SendMessageW(hwnd, LB_GETITEMRECT, oldFolderHoverIndex, (LPARAM)&rcOld);
-        InvalidateRect(hwnd, &rcOld, FALSE);
-      }
-      if (g_hoverFolderIndex >= 0 &&
-          g_hoverFolderIndex != oldFolderHoverIndex) {
-        RECT rcNew;
-        SendMessageW(hwnd, LB_GETITEMRECT, g_hoverFolderIndex, (LPARAM)&rcNew);
-        InvalidateRect(hwnd, &rcNew, FALSE);
-      }
-    }
-
-    // 如果链接悬浮状态变化，启动颜色动画
-    if (wasHoveringLink != g_isHoveringLink ||
-        oldLinkHoverIndex != g_hoverLinkIndex) {
-      // 启动收起动画（鼠标离开链接文本）
-      if (wasHoveringLink && oldLinkHoverIndex >= 0 &&
-          oldLinkHoverIndex != g_hoverLinkIndex) {
-        // 如果之前有另一个收起动画正在进行，先强制完成它
-        if (g_linkColorCollapseAnimating && g_linkColorCollapseAnimIndex >= 0 &&
-            g_linkColorCollapseAnimIndex != oldLinkHoverIndex) {
-          int prevIndex = g_linkColorCollapseAnimIndex;
-          g_linkColorCollapseAnimating = false;
-          g_linkColorCollapseAnimIndex = -1;
-          g_linkColorCollapseProgress = 0.0f;
-          // 强制重绘之前收起动画的项目，确保恢复原色
-          RECT rcPrev;
-          SendMessageW(hwnd, LB_GETITEMRECT, prevIndex, (LPARAM)&rcPrev);
-          InvalidateRect(hwnd, &rcPrev, FALSE);
-        }
-        g_linkColorCollapseAnimating = true;
-        g_linkColorCollapseAnimIndex = oldLinkHoverIndex;
-        g_linkColorCollapseProgress = 1.0f;
-        SetTimer(hwnd, ID_LINK_COLOR_COLLAPSE_TIMER, 16, NULL);
-      }
-      // 启动展开动画（鼠标进入链接文本）
-      if (g_isHoveringLink && g_hoverLinkIndex >= 0) {
-        // 如果之前有另一个展开动画正在进行，先强制完成它
-        if (g_linkColorExpandAnimating && g_linkColorExpandAnimIndex >= 0 &&
-            g_linkColorExpandAnimIndex != g_hoverLinkIndex) {
-          int prevIndex = g_linkColorExpandAnimIndex;
-          g_linkColorExpandAnimating = false;
-          g_linkColorExpandAnimIndex = -1;
-          g_linkColorExpandProgress = 0.0f;
-          RECT rcPrev;
-          SendMessageW(hwnd, LB_GETITEMRECT, prevIndex, (LPARAM)&rcPrev);
-          InvalidateRect(hwnd, &rcPrev, FALSE);
-        }
-        g_linkColorExpandAnimating = true;
-        g_linkColorExpandAnimIndex = g_hoverLinkIndex;
-        g_linkColorExpandProgress = 0.0f;
-        SetTimer(hwnd, ID_LINK_COLOR_EXPAND_TIMER, 16, NULL);
-      }
-
-      if (oldLinkHoverIndex >= 0) {
-        RECT rcOld;
-        SendMessageW(hwnd, LB_GETITEMRECT, oldLinkHoverIndex, (LPARAM)&rcOld);
-        InvalidateRect(hwnd, &rcOld, FALSE);
-      }
-      if (g_hoverLinkIndex >= 0 && g_hoverLinkIndex != oldLinkHoverIndex) {
-        RECT rcNew;
-        SendMessageW(hwnd, LB_GETITEMRECT, g_hoverLinkIndex, (LPARAM)&rcNew);
-        InvalidateRect(hwnd, &rcNew, FALSE);
-      }
-    }
   }
 
   // 鼠标离开时隐藏 Tooltip 并重置悬浮状态
@@ -2538,61 +2332,15 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     if (g_scrollbarVisible && !g_isScrollbarDragging)
       StartScrollbarHideTimer(hwnd);
     int oldHoverIndex = g_hoverIconIndex;
-    int oldFolderHoverIndex = g_hoverFolderIndex;
-    int oldLinkHoverIndex = g_hoverLinkIndex;
     g_lastTooltipIndex = -1;
     g_isHoveringIcon = false;
     g_hoverIconIndex = -1;
-    g_isHoveringFolder = false;
-    g_hoverFolderIndex = -1;
-    g_isHoveringLink = false;
-    g_hoverLinkIndex = -1;
-
-    // 启动收起动画（鼠标离开列表框）- 文件夹也用蓝色文字动画
-    if (oldFolderHoverIndex >= 0) {
-      g_linkColorCollapseAnimating = true;
-      g_linkColorCollapseAnimIndex = oldFolderHoverIndex;
-      g_linkColorCollapseProgress = 1.0f;
-      SetTimer(hwnd, ID_LINK_COLOR_COLLAPSE_TIMER, 16, NULL);
-    }
-
-    // 启动链接颜色收起动画（鼠标离开列表框）
-    if (oldLinkHoverIndex >= 0) {
-      // 如果之前有另一个收起动画正在进行，先强制完成它
-      if (g_linkColorCollapseAnimating && g_linkColorCollapseAnimIndex >= 0 &&
-          g_linkColorCollapseAnimIndex != oldLinkHoverIndex) {
-        int prevIndex = g_linkColorCollapseAnimIndex;
-        g_linkColorCollapseAnimating = false;
-        g_linkColorCollapseAnimIndex = -1;
-        g_linkColorCollapseProgress = 0.0f;
-        RECT rcPrev;
-        SendMessageW(hwnd, LB_GETITEMRECT, prevIndex, (LPARAM)&rcPrev);
-        InvalidateRect(hwnd, &rcPrev, FALSE);
-      }
-      g_linkColorCollapseAnimating = true;
-      g_linkColorCollapseAnimIndex = oldLinkHoverIndex;
-      g_linkColorCollapseProgress = 1.0f;
-      SetTimer(hwnd, ID_LINK_COLOR_COLLAPSE_TIMER, 16, NULL);
-    }
 
     HideListBoxTrackingTooltip();
     // 重绘之前悬浮的项目
     if (oldHoverIndex >= 0) {
       RECT rcOld;
       SendMessageW(hwnd, LB_GETITEMRECT, oldHoverIndex, (LPARAM)&rcOld);
-      InvalidateRect(hwnd, &rcOld, FALSE);
-    }
-    // 重绘之前悬浮的文件夹项目
-    if (oldFolderHoverIndex >= 0 && oldFolderHoverIndex != oldHoverIndex) {
-      RECT rcOld;
-      SendMessageW(hwnd, LB_GETITEMRECT, oldFolderHoverIndex, (LPARAM)&rcOld);
-      InvalidateRect(hwnd, &rcOld, FALSE);
-    }
-    // 重绘之前悬浮的链接项目
-    if (oldLinkHoverIndex >= 0 && oldLinkHoverIndex != oldHoverIndex &&
-        oldLinkHoverIndex != oldFolderHoverIndex) {
-      RECT rcOld;
-      SendMessageW(hwnd, LB_GETITEMRECT, oldLinkHoverIndex, (LPARAM)&rcOld);
       InvalidateRect(hwnd, &rcOld, FALSE);
     }
   }
@@ -2735,58 +2483,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       return 0;
     }
     g_dragItemIndex = -1;
-
-    if (g_isHoveringFolder && g_hoverFolderIndex >= 0) {
-      // 获取文件夹路径
-      if (g_hoverFolderIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[g_hoverFolderIndex];
-        if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
-          const ClipboardItem &item = g_history[actualIndex];
-          if (item.type == TYPE_FILE) {
-            // 打开资源管理器并定位到该文件夹
-            ShellExecuteW(NULL, L"explore", item.content.c_str(), NULL, NULL,
-                          SW_SHOWNORMAL);
-            return 0;
-          }
-        }
-      }
-    }
-
-    // 链接文本点击处理（批量编辑模式下禁用）
-    if (!g_isBatchEditMode && g_isHoveringLink && g_hoverLinkIndex >= 0) {
-      if (g_hoverLinkIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[g_hoverLinkIndex];
-        if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
-          const ClipboardItem &item = g_history[actualIndex];
-          std::wstring contentText = item.content;
-          for (size_t ci = 0; ci < contentText.length(); ci++) {
-            if (contentText[ci] == L'\r' || contentText[ci] == L'\n') {
-              contentText[ci] = L' ';
-            }
-          }
-          size_t spacePos = contentText.find(L' ');
-          if (spacePos != std::wstring::npos) {
-            contentText = contentText.substr(0, spacePos);
-          }
-
-          LinkType linkType = GetLinkType(contentText);
-          if (linkType == LINK_FILE_PATH) {
-            DWORD attrs = GetFileAttributesW(contentText.c_str());
-            if (attrs != INVALID_FILE_ATTRIBUTES) {
-              if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-                ShellExecuteW(NULL, L"explore", contentText.c_str(), NULL, NULL,
-                              SW_SHOWNORMAL);
-              } else {
-                std::wstring param = L"/select,\"" + contentText + L"\"";
-                ShellExecuteW(NULL, NULL, L"explorer.exe", param.c_str(), NULL,
-                              SW_SHOWNORMAL);
-              }
-            }
-            return 0;
-          }
-        }
-      }
-    }
   }
 
   if (message == WM_CAPTURECHANGED) {
@@ -2795,101 +2491,6 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       StartScrollbarHideTimer(hwnd);
       RefreshScrollbarIfChanged(hwnd);
     }
-  }
-
-  // 处理下划线动画定时器
-  // 处理展开动画定时器
-  if (message == WM_TIMER && wParam == ID_FOLDER_UNDERLINE_TIMER) {
-    if (g_folderUnderlineAnimating) {
-      float step = 0.1f; // 动画步进
-      g_folderUnderlineProgress += step;
-      if (g_folderUnderlineProgress >= 1.0f) {
-        g_folderUnderlineProgress = 1.0f;
-        g_folderUnderlineAnimating = false;
-        KillTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER);
-      }
-      // 只重绘下划线区域（项目底部的一小条）
-      if (g_folderUnderlineAnimIndex >= 0) {
-        RECT rcAnim;
-        SendMessageW(hwnd, LB_GETITEMRECT, g_folderUnderlineAnimIndex,
-                     (LPARAM)&rcAnim);
-        // 只重绘下划线所在区域（标题下方的文本行）
-        rcAnim.top = rcAnim.top + 22;    // 标题高度
-        rcAnim.bottom = rcAnim.top + 25; // 只重绘文本行区域
-        InvalidateRect(hwnd, &rcAnim, FALSE);
-      }
-    }
-    return 0;
-  }
-
-  // 处理收起动画定时器
-  if (message == WM_TIMER && wParam == ID_FOLDER_COLLAPSE_TIMER) {
-    if (g_folderCollapseAnimating) {
-      float step = 0.1f; // 动画步进
-      g_folderCollapseProgress -= step;
-      int animIndex = g_folderCollapseAnimIndex; // 保存索引用于重绘
-      if (g_folderCollapseProgress <= 0.0f) {
-        g_folderCollapseProgress = 0.0f;
-        g_folderCollapseAnimating = false;
-        g_folderCollapseAnimIndex = -1;
-        KillTimer(hwnd, ID_FOLDER_COLLAPSE_TIMER);
-      }
-      // 只重绘下划线区域
-      if (animIndex >= 0) {
-        RECT rcAnim;
-        SendMessageW(hwnd, LB_GETITEMRECT, animIndex, (LPARAM)&rcAnim);
-        // 只重绘下划线所在区域
-        rcAnim.top = rcAnim.top + 22;
-        rcAnim.bottom = rcAnim.top + 25;
-        InvalidateRect(hwnd, &rcAnim, FALSE);
-      }
-    }
-    return 0;
-  }
-
-  // 处理链接颜色展开动画定时器
-  if (message == WM_TIMER && wParam == ID_LINK_COLOR_EXPAND_TIMER) {
-    if (g_linkColorExpandAnimating) {
-      float step = 0.08f; // 动画步进（稍慢，更柔和）
-      g_linkColorExpandProgress += step;
-      if (g_linkColorExpandProgress >= 1.0f) {
-        g_linkColorExpandProgress = 1.0f;
-        g_linkColorExpandAnimating = false;
-        KillTimer(hwnd, ID_LINK_COLOR_EXPAND_TIMER);
-      }
-      if (g_linkColorExpandAnimIndex >= 0) {
-        RECT rcAnim;
-        SendMessageW(hwnd, LB_GETITEMRECT, g_linkColorExpandAnimIndex,
-                     (LPARAM)&rcAnim);
-        rcAnim.top = rcAnim.top + 22;
-        rcAnim.bottom = rcAnim.top + 25;
-        InvalidateRect(hwnd, &rcAnim, FALSE);
-      }
-    }
-    return 0;
-  }
-
-  // 处理链接颜色收起动画定时器
-  if (message == WM_TIMER && wParam == ID_LINK_COLOR_COLLAPSE_TIMER) {
-    if (g_linkColorCollapseAnimating) {
-      float step = 0.08f;
-      g_linkColorCollapseProgress -= step;
-      int animIndex = g_linkColorCollapseAnimIndex;
-      if (g_linkColorCollapseProgress <= 0.0f) {
-        g_linkColorCollapseProgress = 0.0f;
-        g_linkColorCollapseAnimating = false;
-        g_linkColorCollapseAnimIndex = -1;
-        KillTimer(hwnd, ID_LINK_COLOR_COLLAPSE_TIMER);
-      }
-      if (animIndex >= 0) {
-        RECT rcAnim;
-        SendMessageW(hwnd, LB_GETITEMRECT, animIndex, (LPARAM)&rcAnim);
-        rcAnim.top = rcAnim.top + 22;
-        rcAnim.bottom = rcAnim.top + 25;
-        InvalidateRect(hwnd, &rcAnim, FALSE);
-      }
-    }
-    return 0;
   }
 
   return CallWindowProcW(g_oldListBoxProc, hwnd, message, wParam, lParam);
@@ -4972,171 +4573,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 // 调整文本位置（图标后面）
                 rcText.left += 22;
 
-                // 检查是否悬浮在此文件夹上或正在蓝色文字动画
-                bool isFolderHovered =
-                    (g_isHoveringFolder &&
-                     g_hoverFolderIndex == (int)lpDIS->itemID);
-                bool isLinkExpandAnim =
-                    (g_linkColorExpandAnimating &&
-                     g_linkColorExpandAnimIndex == (int)lpDIS->itemID);
-                bool isLinkCollapseAnim =
-                    (g_linkColorCollapseAnimating &&
-                     g_linkColorCollapseAnimIndex == (int)lpDIS->itemID);
-
-                float linkAnimProgress = 0.0f;
-                if (isLinkExpandAnim) {
-                  linkAnimProgress = g_linkColorExpandProgress;
-                } else if (isLinkCollapseAnim) {
-                  linkAnimProgress = g_linkColorCollapseProgress;
-                } else if (isFolderHovered) {
-                  linkAnimProgress = 1.0f;
-                }
-
                 RECT rcPathText = rcText;
                 rcPathText.right -= 20;
 
-                if (linkAnimProgress > 0.001f && linkAnimProgress < 0.999f) {
-                  // 动画中：左侧蓝色，右侧原色
-                  SIZE textSize;
-                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
-                                        &textSize);
-                  int textPixelWidth =
-                      std::min((int)textSize.cx,
-                               (int)(rcPathText.right - rcPathText.left));
-                  int splitX = rcPathText.left +
-                               (int)(textPixelWidth * linkAnimProgress);
-
-                  HRGN hLeftRgn = CreateRectRgn(rcPathText.left, rcPathText.top,
-                                                splitX, rcPathText.bottom);
-                  SelectClipRgn(hdc, hLeftRgn);
-                  SetTextColor(hdc, RGB(0, 102, 204));
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-
-                  HRGN hRightRgn =
-                      CreateRectRgn(splitX, rcPathText.top, rcPathText.right,
-                                    rcPathText.bottom);
-                  SelectClipRgn(hdc, hRightRgn);
-                  SetTextColor(hdc, GetTextColor());
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-
-                  SelectClipRgn(hdc, NULL);
-                  DeleteObject(hLeftRgn);
-                  DeleteObject(hRightRgn);
-                } else if (linkAnimProgress >= 0.999f) {
-                  SetTextColor(hdc, RGB(0, 102, 204));
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                } else {
-                  SetTextColor(hdc, GetTextColor());
-                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                }
+                SetTextColor(hdc, GetTextColor());
+                DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                              DT_END_ELLIPSIS | DT_NOPREFIX);
                 DrawDetectedColorDot(hdc, rcPathText, text);
               } else {
-                // 普通文本或文件，检查是否为链接并应用颜色动画
-                bool isLink = ShouldAnimateLinkText(text);
-                bool isLinkHovered =
-                    isLink && (g_isHoveringLink &&
-                               g_hoverLinkIndex == (int)lpDIS->itemID);
-                bool isLinkExpandAnim = isLink && (g_linkColorExpandAnimating &&
-                                                   g_linkColorExpandAnimIndex ==
-                                                       (int)lpDIS->itemID);
-                bool isLinkCollapseAnim =
-                    isLink &&
-                    (g_linkColorCollapseAnimating &&
-                     g_linkColorCollapseAnimIndex == (int)lpDIS->itemID);
-
-                float linkAnimProgress = 0.0f;
-                if (isLinkExpandAnim) {
-                  linkAnimProgress = g_linkColorExpandProgress;
-                } else if (isLinkCollapseAnim) {
-                  linkAnimProgress = g_linkColorCollapseProgress;
-                } else if (isLinkHovered) {
-                  linkAnimProgress = 1.0f;
-                }
-
-                if (isLink && linkAnimProgress > 0.001f &&
-                    linkAnimProgress < 0.999f) {
-                  // 动画进行中：分两段绘制文字
-                  // 先计算文字实际宽度
-                  SIZE fullTextSize;
-                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
-                                        &fullTextSize);
-                  int maxWidth = rcText.right - rcText.left;
-                  int textPixelWidth = std::min((int)fullTextSize.cx, maxWidth);
-
-                  // 计算分割点（像素位置）
-                  int splitX =
-                      rcText.left + (int)(textPixelWidth * linkAnimProgress);
-
-                  // 找到分割点对应的字符索引
-                  int splitCharIndex = 0;
-                  for (int ci = 1; ci <= (int)text.length(); ci++) {
-                    SIZE partSize;
-                    GetTextExtentPoint32W(hdc, text.c_str(), ci, &partSize);
-                    if (partSize.cx + rcText.left > splitX) {
-                      splitCharIndex = ci;
-                      break;
-                    }
-                    splitCharIndex = ci;
-                  }
-                  if (splitCharIndex <= 0)
-                    splitCharIndex = 1;
-                  if (splitCharIndex > (int)text.length())
-                    splitCharIndex = (int)text.length();
-
-                  COLORREF blueColor = RGB(0, 102, 204);
-                  COLORREF origColor = GetTextColor();
-
-                  // 使用裁剪区域绘制两段不同颜色的文字
-                  HRGN hOldRgn = CreateRectRgn(0, 0, 0, 0);
-                  int hasOldRgn = GetClipRgn(hdc, hOldRgn);
-
-                  // 第一段：左侧蓝色部分
-                  HRGN hLeftRgn = CreateRectRgn(rcText.left, rcText.top, splitX,
-                                                rcText.bottom);
-                  SelectClipRgn(hdc, hLeftRgn);
-                  SetTextColor(hdc, blueColor);
-                  DrawTextW(hdc, text.c_str(), -1, &rcText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                  DeleteObject(hLeftRgn);
-
-                  // 第二段：右侧原色部分
-                  HRGN hRightRgn = CreateRectRgn(splitX, rcText.top,
-                                                 rcText.right, rcText.bottom);
-                  SelectClipRgn(hdc, hRightRgn);
-                  SetTextColor(hdc, origColor);
-                  DrawTextW(hdc, text.c_str(), -1, &rcText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                  DeleteObject(hRightRgn);
-
-                  // 恢复裁剪区域
-                  if (hasOldRgn == 1) {
-                    SelectClipRgn(hdc, hOldRgn);
-                  } else {
-                    SelectClipRgn(hdc, NULL);
-                  }
-                  DeleteObject(hOldRgn);
-                } else if (isLink && linkAnimProgress >= 0.999f) {
-                  // 动画完成或稳定悬浮：全蓝色
-                  SetTextColor(hdc, RGB(0, 102, 204));
-                  DrawTextW(hdc, text.c_str(), -1, &rcText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                } else {
-                  // 无动画：原色
-                  DrawTextW(hdc, text.c_str(), -1, &rcText,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                DT_END_ELLIPSIS | DT_NOPREFIX);
-                }
+                // 普通文本或文件
+                DrawTextW(hdc, text.c_str(), -1, &rcText,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                              DT_END_ELLIPSIS | DT_NOPREFIX);
                 DrawDetectedColorDot(hdc, rcText, text);
               }
             }
@@ -5797,7 +5246,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             424,
             246,
             {14, 78, 410, 180},
-            true};
+            true,
+            false};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           // 按索引从大到小排序，避免删除时索引变化
           std::sort(g_selectedItems.rbegin(), g_selectedItems.rend());
@@ -5841,7 +5291,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               424,
               246,
               {14, 78, 410, 180},
-              true};
+              true,
+              false};
           shouldDelete = ShowThemedConfirmDialog(hwnd, dialog);
         }
 

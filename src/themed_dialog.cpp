@@ -717,9 +717,11 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
                           config->cardRect.bottom - config->cardRect.top, 18);
       COLORREF fill = GetThemeDialogCardBgColor();
       COLORREF border = g_isDarkMode ? RGB(62, 64, 70) : RGB(222, 225, 230);
-      SolidBrush brush(
-          Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
-      g.FillPath(&brush, &cardPath);
+      if (config->drawCardBackground) {
+        SolidBrush brush(
+            Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
+        g.FillPath(&brush, &cardPath);
+      }
       if (config->drawCardBorder) {
         Pen pen(Color(255, GetRValue(border), GetGValue(border),
                       GetBValue(border)),
@@ -874,7 +876,8 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   config.dlgW = dialog.dlgW > 0 ? dialog.dlgW : 424;
   config.dlgH = dialog.dlgH > 0 ? dialog.dlgH : 246;
   config.closeBtnId = closeBtnId;
-  config.bodyFontDelta = 1;
+  config.bodyFontDelta = 0;
+  config.titleFontDelta = 0;
   if (dialog.cardRect.right > dialog.cardRect.left &&
       dialog.cardRect.bottom > dialog.cardRect.top) {
     config.cardRect = dialog.cardRect;
@@ -883,6 +886,7 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   }
   config.doneFlag = &s_confirmDone;
   config.primaryButtonDanger = dialog.danger;
+  config.drawCardBackground = dialog.drawCardBackground;
 
   HWND hDlg = CreateThemedDialog(hwndParent, hInst, &config);
   if (!hDlg)

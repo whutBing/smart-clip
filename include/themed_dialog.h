@@ -16,6 +16,7 @@ struct ThemedDialogConfig {
   int bodyFontDelta;
   int titleFontDelta;
   bool drawCardBorder;
+  bool drawCardBackground;
   RECT cardRect;
   const int *fieldLabelIds;
   int fieldLabelCount;
@@ -41,6 +42,7 @@ struct ThemedConfirmDialogConfig {
   int dlgH;
   RECT cardRect;
   bool danger;
+  bool drawCardBackground;
 };
 
 struct PasswordToggleBinding {

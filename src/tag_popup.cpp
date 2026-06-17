@@ -153,7 +153,8 @@ static void DeleteTagPopupEditWithConfirm(HWND hwnd, int arrowHeight, int paddin
       424,
       252,
       {14, 78, 410, 186},
-      true};
+      true,
+      false};
   if (!ShowThemedConfirmDialog(hwnd, dialog))
     return;
 

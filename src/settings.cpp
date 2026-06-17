@@ -1634,7 +1634,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             424,
             246,
             {14, 78, 410, 180},
-            true};
+            true,
+            false};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           ClearNonFavoriteHistory();
           g_dataSizeText = BuildDataSizeText();
@@ -1655,7 +1656,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             424,
             246,
             {14, 78, 410, 180},
-            true};
+            true,
+            false};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           extern void CleanInvalidImageRecords();
           CleanInvalidImageRecords();
