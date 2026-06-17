@@ -39,6 +39,8 @@ enum ImagePreviewQuality {
 // 全局变量
 extern bool g_isNotificationEnabled;
 extern bool g_isCollapseAfterPaste;
+extern bool g_isQuickPasteEnabled;
+extern UINT g_quickPasteModifiers;
 extern bool g_isSmoothScrollEnabled;
 extern bool g_isCustomScrollbarEnabled;
 extern bool g_isColorDotEnabled;

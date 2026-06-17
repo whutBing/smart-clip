@@ -560,6 +560,20 @@ int g_scrollbarDragOffsetY = 0;
 int g_listBoxTopIndex = 0;
 int g_shortcutStartDisplayIndex = -1; // 翻到下一页时，从新记录开始显示快捷键
 int g_shortcutEndDisplayIndexExclusive = -1; // 向上翻页补位时，旧记录的截止索引
+bool g_quickPasteHintVisible = false;
+
+enum QuickPasteHotkeyId {
+  ID_HOTKEY_PASTE_1 = 4101,
+  ID_HOTKEY_PASTE_2,
+  ID_HOTKEY_PASTE_3,
+  ID_HOTKEY_PASTE_4,
+  ID_HOTKEY_PASTE_5,
+  ID_HOTKEY_PASTE_6,
+  ID_HOTKEY_PASTE_7,
+  ID_HOTKEY_PASTE_8,
+  ID_HOTKEY_PASTE_9,
+  ID_HOTKEY_PASTE_10
+};
 
 // 翻页相关
 #define ITEMS_PER_PAGE 9             // 每页显示的项目数
@@ -585,6 +599,189 @@ static DWORD g_vimNavPendingGTick = 0;
 static void ClearShortcutDisplayBounds() {
   g_shortcutStartDisplayIndex = -1;
   g_shortcutEndDisplayIndexExclusive = -1;
+}
+
+static int GetListBoxVisibleHeight(HWND hwnd);
+static int CalculateVisibleItemCount(int startIndex);
+static bool IsSelectableDisplayIndex(int index);
+
+static std::wstring GetQuickPasteModifierText() {
+  switch (g_quickPasteModifiers) {
+  case MOD_ALT:
+    return L"Alt+";
+  case MOD_CONTROL:
+    return L"Ctrl+";
+  case MOD_SHIFT:
+    return L"Shift+";
+  case MOD_CONTROL | MOD_ALT:
+    return L"Ctrl+Alt+";
+  case MOD_CONTROL | MOD_SHIFT:
+    return L"Ctrl+Shift+";
+  case MOD_ALT | MOD_SHIFT:
+    return L"Alt+Shift+";
+  default:
+    return L"Alt+";
+  }
+}
+
+static void RegisterQuickPasteHotkeys(HWND hwnd) {
+  for (int i = 0; i < 10; ++i) {
+    UINT vk = (i == 9) ? '0' : (UINT)('1' + i);
+    RegisterHotKey(hwnd, ID_HOTKEY_PASTE_1 + i, g_quickPasteModifiers, vk);
+  }
+}
+
+static void UnregisterQuickPasteHotkeys(HWND hwnd) {
+  for (int i = 0; i < 10; ++i) {
+    ::UnregisterHotKey(hwnd, ID_HOTKEY_PASTE_1 + i);
+  }
+}
+
+static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount);
+static int GetShortcutIndexForDisplayIndex(int displayIndex) {
+  int visibleIds[10] = {};
+  int visibleCount = CollectVisibleShortcutDisplayIndices(visibleIds, 10);
+  for (int i = 0; i < visibleCount; ++i) {
+    if (visibleIds[i] == displayIndex)
+      return i;
+  }
+  return -1;
+}
+
+static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
+  if (!outIds || maxCount <= 0 || g_displayIndexMap.empty())
+    return 0;
+
+  int startHint = g_shortcutStartDisplayIndex;
+  int endHint = g_shortcutEndDisplayIndexExclusive;
+  int visibleLimit = CalculateVisibleItemCount(g_listBoxTopIndex);
+  int totalItems = (int)g_displayIndexMap.size();
+  int count = 0;
+  const int headerVisibleThreshold = 9;
+  int visibleHeight = g_hwndListBox ? GetListBoxVisibleHeight(g_hwndListBox) : 0;
+  int startIndex = g_listBoxTopIndex;
+
+  if (startHint >= 0)
+    startIndex = std::max(startIndex, startHint);
+
+  if (g_hwndListBox) {
+    while (startIndex > 0) {
+      RECT rcPrev = {};
+      if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, startIndex - 1,
+                       (LPARAM)&rcPrev) == LB_ERR) {
+        break;
+      }
+      if (rcPrev.bottom <= 0)
+        break;
+      if (startHint >= 0 && startIndex - 1 < startHint)
+        break;
+      --startIndex;
+    }
+  }
+
+  for (int i = startIndex; i < totalItems && count < maxCount; ++i) {
+    if (endHint >= 0 && i >= endHint)
+      break;
+
+    RECT rcItem = {};
+    if (g_hwndListBox &&
+        SendMessageW(g_hwndListBox, LB_GETITEMRECT, i, (LPARAM)&rcItem) !=
+            LB_ERR) {
+      int itemHeight = rcItem.bottom - rcItem.top;
+      if (rcItem.bottom <= 0)
+        continue;
+      if (rcItem.top >= 0 && count == 0) {
+      } else if (rcItem.top + headerVisibleThreshold <= 0) {
+        continue;
+      }
+      if (visibleHeight > 0 && rcItem.top + itemHeight / 2 > visibleHeight)
+        break;
+    }
+
+    if (!IsSelectableDisplayIndex(i))
+      continue;
+
+    outIds[count++] = i;
+    if (count >= visibleLimit)
+      break;
+  }
+  return count;
+}
+
+static bool PasteHistoryItemByDisplayIndex(HWND hwnd, int displayIndex) {
+  if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
+    return false;
+
+  int actualIndex = g_displayIndexMap[displayIndex];
+  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
+    return false;
+
+  const ClipboardItem &item = g_history[actualIndex];
+  HWND hwndTarget = GetForegroundWindow();
+
+  if (!OpenClipboard(NULL))
+    return false;
+
+  EmptyClipboard();
+
+  if (item.type == TYPE_TEXT || item.type == TYPE_FILE) {
+    HGLOBAL hGlobal = GlobalAlloc(
+        GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
+    if (hGlobal != NULL) {
+      wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+      if (pData != NULL) {
+        wcscpy_s(pData, item.content.length() + 1, item.content.c_str());
+        GlobalUnlock(hGlobal);
+        SetClipboardData(CF_UNICODETEXT, hGlobal);
+      }
+    }
+  } else if (item.type == TYPE_IMAGE) {
+    std::wstring imagePath;
+    if (!item.imageFilePath.empty()) {
+      imagePath = item.imageFilePath;
+    } else if (!item.imageFileName.empty()) {
+      imagePath = GetImagesPath() + L"\\" + item.imageFileName;
+    }
+
+    if (!imagePath.empty()) {
+      HGLOBAL hGlobal = GlobalAlloc(
+          GMEM_MOVEABLE, (imagePath.length() + 1) * sizeof(wchar_t));
+      if (hGlobal != NULL) {
+        wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+        if (pData != NULL) {
+          wcscpy_s(pData, imagePath.length() + 1, imagePath.c_str());
+          GlobalUnlock(hGlobal);
+          SetClipboardData(CF_UNICODETEXT, hGlobal);
+        }
+      }
+    }
+  }
+
+  g_isRestoringClipboard = true;
+  CloseClipboard();
+
+  Sleep(100);
+  while ((GetAsyncKeyState(VK_MENU) & 0x8000) ||
+         (GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
+         (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+    Sleep(10);
+  }
+
+  if (hwndTarget != NULL && IsWindow(hwndTarget)) {
+    SetForegroundWindow(hwndTarget);
+    Sleep(50);
+  }
+
+  keybd_event(VK_CONTROL, 0, 0, 0);
+  keybd_event('V', 0, 0, 0);
+  keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
+  keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+
+  IncrementPasteCount();
+  if (g_isNotificationEnabled) {
+    ShowTrayBalloon(hwnd, L"快捷粘贴", L"已粘贴");
+  }
+  return true;
 }
 
 // 计算单个项目的高度（基于显示索引）
@@ -3779,6 +3976,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 首次创建阶段可能因窗口尚未稳定而短暂失败，延迟到首次显示后重试。
       g_hotkeyRegisterPendingRetry = g_isHotkeyEnabled;
     }
+    if (g_isQuickPasteEnabled) {
+      RegisterQuickPasteHotkeys(hwnd);
+    }
 
     // 创建搜索栏（使用ES_MULTILINE以支持EM_SETRECT垂直居中）
     g_hwndSearchBox = CreateWindowExW(
@@ -4064,6 +4264,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         } else {
           g_hotkeyRegisterPendingRetry = false;
         }
+      }
+      if (g_isQuickPasteEnabled) {
+        RegisterQuickPasteHotkeys(hwnd);
       }
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -4936,34 +5139,56 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                          NULL, DI_NORMAL);
             } else {
               // 非悬浮时使用 GDI+ 按 alpha 绘制灰度图标，避免出现矩形底色
-              Gdiplus::Bitmap *iconBitmap = Gdiplus::Bitmap::FromHICON(hAppIcon);
-              if (iconBitmap &&
-                  iconBitmap->GetLastStatus() == Gdiplus::Ok) {
-                Gdiplus::Graphics graphics(hdc);
-                graphics.SetInterpolationMode(
+              // 先用 DrawIconEx 将图标绘制到 32 位 ARGB 位图上，
+              // 确保图标透明遮罩被正确转换为 alpha 通道（FromHICON 对部分
+              // 图标格式会产生不正确的 alpha，导致矩形阴影）
+              Gdiplus::Bitmap iconBitmap(iconSize, iconSize,
+                                         PixelFormat32bppARGB);
+              {
+                Gdiplus::Graphics tempGraphics(&iconBitmap);
+                tempGraphics.SetInterpolationMode(
                     Gdiplus::InterpolationModeHighQualityBicubic);
-                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-                Gdiplus::ImageAttributes imageAttr;
-                const float brighten = g_isDarkMode ? 0.14f : 0.10f;
-                const Gdiplus::ColorMatrix colorMatrix = {
-                    0.299f, 0.299f, 0.299f, 0.0f, 0.0f,
-                    0.587f, 0.587f, 0.587f, 0.0f, 0.0f,
-                    0.114f, 0.114f, 0.114f, 0.0f, 0.0f,
-                    0.0f,   0.0f,   0.0f,   0.82f, 0.0f,
-                    brighten, brighten, brighten, 0.0f, 1.0f};
-                imageAttr.SetColorMatrix(
-                    &colorMatrix, Gdiplus::ColorMatrixFlagsDefault,
-                    Gdiplus::ColorAdjustTypeBitmap);
-                graphics.DrawImage(
-                    iconBitmap,
-                    Gdiplus::Rect(iconX, iconY, iconSize, iconSize), 0, 0,
-                    iconBitmap->GetWidth(), iconBitmap->GetHeight(),
-                    Gdiplus::UnitPixel, &imageAttr);
-              } else {
-                DrawIconEx(hdc, iconX, iconY, hAppIcon, iconSize, iconSize, 0,
+                HDC tempHdc = tempGraphics.GetHDC();
+                DrawIconEx(tempHdc, 0, 0, hAppIcon, iconSize, iconSize, 0,
                            NULL, DI_NORMAL);
+                tempGraphics.ReleaseHDC(tempHdc);
               }
-              delete iconBitmap;
+
+              Gdiplus::Graphics graphics(hdc);
+              graphics.SetInterpolationMode(
+                  Gdiplus::InterpolationModeHighQualityBicubic);
+              graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+              Gdiplus::ImageAttributes imageAttr;
+              const float brighten = g_isDarkMode ? 0.14f : 0.10f;
+              const Gdiplus::ColorMatrix colorMatrix = {
+                  0.299f, 0.299f, 0.299f, 0.0f, 0.0f,
+                  0.587f, 0.587f, 0.587f, 0.0f, 0.0f,
+                  0.114f, 0.114f, 0.114f, 0.0f, 0.0f,
+                  0.0f,   0.0f,   0.0f,   0.82f, 0.0f,
+                  brighten, brighten, brighten, 0.0f, 1.0f};
+              imageAttr.SetColorMatrix(
+                  &colorMatrix, Gdiplus::ColorMatrixFlagsDefault,
+                  Gdiplus::ColorAdjustTypeBitmap);
+              graphics.DrawImage(
+                  &iconBitmap,
+                  Gdiplus::Rect(iconX, iconY, iconSize, iconSize), 0, 0,
+                  iconBitmap.GetWidth(), iconBitmap.GetHeight(),
+                  Gdiplus::UnitPixel, &imageAttr);
+            }
+          }
+
+          if (g_isQuickPasteEnabled) {
+            int shortcutIndex =
+                GetShortcutIndexForDisplayIndex((int)lpDIS->itemID);
+            if (shortcutIndex >= 0 && shortcutIndex < 10) {
+              wchar_t keyChar =
+                  (shortcutIndex == 9) ? L'0' : (wchar_t)(L'1' + shortcutIndex);
+              std::wstring shortcutText = GetQuickPasteModifierText() + keyChar;
+              RECT rcShortcut = rcHeader;
+              rcShortcut.right -= 4;
+              SetTextColor(hdc, RGB(100, 149, 237));
+              DrawTextW(hdc, shortcutText.c_str(), -1, &rcShortcut,
+                        DT_RIGHT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
             }
           }
 
@@ -6740,6 +6965,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     RemoveClipboardFormatListener(hwnd);
     RemoveTrayIcon();
     UnregisterHotkey(hwnd);
+    UnregisterQuickPasteHotkeys(hwnd);
     SaveHistory();
     // 清理图标缓存
     ClearIconCache();
@@ -7002,6 +7228,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           SetFocus(g_hwndSearchBox);
           SendMessageW(g_hwndSearchBox, EM_SETSEL, 0, -1);
         }
+      }
+    } else if (wParam >= ID_HOTKEY_PASTE_1 && wParam <= ID_HOTKEY_PASTE_10) {
+      int pasteOffset = (int)(wParam - ID_HOTKEY_PASTE_1);
+      int visibleIds[10] = {};
+      int visibleCount = CollectVisibleShortcutDisplayIndices(visibleIds, 10);
+      if (pasteOffset >= 0 && pasteOffset < visibleCount) {
+        PasteHistoryItemByDisplayIndex(hwnd, visibleIds[pasteOffset]);
       }
     }
     break;

@@ -66,6 +66,9 @@ inline COLORREF GetTitlebarBgColor() {
 // ==================== 全局变量 ====================
 bool g_isSettingsDialogOpen = false;
 bool g_isNotificationEnabled = false;
+bool g_isCollapseAfterPaste = true;
+bool g_isQuickPasteEnabled = true;
+UINT g_quickPasteModifiers = MOD_ALT;
 bool g_isSmoothScrollEnabled = false;
 bool g_isCustomScrollbarEnabled = true;
 bool g_isColorDotEnabled = true;
