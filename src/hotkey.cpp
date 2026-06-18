@@ -35,7 +35,7 @@ void SaveHotkeySettings() {
   if (hFile != INVALID_HANDLE_VALUE) {
     DWORD dwBytesWritten = 0;
 
-    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\n0|0\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled\nthemeId\nlanguage\n0|0|0
+    // 格式：enabled|modifiers|virtualKey\nsearchEnabled|searchModifiers|searchVirtualKey\n0|0\nthemeMode\nsmoothScrollEnabled\nimagePreviewQuality\nmaxHistoryCount\ncustomScrollbarEnabled\ncustomScrollbarHideDelayMs\ncolorDotEnabled\nthemeId\nlanguage\nquickPasteModifiers\n0|0|0
     std::wstring content = std::to_wstring(g_isHotkeyEnabled) + L"|" +
                            std::to_wstring(g_hotkeyModifiers) + L"|" +
                            std::to_wstring(g_hotkeyVirtualKey) + L"\n" +
@@ -52,6 +52,7 @@ void SaveHotkeySettings() {
                            std::to_wstring(g_isColorDotEnabled) + L"\n" +
                            std::to_wstring((int)g_themeId) + L"\n" +
                            std::to_wstring((int)g_appLanguage) + L"\n" +
+                           std::to_wstring((int)g_quickPasteModifiers) + L"\n" +
                            L"0|0|0\n";
 
     // 转换为UTF-8
@@ -287,8 +288,12 @@ void LoadHotkeySettings() {
           if (pNextLine != NULL && *pNextLine != L'\0') {
             pLine = pNextLine;
             wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL)
+            if (pEnd != NULL) {
               *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
@@ -299,24 +304,28 @@ void LoadHotkeySettings() {
           if (pNextLine != NULL && *pNextLine != L'\0') {
             pLine = pNextLine;
             wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL)
+            if (pEnd != NULL) {
               *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
             g_themeId = APP_THEME_HIGH_CONTRAST;
-            if (pEnd != NULL)
-              pNextLine = pEnd + 1;
-            else
-              pNextLine = NULL;
           }
 
           // 解析第十二行：language（旧配置可能不存在）
           if (pNextLine != NULL && *pNextLine != L'\0') {
             pLine = pNextLine;
             wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL)
+            if (pEnd != NULL) {
               *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
             pEnd = wcsstr(pLine, L"\r");
             if (pEnd != NULL)
               *pEnd = L'\0';
@@ -324,13 +333,28 @@ void LoadHotkeySettings() {
             if (languageValue >= 0 && languageValue <= 1) {
               g_appLanguage = (AppLanguage)languageValue;
             }
-            if (pEnd != NULL)
-              pNextLine = pEnd + 1;
-            else
-              pNextLine = NULL;
           }
 
-          // 解析第十三行：保留兼容占位
+          // 解析第十三行：quickPasteModifiers（旧配置可能不存在）
+          if (pNextLine != NULL && *pNextLine != L'\0') {
+            pLine = pNextLine;
+            wchar_t *pEnd = wcsstr(pLine, L"\n");
+            if (pEnd != NULL) {
+              *pEnd = L'\0';
+              pNextLine = pEnd + 1;
+            } else {
+              pNextLine = NULL;
+            }
+            pEnd = wcsstr(pLine, L"\r");
+            if (pEnd != NULL)
+              *pEnd = L'\0';
+            UINT modValue = (UINT)wcstol(pLine, NULL, 10);
+            if (modValue != 0) {
+              g_quickPasteModifiers = modValue;
+            }
+          }
+
+          // 解析第十四行：保留兼容占位
           if (pNextLine != NULL && *pNextLine != L'\0') {
             pLine = pNextLine;
             pNextLine = wcsstr(pLine, L"\n");

@@ -54,3 +54,5 @@ extern HWND g_hwndSettingsDlg;
 // 函数声明
 extern void ShowSettingsDialog(HWND hwndParent);
 extern void ShowHotkeySettingsDialog(HWND hwndParent);
+extern void RegisterQuickPasteHotkeys(HWND hwnd);
+extern void UnregisterQuickPasteHotkeys(HWND hwnd);

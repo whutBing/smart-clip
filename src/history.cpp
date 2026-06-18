@@ -574,10 +574,14 @@ void ClearNonFavoriteHistory() {
             const ClipboardItem& item = g_history[i];
             // 删除关联的图片文件
             if (item.type == TYPE_IMAGE) {
+                // 删除截图大图文件（images 目录）
                 if (!item.imageFileName.empty()) {
                     std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
                     DeleteFileW(imgFile.c_str());
                 }
+                // 删除缩略图文件（thumbs 目录，文件名格式 thumb_<index>.dat）
+                std::wstring thumbFile = thumbsPath + L"\\thumb_" + std::to_wstring(i) + L".dat";
+                DeleteFileW(thumbFile.c_str());
             }
             g_history.erase(g_history.begin() + i);
         }
@@ -615,6 +619,9 @@ void CleanInvalidImageRecords() {
                     std::wstring imgFile = imagesPath + L"\\" + item.imageFileName;
                     DeleteFileW(imgFile.c_str());
                 }
+                // 删除缩略图文件
+                std::wstring thumbFile = thumbsPath + L"\\thumb_" + std::to_wstring(i) + L".dat";
+                DeleteFileW(thumbFile.c_str());
                 g_history.erase(g_history.begin() + i);
                 cleaned++;
             }
@@ -1388,7 +1395,7 @@ std::wstring GenerateImageFileName() {
     GetLocalTime(&st);
 
     WCHAR fileName[64];
-    swprintf_s(fileName, L"%04d%02d%02d_%02d%02d%02d_%03d_%04d.png",
+    swprintf_s(fileName, L"%04d%02d%02d_%02d%02d%02d_%03d_%04d.bmp",
         st.wYear, st.wMonth, st.wDay,
         st.wHour, st.wMinute, st.wSecond,
         st.wMilliseconds, rand() % 10000);
@@ -1427,6 +1434,47 @@ bool SaveOriginalImage(const std::vector<BYTE>& imageData, int width, int height
 
     CloseHandle(hFile);
     return true;
+}
+
+// 保存图片到临时文件（用于拖拽时原图缺失的回退情况）
+std::wstring SaveImageToTempFile(const std::vector<BYTE>& imageData, int width, int height) {
+    wchar_t tempPath[MAX_PATH];
+    if (GetTempPathW(MAX_PATH, tempPath) == 0) return L"";
+
+    // 生成唯一临时文件名
+    wchar_t tempFile[MAX_PATH];
+    if (GetTempFileNameW(tempPath, L"img", 0, tempFile) == 0) return L"";
+
+    // GetTempFileNameW 创建 .tmp 文件，改用 .bmp 扩展名
+    std::wstring tmpPath(tempFile);
+    std::wstring bmpPath = tmpPath.substr(0, tmpPath.rfind(L'.')) + L".bmp";
+    DeleteFileW(tmpPath.c_str());  // 删除空的 .tmp 文件
+
+    // 创建 BMP 文件
+    BITMAPFILEHEADER bfh = {};
+    bfh.bfType = 0x4D42;  // "BM"
+    bfh.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + imageData.size();
+    bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+
+    BITMAPINFOHEADER bih = {};
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = width;
+    bih.biHeight = -height;  // 负值表示从上到下
+    bih.biPlanes = 1;
+    bih.biBitCount = 24;
+    bih.biCompression = BI_RGB;
+    bih.biSizeImage = imageData.size();
+
+    HANDLE hFile = CreateFileW(bmpPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return L"";
+
+    DWORD dwBytesWritten;
+    WriteFile(hFile, &bfh, sizeof(bfh), &dwBytesWritten, NULL);
+    WriteFile(hFile, &bih, sizeof(bih), &dwBytesWritten, NULL);
+    WriteFile(hFile, &imageData[0], imageData.size(), &dwBytesWritten, NULL);
+
+    CloseHandle(hFile);
+    return bmpPath;
 }
 
 // 生成缩略图

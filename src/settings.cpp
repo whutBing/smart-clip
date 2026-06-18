@@ -102,6 +102,7 @@ static float g_dataDirUnderlineProgress = 0.0f;
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
 static bool g_settingsCloseHover = false;
+static WNDPROC g_oldSettingsCloseProc = NULL;
 static HWND g_hwndToggleNotification = NULL;
 static HWND g_hwndToggleSmoothScroll = NULL;
 static HWND g_hwndToggleScrollbar = NULL;
@@ -112,6 +113,7 @@ static HWND g_hwndLanguageCombo = NULL;
 static HWND g_hwndImagePreviewCombo = NULL;
 static HWND g_hwndHotkeyEdit = NULL;
 static HWND g_hwndSearchHotkeyEdit = NULL;
+static HWND g_hwndQuickPasteCombo = NULL;
 static HWND g_hwndScrollbarTimeoutEdit = NULL;
 static HWND g_hwndHistoryLimitEdit = NULL;
 
@@ -655,6 +657,8 @@ static void SwitchSettingsTab(int tab) {
     ShowWindow(g_hwndHotkeyEdit, showHk);
   if (g_hwndSearchHotkeyEdit)
     ShowWindow(g_hwndSearchHotkeyEdit, showHk);
+  if (g_hwndQuickPasteCombo)
+    ShowWindow(g_hwndQuickPasteCombo, showHk);
   if (g_hwndSetDataDirBtn)
     ShowWindow(g_hwndSetDataDirBtn, showDt);
   if (g_hwndClearNonFavBtn)
@@ -706,6 +710,7 @@ static const SettingRowInfo g_generalRows[] = {
 static const SettingRowInfo g_hotkeyRows[] = {
     {STR_ROW_HOTKEY_TOGGLE, STR_ROW_HOTKEY_TOGGLE_DESC},
     {STR_ROW_HOTKEY_SEARCH, STR_ROW_HOTKEY_SEARCH_DESC},
+    {STR_ROW_QUICK_PASTE_MOD, STR_ROW_QUICK_PASTE_MOD_DESC},
 };
 static const SettingRowInfo g_dataRows[] = {
     {STR_ROW_DATA_SIZE, STR_COUNT},
@@ -724,7 +729,7 @@ struct CategoryHeader {
 };
 static const CategoryHeader g_categories[] = {
     {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 7},
-    {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 2},
+    {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 3},
     {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 6},
 };
 
@@ -792,6 +797,14 @@ static const StringId g_languageItemIds[] = {STR_LANGUAGE_ZH_CN,
                                              STR_LANGUAGE_EN_US};
 static const StringId g_previewItemIds[] = {STR_PREVIEW_OFF, STR_PREVIEW_BLUR,
                                             STR_PREVIEW_SD, STR_PREVIEW_HD};
+// 快捷粘贴修饰键选项（与 g_quickPasteModValues 一一对应）
+static const wchar_t *g_quickPasteModItems[] = {
+    L"Alt",      L"Ctrl",       L"Shift",
+    L"Ctrl+Alt", L"Ctrl+Shift", L"Alt+Shift"};
+static const UINT g_quickPasteModValues[] = {
+    MOD_ALT,                   MOD_CONTROL,            MOD_SHIFT,
+    MOD_CONTROL | MOD_ALT,     MOD_CONTROL | MOD_SHIFT, MOD_ALT | MOD_SHIFT};
+#define QUICK_PASTE_MOD_COUNT 6
 // 获取下拉按钮当前显示文字
 static const wchar_t *GetDropdownText(int ctlId) {
   if (ctlId == IDC_THEME_COMBO)
@@ -802,6 +815,13 @@ static const wchar_t *GetDropdownText(int ctlId) {
     return T(g_languageItemIds[(int)g_appLanguage]);
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
     return T(g_previewItemIds[(int)g_imagePreviewQuality]);
+  if (ctlId == IDC_QUICK_PASTE_COMBO) {
+    for (int i = 0; i < QUICK_PASTE_MOD_COUNT; ++i) {
+      if (g_quickPasteModValues[i] == g_quickPasteModifiers)
+        return g_quickPasteModItems[i];
+    }
+    return g_quickPasteModItems[0];
+  }
   return L"";
 }
 
@@ -814,6 +834,13 @@ static int GetDropdownSelectedIndex(int ctlId) {
     return (int)g_appLanguage;
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
     return (int)g_imagePreviewQuality;
+  if (ctlId == IDC_QUICK_PASTE_COMBO) {
+    for (int i = 0; i < QUICK_PASTE_MOD_COUNT; ++i) {
+      if (g_quickPasteModValues[i] == g_quickPasteModifiers)
+        return i;
+    }
+    return 0;
+  }
   return 0;
 }
 
@@ -1023,6 +1050,9 @@ static void ShowDropdownPopup(HWND hwndBtn, int ctlId) {
       s_previewItems[i] = T(g_previewItemIds[i]);
     g_activeDropdown.items = s_previewItems;
     g_activeDropdown.itemCount = 4;
+  } else if (ctlId == IDC_QUICK_PASTE_COMBO) {
+    g_activeDropdown.items = g_quickPasteModItems;
+    g_activeDropdown.itemCount = QUICK_PASTE_MOD_COUNT;
   }
   g_activeDropdown.selectedIndex = GetDropdownSelectedIndex(ctlId);
   g_dropdownHoverIndex = -1;
@@ -1360,7 +1390,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (lpDIS->CtlID == IDC_THEME_COMBO ||
         lpDIS->CtlID == IDC_THEME_STYLE_COMBO ||
         lpDIS->CtlID == IDC_LANGUAGE_COMBO ||
-        lpDIS->CtlID == IDC_IMAGE_PREVIEW_COMBO) {
+        lpDIS->CtlID == IDC_IMAGE_PREVIEW_COMBO ||
+        lpDIS->CtlID == IDC_QUICK_PASTE_COMBO) {
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
       FillRect(lpDIS->hDC, &rc, hBgBr);
       DeleteObject(hBgBr);
@@ -1442,14 +1473,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
     TrackMouseEvent(&tme);
 
-    // 关闭按钮悬浮检测
-    bool overCloseBtn = (pt.x >= SETTINGS_WIDTH - 46 && pt.y < SETTINGS_TITLEBAR_H);
-    if (overCloseBtn != g_settingsCloseHover) {
-      g_settingsCloseHover = overCloseBtn;
-      if (g_hwndSettingsClose)
-        InvalidateRect(g_hwndSettingsClose, NULL, TRUE);
-    }
-
     // 数据目录路径悬浮检测
     if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
       bool overPath = IsOverDataDirPath(pt);
@@ -1473,11 +1496,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       RECT rcSb = {0, SETTINGS_TITLEBAR_H, SIDEBAR_W,
                    SETTINGS_TITLEBAR_H + SIDEBAR_COUNT * SIDEBAR_ITEM_H};
       InvalidateRect(hwnd, &rcSb, FALSE);
-    }
-    if (g_settingsCloseHover) {
-      g_settingsCloseHover = false;
-      if (g_hwndSettingsClose)
-        InvalidateRect(g_hwndSettingsClose, NULL, TRUE);
     }
     if (g_dataDirHovered) {
       g_dataDirHovered = false;
@@ -1638,10 +1656,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             L"立即清理",
             L"取消",
             424,
-            246,
-            {14, 78, 410, 180},
+            236,
+            {14, 78, 410, 170},
             true,
-            false};
+            false,
+            true};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           ClearNonFavoriteHistory();
           g_dataSizeText = BuildDataSizeText();
@@ -1660,10 +1679,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             L"立即清理",
             L"取消",
             424,
-            246,
-            {14, 78, 410, 180},
+            236,
+            {14, 78, 410, 170},
             true,
-            false};
+            false,
+            true};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           extern void CleanInvalidImageRecords();
           CleanInvalidImageRecords();
@@ -1689,6 +1709,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       }
       if (wID == IDC_LANGUAGE_COMBO) {
         ShowDropdownPopup(g_hwndLanguageCombo, IDC_LANGUAGE_COMBO);
+        return 0;
+      }
+      if (wID == IDC_QUICK_PASTE_COMBO) {
+        ShowDropdownPopup(g_hwndQuickPasteCombo, IDC_QUICK_PASTE_COMBO);
         return 0;
       }
     }
@@ -1763,6 +1787,23 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       return 0;
     }
 
+    // 快捷粘贴修饰键选择
+    if (wID == IDC_QUICK_PASTE_COMBO && wNotify == CBN_SELCHANGE) {
+      int sel = g_activeDropdown.selectedIndex;
+      if (sel >= 0 && sel < QUICK_PASTE_MOD_COUNT) {
+        g_quickPasteModifiers = g_quickPasteModValues[sel];
+        SaveHotkeySettings();
+        // 重新注册快捷粘贴热键
+        extern HWND g_hwndMain;
+        if (g_hwndMain && g_isQuickPasteEnabled) {
+          UnregisterQuickPasteHotkeys(g_hwndMain);
+          RegisterQuickPasteHotkeys(g_hwndMain);
+        }
+        if (g_hwndQuickPasteCombo)
+          InvalidateRect(g_hwndQuickPasteCombo, NULL, TRUE);
+      }
+      return 0;
+    }
     // 快捷键编辑框焦点
     if (wID == IDC_HOTKEY_EDIT) {
       if (wNotify == EN_SETFOCUS) {
@@ -1876,6 +1917,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     }
     g_isSettingsDialogOpen = false;
     g_hwndSettingsDlg = NULL;
+    g_settingsCloseHover = false;
+    g_hwndSettingsClose = NULL;
     return 0;
   }
 
@@ -1993,6 +2036,29 @@ static HWND CreateHotkeyEditBox(HWND parent, int rowIndex, int ctlId) {
                          GetModuleHandleW(NULL), NULL);
 }
 
+// 关闭按钮子类化窗口过程 - 处理悬浮效果
+LRESULT CALLBACK SettingsCloseBtnProc(HWND hwnd, UINT message, WPARAM wParam,
+                                      LPARAM lParam) {
+  switch (message) {
+  case WM_MOUSEMOVE: {
+    TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
+    TrackMouseEvent(&tme);
+    if (!g_settingsCloseHover) {
+      g_settingsCloseHover = true;
+      InvalidateRect(hwnd, NULL, TRUE);
+    }
+    break;
+  }
+  case WM_MOUSELEAVE:
+    if (g_settingsCloseHover) {
+      g_settingsCloseHover = false;
+      InvalidateRect(hwnd, NULL, TRUE);
+    }
+    break;
+  }
+  return CallWindowProcW(g_oldSettingsCloseProc, hwnd, message, wParam, lParam);
+}
+
 // ==================== 显示设置对话框 ====================
 
 void ShowSettingsDialog(HWND hwndParent) {
@@ -2052,6 +2118,8 @@ void ShowSettingsDialog(HWND hwndParent) {
       CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
                       SETTINGS_WIDTH - 46, 0, 46, SETTINGS_TITLEBAR_H, hwndDlg,
                       (HMENU)IDC_SETTINGS_CLOSE, GetModuleHandleW(NULL), NULL);
+  g_oldSettingsCloseProc = (WNDPROC)SetWindowLongPtrW(
+      g_hwndSettingsClose, GWLP_WNDPROC, (LONG_PTR)SettingsCloseBtnProc);
 
   // ===== 通用分类控件 =====
   g_hwndToggleNotification = CreateToggle(hwndDlg, 0, IDC_NOTIFICATION_CHECK);
@@ -2142,6 +2210,10 @@ void ShowSettingsDialog(HWND hwndParent) {
   SetWindowTextW(g_hwndSearchHotkeyEdit, shText.c_str());
   SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
   SyncHotkeyEditTextRect(g_hwndSearchHotkeyEdit);
+
+  // 快捷粘贴修饰键下拉选择器
+  g_hwndQuickPasteCombo =
+      CreateSettingsCombo(hwndDlg, 2, IDC_QUICK_PASTE_COMBO, 120);
 
   // 初始显示通用分类
   g_currentSettingsTab = 0;

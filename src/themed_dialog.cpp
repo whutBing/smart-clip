@@ -728,6 +728,26 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
                 1.0f);
         g.DrawPath(&pen, &cardPath);
       }
+
+      // 绘制警告图标（感叹号圆圈）
+      if (config->showWarningIcon) {
+        int iconCx = config->cardRect.left + 40;
+        int iconCy = config->cardRect.top + 44;
+        int iconR = 14;
+        // 圆圈背景（橙黄色）
+        COLORREF iconBg = RGB(255, 193, 7);
+        SolidBrush iconBrush(Color(255, GetRValue(iconBg),
+                                   GetGValue(iconBg), GetBValue(iconBg)));
+        g.FillEllipse(&iconBrush, iconCx - iconR, iconCy - iconR,
+                      iconR * 2, iconR * 2);
+        // 感叹号（白色）
+        SolidBrush exclBrush(Color(255, 255, 255, 255));
+        // 竖线
+        g.FillRectangle(&exclBrush, (REAL)(iconCx - 1.5f), (REAL)(iconCy - 6),
+                        (REAL)3, (REAL)9);
+        // 点
+        g.FillEllipse(&exclBrush, iconCx - 2, iconCy + 4, 4, 4);
+      }
     }
     EndPaint(hwnd, &ps);
     return 0;
@@ -793,10 +813,17 @@ HWND CreateThemedDialog(HWND hwndParent, HINSTANCE hInst,
   CreateWindowExW(0, L"STATIC", config->subtitle, WS_CHILD | WS_VISIBLE, 22, 46,
                   320, 18, hDlg, (HMENU)IDC_THEMED_DIALOG_SUBTITLE, hInst, NULL);
   if (config->bodyText && config->bodyText[0] != L'\0') {
+    int bodyX = config->cardRect.left + 20;
+    int bodyW = config->cardRect.right - config->cardRect.left - 40;
+    // 显示警告图标时，正文右移给图标让出空间
+    if (config->showWarningIcon) {
+      bodyX += 40;
+      bodyW -= 40;
+    }
     CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", config->bodyText,
-                    WS_CHILD | WS_VISIBLE, config->cardRect.left + 20,
+                    WS_CHILD | WS_VISIBLE, bodyX,
                     config->cardRect.top + 24,
-                    config->cardRect.right - config->cardRect.left - 40, 52, hDlg,
+                    bodyW, 52, hDlg,
                     (HMENU)IDC_THEMED_DIALOG_BODY, hInst, NULL);
   }
   g_themedDialogCloseHover = false;
@@ -876,8 +903,9 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   config.dlgW = dialog.dlgW > 0 ? dialog.dlgW : 424;
   config.dlgH = dialog.dlgH > 0 ? dialog.dlgH : 246;
   config.closeBtnId = closeBtnId;
-  config.bodyFontDelta = 0;
-  config.titleFontDelta = 0;
+  config.bodyFontDelta = 4;   // 说明文字增大4px
+  config.titleFontDelta = -2; // 标题字体减小2px
+  config.showWarningIcon = dialog.showWarningIcon;
   if (dialog.cardRect.right > dialog.cardRect.left &&
       dialog.cardRect.bottom > dialog.cardRect.top) {
     config.cardRect = dialog.cardRect;

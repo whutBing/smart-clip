@@ -75,3 +75,11 @@ $RECYCLE.BIN/
 # deploy/          # 打包后的发布目录
 # test_data/       # 测试用的临时数据
 nul
+
+# MSIX 打包产物
+msix_package/
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.pfx

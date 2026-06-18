@@ -26,6 +26,7 @@ struct ThemedDialogConfig {
   bool (*onOk)(HWND, void *);
   bool (*onMessage)(HWND, UINT, WPARAM, LPARAM, void *, LRESULT *);
   bool primaryButtonDanger;
+  bool showWarningIcon;
   HFONT hFont;
   HFONT hTitleFont;
   HFONT hCloseFont;
@@ -43,6 +44,7 @@ struct ThemedConfirmDialogConfig {
   RECT cardRect;
   bool danger;
   bool drawCardBackground;
+  bool showWarningIcon;
 };
 
 struct PasswordToggleBinding {

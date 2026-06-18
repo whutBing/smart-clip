@@ -107,8 +107,6 @@ HWND g_hwndFilterFile = NULL;
 HWND g_hwndFilterFavorite = NULL;
 // 剪贴板恢复标志
 bool g_isRestoringClipboard = false;
-// 剪贴板恢复标志
-static bool g_isTransferStationPasting = false;
 // 主窗口句柄
 extern HWND g_hwndMain;
 HWND g_hwndMain;
@@ -169,6 +167,7 @@ static std::wstring g_listBoxTooltipText; // 跟踪 Tooltip 文本缓存
 bool g_isDragging = false;       // 是否正在拖拽
 POINT g_dragStartPoint = {0, 0}; // 拖拽起始点
 int g_dragItemIndex = -1;        // 正在拖拽的项目索引
+bool g_dragOccurred = false;     // 本次按下是否发生了拖拽
 #define DRAG_THRESHOLD 5         // 拖拽阈值（像素）
 
 // IDropSource 实现
@@ -573,14 +572,14 @@ static std::wstring GetQuickPasteModifierText() {
   }
 }
 
-static void RegisterQuickPasteHotkeys(HWND hwnd) {
+void RegisterQuickPasteHotkeys(HWND hwnd) {
   for (int i = 0; i < 10; ++i) {
     UINT vk = (i == 9) ? '0' : (UINT)('1' + i);
     RegisterHotKey(hwnd, ID_HOTKEY_PASTE_1 + i, g_quickPasteModifiers, vk);
   }
 }
 
-static void UnregisterQuickPasteHotkeys(HWND hwnd) {
+void UnregisterQuickPasteHotkeys(HWND hwnd) {
   for (int i = 0; i < 10; ++i) {
     ::UnregisterHotKey(hwnd, ID_HOTKEY_PASTE_1 + i);
   }
@@ -2112,7 +2111,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       SetCursor(LoadCursor(NULL, IDC_ARROW));
       return TRUE;
     }
-    if (g_isHoveringIcon) {
+    if (g_isHoveringIcon || g_isHoveringFolder) {
       SetCursor(LoadCursor(NULL, IDC_HAND));
       return TRUE;
     }
@@ -2163,11 +2162,11 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     g_isHoveringImage = false;
     g_hoverImageIndex = -1;
 
-    // 重置文件夹悬浮状态
+    // 保存文件夹悬浮旧状态（不在开头重置，避免 GetFileAttributesW
+    // 瞬态失败导致闪烁）
     bool wasHoveringFolder = g_isHoveringFolder;
     int oldFolderHoverIndex = g_hoverFolderIndex;
-    g_isHoveringFolder = false;
-    g_hoverFolderIndex = -1;
+    bool folderHoverFound = false;
 
     if (HIWORD(index) == 0) {
       index = LOWORD(index);
@@ -2334,25 +2333,46 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             }
           }
 
-          // 文件夹名称悬浮检测
-          if (!iconFound && !g_isHoveringImage && item.type == TYPE_FILE) {
-            DWORD attrs = GetFileAttributesW(item.content.c_str());
-            bool isFolder = (attrs != INVALID_FILE_ATTRIBUTES &&
-                             (attrs & FILE_ATTRIBUTE_DIRECTORY));
-            if (isFolder) {
-              // 文件夹文本区域：图标后面（与绘制代码一致）
-              RECT rcFolderText;
-              rcFolderText.left = rcItem.left + 10 + 22;
-              rcFolderText.top = rcItem.top + 2;
-              rcFolderText.bottom = rcFolderText.top + 22;
-              rcFolderText.right = rcItem.right - 10;
-              if (PtInRect(&rcFolderText, pt)) {
-                g_isHoveringFolder = true;
-                g_hoverFolderIndex = index;
-                if (!g_folderUnderlineAnimating) {
-                  g_folderUnderlineAnimating = true;
-                  g_folderUnderlineProgress = 0.0f;
-                  SetTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER, 16, NULL);
+          // 文件/文件夹名称悬浮检测（仅检测文字区域）
+          // 同时检查 TYPE_FILE 和 TYPE_TEXT，因为文件路径可能作为文本复制
+          if (!iconFound && !g_isHoveringImage &&
+              (item.type == TYPE_FILE || item.type == TYPE_TEXT)) {
+            // 如果已经在悬浮当前项，保持状态（避免 GetFileAttributesW
+            // 瞬态失败导致闪烁）
+            if (g_isHoveringFolder && g_hoverFolderIndex == index) {
+              RECT rcTextApprox;
+              rcTextApprox.top = rcItem.top + 2 + 20;
+              rcTextApprox.bottom = rcTextApprox.top + 22;
+              rcTextApprox.left = rcItem.left + 10;
+              rcTextApprox.right = rcItem.right - 10;
+              if (PtInRect(&rcTextApprox, pt)) {
+                folderHoverFound = true;
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+              }
+            } else {
+              DWORD attrs = GetFileAttributesW(item.content.c_str());
+              if (attrs != INVALID_FILE_ATTRIBUTES) {
+                bool isFolder = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                // 文字区域：与绘制代码保持一致
+                RECT rcFolderText;
+                rcFolderText.top = rcItem.top + 2 + 20;
+                rcFolderText.bottom = rcFolderText.top + 22;
+                if (isFolder) {
+                  rcFolderText.left = rcItem.left + 10 + 22;
+                } else {
+                  rcFolderText.left = rcItem.left + 10;
+                }
+                rcFolderText.right = rcItem.right - 10;
+                if (PtInRect(&rcFolderText, pt)) {
+                  folderHoverFound = true;
+                  g_isHoveringFolder = true;
+                  g_hoverFolderIndex = index;
+                  SetCursor(LoadCursor(NULL, IDC_HAND));
+                  if (!g_folderUnderlineAnimating) {
+                    g_folderUnderlineAnimating = true;
+                    g_folderUnderlineProgress = 0.0f;
+                    SetTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER, 16, NULL);
+                  }
                 }
               }
             }
@@ -2370,6 +2390,12 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_isHoveringIcon = false;
       g_hoverIconIndex = -1;
       HideListBoxTrackingTooltip();
+    }
+
+    // 如果本轮未检测到文件夹悬浮，重置状态
+    if (!folderHoverFound) {
+      g_isHoveringFolder = false;
+      g_hoverFolderIndex = -1;
     }
 
     // 如果悬浮状态变化，重绘相关项目
@@ -2417,10 +2443,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     g_isHoveringIcon = false;
     g_hoverIconIndex = -1;
 
-    // 重置文件夹悬浮状态
-    int oldFolderIndex = g_hoverFolderIndex;
-    g_isHoveringFolder = false;
-    g_hoverFolderIndex = -1;
+    // 注意：不重置文件夹悬浮状态，保留给 WM_LBUTTONUP 使用
 
     HideListBoxTrackingTooltip();
     // 重绘之前悬浮的项目
@@ -2429,15 +2452,11 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       SendMessageW(hwnd, LB_GETITEMRECT, oldHoverIndex, (LPARAM)&rcOld);
       InvalidateRect(hwnd, &rcOld, FALSE);
     }
-    if (oldFolderIndex >= 0) {
-      RECT rcOld;
-      SendMessageW(hwnd, LB_GETITEMRECT, oldFolderIndex, (LPARAM)&rcOld);
-      InvalidateRect(hwnd, &rcOld, FALSE);
-    }
   }
 
   // 处理鼠标按下 - 记录拖拽起始点
   if (message == WM_LBUTTONDOWN) {
+    g_dragOccurred = false; // 重置拖拽标志
     POINT pt;
     pt.x = GET_X_LPARAM(lParam);
     pt.y = GET_Y_LPARAM(lParam);
@@ -2489,12 +2508,22 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             } else if (!item.imageFileName.empty()) {
               imagePath = GetImagesPath() + L"\\" + item.imageFileName;
             }
+
+            bool canDrag = false;
             if (!imagePath.empty()) {
               DWORD attrs = GetFileAttributesW(imagePath.c_str());
               if (attrs != INVALID_FILE_ATTRIBUTES) {
-                g_dragStartPoint = pt;
-                g_dragItemIndex = index;
+                canDrag = true;
               }
+            }
+            // 如果文件不存在但有内存图像数据，也允许拖拽（后续创建临时文件）
+            if (!canDrag && !item.imageData.empty()) {
+              canDrag = true;
+            }
+
+            if (canDrag) {
+              g_dragStartPoint = pt;
+              g_dragItemIndex = index;
             }
           }
         }
@@ -2519,6 +2548,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
           const ClipboardItem &item = g_history[actualIndex];
           std::wstring dragFilePath;
+          bool isTempFile = false;
 
           // 获取拖拽文件路径
           if (item.type == TYPE_FILE) {
@@ -2533,6 +2563,26 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             } else if (!item.imageFileName.empty()) {
               dragFilePath = GetImagesPath() + L"\\" + item.imageFileName;
             }
+            // 如果文件不存在但有内存图像数据，创建临时文件用于拖拽
+            if (!dragFilePath.empty()) {
+              DWORD attrs = GetFileAttributesW(dragFilePath.c_str());
+              if (attrs == INVALID_FILE_ATTRIBUTES && !item.imageData.empty()) {
+                std::wstring tempPath = SaveImageToTempFile(
+                    item.imageData, item.thumbWidth, item.thumbHeight);
+                if (!tempPath.empty()) {
+                  dragFilePath = tempPath;
+                  isTempFile = true;
+                } else {
+                  dragFilePath.clear();
+                }
+              }
+            } else if (!item.imageData.empty()) {
+              dragFilePath = SaveImageToTempFile(
+                  item.imageData, item.thumbWidth, item.thumbHeight);
+              if (!dragFilePath.empty()) {
+                isTempFile = true;
+              }
+            }
           }
 
           if (!dragFilePath.empty()) {
@@ -2545,6 +2595,9 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               // 创建拖放源
               CDropSource *pDropSource = new CDropSource();
 
+              // 标记拖拽已发生
+              g_dragOccurred = true;
+
               // 执行拖放
               DWORD dwEffect = 0;
               DoDragDrop(pDataObject, pDropSource,
@@ -2552,6 +2605,11 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
 
               pDropSource->Release();
               pDataObject->Release();
+            }
+
+            // 清理临时文件
+            if (isTempFile) {
+              DeleteFileW(dragFilePath.c_str());
             }
 
             // 重置拖拽状态
@@ -2575,17 +2633,26 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     }
     g_dragItemIndex = -1;
 
-    // 文件夹名称点击 - 在资源管理器中打开
-    if (g_isHoveringFolder && g_hoverFolderIndex >= 0) {
+    // 文件夹名称点击 - 在资源管理器中打开（拖拽后不触发）
+    if (g_isHoveringFolder && g_hoverFolderIndex >= 0 && !g_dragOccurred) {
       int displayIndex = g_hoverFolderIndex;
       if (displayIndex >= 0 && displayIndex < (int)g_displayIndexMap.size()) {
         int actualIndex = g_displayIndexMap[displayIndex];
         if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
           const ClipboardItem &item = g_history[actualIndex];
-          if (item.type == TYPE_FILE) {
-            std::wstring cmd = L"/select,\"" + item.content + L"\"";
-            ShellExecuteW(NULL, NULL, L"explorer.exe", cmd.c_str(), NULL,
-                          SW_SHOWNORMAL);
+          if (item.type == TYPE_FILE || item.type == TYPE_TEXT) {
+            DWORD attrs = GetFileAttributesW(item.content.c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES &&
+                (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+              // 文件夹：直接打开
+              ShellExecuteW(NULL, L"explore", item.content.c_str(), NULL, NULL,
+                            SW_SHOWNORMAL);
+            } else {
+              // 文件：打开所在目录并选中
+              std::wstring cmd = L"/select,\"" + item.content + L"\"";
+              ShellExecuteW(NULL, NULL, L"explorer.exe", cmd.c_str(), NULL,
+                            SW_SHOWNORMAL);
+            }
           }
         }
       }
@@ -4624,6 +4691,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 filePath = item.content;
                 DWORD attrs = GetFileAttributesW(filePath.c_str());
                 fileExists = (attrs != INVALID_FILE_ATTRIBUTES);
+              } else if (item.type == TYPE_TEXT) {
+                // 文本类型可能是文件路径，检查是否存在
+                if (GetLinkType(item.content) == LINK_FILE_PATH) {
+                  filePath = item.content;
+                  DWORD attrs = GetFileAttributesW(filePath.c_str());
+                  fileExists = (attrs != INVALID_FILE_ATTRIBUTES);
+                }
               } else if (item.type == TYPE_IMAGE &&
                          !item.imageFilePath.empty()) {
                 filePath = item.imageFilePath;
@@ -4631,9 +4705,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 fileExists = (attrs != INVALID_FILE_ATTRIBUTES);
               }
 
-              // 检查是否为文件夹类型
+              // 检查是否为文件夹类型（同时检查 TYPE_FILE 和 TYPE_TEXT，
+              // 因为文件路径可能作为文本复制）
               bool isFolder = false;
-              if (item.type == TYPE_FILE && fileExists) {
+              if ((item.type == TYPE_FILE || item.type == TYPE_TEXT) &&
+                  fileExists) {
                 DWORD attrs = GetFileAttributesW(item.content.c_str());
                 if (attrs != INVALID_FILE_ATTRIBUTES &&
                     (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -4643,7 +4719,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
               // 文件不存在的情况
               if (!fileExists &&
-                  (item.type == TYPE_FILE ||
+                  (item.type == TYPE_FILE || item.type == TYPE_TEXT ||
                    (item.type == TYPE_IMAGE && !item.imageFilePath.empty()))) {
                 // 显示 noexist.png 图标
                 if (g_imgNoExistIcon) {
@@ -4685,31 +4761,52 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 RECT rcPathText = rcText;
                 rcPathText.right -= 20;
 
-                SetTextColor(hdc, GetTextColor());
+                // 文件/文件夹悬浮时字体变蓝动画
+                COLORREF folderTextColor = GetTextColor();
+                if (g_isHoveringFolder &&
+                    (int)lpDIS->itemID == g_hoverFolderIndex &&
+                    g_folderUnderlineProgress > 0.0f) {
+                  COLORREF blueColor = RGB(0, 120, 215);
+                  int normalR = GetRValue(folderTextColor);
+                  int normalG = GetGValue(folderTextColor);
+                  int normalB = GetBValue(folderTextColor);
+                  int r = normalR + (int)((GetRValue(blueColor) - normalR) *
+                                          g_folderUnderlineProgress);
+                  int g = normalG + (int)((GetGValue(blueColor) - normalG) *
+                                          g_folderUnderlineProgress);
+                  int b = normalB + (int)((GetBValue(blueColor) - normalB) *
+                                          g_folderUnderlineProgress);
+                  folderTextColor = RGB(r, g, b);
+                }
+                SetTextColor(hdc, folderTextColor);
                 DrawTextW(hdc, text.c_str(), -1, &rcPathText,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                               DT_END_ELLIPSIS | DT_NOPREFIX);
                 DrawDetectedColorDot(hdc, rcPathText, text);
-
-                // 文件夹悬浮下划线动画
-                if (g_isHoveringFolder &&
-                    (int)lpDIS->itemID == g_hoverFolderIndex &&
-                    g_folderUnderlineProgress > 0.0f) {
-                  SIZE textSize = {};
-                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
-                                        &textSize);
-                  int underlineWidth =
-                      (int)(textSize.cx * g_folderUnderlineProgress);
-                  int underlineY = rcPathText.bottom - 2;
-                  HPEN hPen = CreatePen(PS_SOLID, 1, GetAccentColor());
-                  HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-                  MoveToEx(hdc, rcPathText.left, underlineY, NULL);
-                  LineTo(hdc, rcPathText.left + underlineWidth, underlineY);
-                  SelectObject(hdc, hOldPen);
-                  DeleteObject(hPen);
-                }
               } else {
                 // 普通文本或文件
+                // 文件类型（非文件夹）悬浮时字体变蓝动画
+                // 同时检查 TYPE_FILE 和 TYPE_TEXT，因为文件路径可能作为文本复制
+                if ((item.type == TYPE_FILE || item.type == TYPE_TEXT) &&
+                    g_isHoveringFolder &&
+                    (int)lpDIS->itemID == g_hoverFolderIndex &&
+                    g_folderUnderlineProgress > 0.0f) {
+                  COLORREF normalColor = GetTextColor();
+                  COLORREF blueColor = RGB(0, 120, 215);
+                  int r =
+                      GetRValue(normalColor) +
+                      (int)((GetRValue(blueColor) - GetRValue(normalColor)) *
+                            g_folderUnderlineProgress);
+                  int g =
+                      GetGValue(normalColor) +
+                      (int)((GetGValue(blueColor) - GetGValue(normalColor)) *
+                            g_folderUnderlineProgress);
+                  int b =
+                      GetBValue(normalColor) +
+                      (int)((GetBValue(blueColor) - GetBValue(normalColor)) *
+                            g_folderUnderlineProgress);
+                  SetTextColor(hdc, RGB(r, g, b));
+                }
                 DrawTextW(hdc, text.c_str(), -1, &rcText,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                               DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -5374,7 +5471,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             246,
             {14, 78, 410, 180},
             true,
-            false};
+            false,
+            true};
         if (ShowThemedConfirmDialog(hwnd, dialog)) {
           // 按索引从大到小排序，避免删除时索引变化
           std::sort(g_selectedItems.rbegin(), g_selectedItems.rend());
@@ -5419,7 +5517,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               246,
               {14, 78, 410, 180},
               true,
-              false};
+              false,
+              true};
           shouldDelete = ShowThemedConfirmDialog(hwnd, dialog);
         }
 
@@ -5610,10 +5709,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
         // 批量加入标签（二级菜单）
         HMENU hTagSubMenu = CreatePopupMenu();
+        // 收集标签颜色位图，用于后续释放
+        std::vector<HBITMAP> batchTagColorBitmaps;
         if (!g_tags.empty()) {
           for (const auto &tag : g_tags) {
             AppendMenuW(hTagSubMenu, MF_STRING, IDM_BATCH_ADD_TAG + tag.id,
                         tag.name.c_str());
+            // 为标签菜单项添加颜色方块位图
+            HBITMAP hColorBmp = CreateMenuColorBitmap(tag.color);
+            batchTagColorBitmaps.push_back(hColorBmp);
+            MENUITEMINFOW tagMii = {};
+            tagMii.cbSize = sizeof(MENUITEMINFOW);
+            tagMii.fMask = MIIM_BITMAP;
+            tagMii.hbmpItem = hColorBmp;
+            SetMenuItemInfoW(hTagSubMenu, IDM_BATCH_ADD_TAG + tag.id, FALSE,
+                             &tagMii);
           }
         } else {
           AppendMenuW(hTagSubMenu, MF_GRAYED, 0, L"无可用标签");
@@ -5641,6 +5751,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 释放位图资源
         DeleteObject(hDeleteIcon);
         DeleteObject(hTagIcon);
+        // 释放批量标签颜色位图
+        for (HBITMAP hBmp : batchTagColorBitmaps) {
+          DeleteObject(hBmp);
+        }
       } else if (g_contextMenuIndex >= 0 &&
                  g_contextMenuIndex < (int)g_displayIndexMap.size()) {
         int actualIndex = g_displayIndexMap[g_contextMenuIndex]; // 获取实际索引
@@ -5678,6 +5792,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
         // 标签子菜单
         HMENU hTagMenu = CreatePopupMenu();
+        // 收集标签颜色位图，用于后续释放
+        std::vector<HBITMAP> tagColorBitmaps;
         for (const auto &tag : g_tags) {
           UINT flags = MF_STRING;
           // 如果项目已有该标签，显示勾选
@@ -5685,6 +5801,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
             flags |= MF_CHECKED;
           }
           AppendMenuW(hTagMenu, flags, IDM_TAG_BASE + tag.id, tag.name.c_str());
+          // 为标签菜单项添加颜色方块位图
+          HBITMAP hColorBmp = CreateMenuColorBitmap(tag.color);
+          tagColorBitmaps.push_back(hColorBmp);
+          MENUITEMINFOW tagMii = {};
+          tagMii.cbSize = sizeof(MENUITEMINFOW);
+          tagMii.fMask = MIIM_BITMAP;
+          tagMii.hbmpItem = hColorBmp;
+          SetMenuItemInfoW(hTagMenu, IDM_TAG_BASE + tag.id, FALSE, &tagMii);
         }
 
         // 添加标签子菜单到主菜单
@@ -5739,6 +5863,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         DeleteObject(hFavoriteIcon);
         DeleteObject(hDeleteIcon);
         DeleteObject(hOpenLocationIcon);
+        // 释放标签颜色位图
+        for (HBITMAP hBmp : tagColorBitmaps) {
+          DeleteObject(hBmp);
+        }
       }
       DestroyMenu(hMenu);
     }
@@ -5915,8 +6043,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   }
 
   case WM_CLIPBOARDUPDATE: {
-    if (!g_isRestoringClipboard && !g_isTransferStationPasting &&
-        OpenClipboard(NULL)) {
+    if (!g_isRestoringClipboard && OpenClipboard(NULL)) {
       // 优先处理文件路径
       if (IsClipboardFormatAvailable(CF_HDROP)) {
         HGLOBAL hGlobal = GetClipboardData(CF_HDROP);

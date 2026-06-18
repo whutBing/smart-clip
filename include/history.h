@@ -78,6 +78,7 @@ std::wstring GetImagesPath();  // 获取图片存储目录
 std::wstring GetThumbsPath();  // 获取缩略图存储目录
 std::wstring GenerateImageFileName();  // 生成唯一图片文件名
 bool SaveOriginalImage(const std::vector<BYTE>& imageData, int width, int height, const std::wstring& fileName);  // 保存原图
+std::wstring SaveImageToTempFile(const std::vector<BYTE>& imageData, int width, int height);  // 保存图片到临时文件，返回文件路径
 bool GenerateThumbnail(const std::vector<BYTE>& imageData, int width, int height, std::vector<BYTE>& thumbData, int& thumbWidth, int& thumbHeight, int maxSize = 128);  // 生成缩略图
 bool LoadOriginalImage(const std::wstring& fileName, std::vector<BYTE>& imageData, int& width, int& height);  // 加载原图
 
