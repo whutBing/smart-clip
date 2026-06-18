@@ -159,6 +159,10 @@ int g_hoverIconIndex = -1;                // 鼠标悬浮的图标所在项目�
 bool g_isHoveringIcon = false;            // 鼠标是否悬浮在图标上
 int g_hoverImageIndex = -1;               // 鼠标悬浮的图像所在项目索引
 bool g_isHoveringImage = false;           // 鼠标是否悬浮在图像上
+int g_hoverFolderIndex = -1;              // 鼠标悬浮的文件夹名称索引
+bool g_isHoveringFolder = false;          // 鼠标是否悬浮在文件夹名称上
+float g_folderUnderlineProgress = 0.0f;   // 文件夹下划线动画进度 0.0-1.0
+bool g_folderUnderlineAnimating = false;  // 是否正在下划线动画
 static std::wstring g_listBoxTooltipText; // 跟踪 Tooltip 文本缓存
 
 // 文件拖放相关
@@ -480,6 +484,7 @@ Gdiplus::Image *g_imgNoExistIcon = NULL; // 文件不存在图标
 // 置顶按钮波浪动画
 #define ID_TOPMOST_ANIM_TIMER 201
 #define ID_BATCH_EDIT_ANIM_TIMER 202
+#define ID_FOLDER_UNDERLINE_TIMER 203
 float g_topmostAnimProgress = 0.0f; // 动画进度 0.0-1.0
 bool g_topmostAnimating = false;    // 是否正在动画
 bool g_topmostAnimDirection = true; // true=选中动画, false=取消选中动画
@@ -2019,6 +2024,33 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     return 0;
   }
 
+  // 文件夹下划线动画定时器
+  if (message == WM_TIMER && wParam == ID_FOLDER_UNDERLINE_TIMER) {
+    if (g_folderUnderlineAnimating) {
+      if (g_isHoveringFolder) {
+        g_folderUnderlineProgress += 0.08f;
+        if (g_folderUnderlineProgress >= 1.0f) {
+          g_folderUnderlineProgress = 1.0f;
+          g_folderUnderlineAnimating = false;
+          KillTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER);
+        }
+      } else {
+        g_folderUnderlineProgress -= 0.08f;
+        if (g_folderUnderlineProgress <= 0.0f) {
+          g_folderUnderlineProgress = 0.0f;
+          g_folderUnderlineAnimating = false;
+          KillTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER);
+        }
+      }
+      if (g_hoverFolderIndex >= 0) {
+        RECT rc;
+        SendMessageW(hwnd, LB_GETITEMRECT, g_hoverFolderIndex, (LPARAM)&rc);
+        InvalidateRect(hwnd, &rc, FALSE);
+      }
+    }
+    return 0;
+  }
+
   if (message == WM_PAINT) {
     PAINTSTRUCT ps = {};
     HDC hdc = BeginPaint(hwnd, &ps);
@@ -2130,6 +2162,12 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     // 重置图像悬浮状态
     g_isHoveringImage = false;
     g_hoverImageIndex = -1;
+
+    // 重置文件夹悬浮状态
+    bool wasHoveringFolder = g_isHoveringFolder;
+    int oldFolderHoverIndex = g_hoverFolderIndex;
+    g_isHoveringFolder = false;
+    g_hoverFolderIndex = -1;
 
     if (HIWORD(index) == 0) {
       index = LOWORD(index);
@@ -2295,6 +2333,30 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
               }
             }
           }
+
+          // 文件夹名称悬浮检测
+          if (!iconFound && !g_isHoveringImage && item.type == TYPE_FILE) {
+            DWORD attrs = GetFileAttributesW(item.content.c_str());
+            bool isFolder = (attrs != INVALID_FILE_ATTRIBUTES &&
+                             (attrs & FILE_ATTRIBUTE_DIRECTORY));
+            if (isFolder) {
+              // 文件夹文本区域：图标后面（与绘制代码一致）
+              RECT rcFolderText;
+              rcFolderText.left = rcItem.left + 10 + 22;
+              rcFolderText.top = rcItem.top + 2;
+              rcFolderText.bottom = rcFolderText.top + 22;
+              rcFolderText.right = rcItem.right - 10;
+              if (PtInRect(&rcFolderText, pt)) {
+                g_isHoveringFolder = true;
+                g_hoverFolderIndex = index;
+                if (!g_folderUnderlineAnimating) {
+                  g_folderUnderlineAnimating = true;
+                  g_folderUnderlineProgress = 0.0f;
+                  SetTimer(hwnd, ID_FOLDER_UNDERLINE_TIMER, 16, NULL);
+                }
+              }
+            }
+          }
         }
       }
 
@@ -2324,6 +2386,25 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         InvalidateRect(hwnd, &rcNew, FALSE);
       }
     }
+
+    // 文件夹悬浮状态变化时重绘
+    if (wasHoveringFolder != g_isHoveringFolder ||
+        oldFolderHoverIndex != g_hoverFolderIndex) {
+      if (oldFolderHoverIndex >= 0) {
+        RECT rcOld;
+        SendMessageW(hwnd, LB_GETITEMRECT, oldFolderHoverIndex, (LPARAM)&rcOld);
+        InvalidateRect(hwnd, &rcOld, FALSE);
+      }
+      if (g_hoverFolderIndex >= 0 &&
+          g_hoverFolderIndex != oldFolderHoverIndex) {
+        RECT rcNew;
+        SendMessageW(hwnd, LB_GETITEMRECT, g_hoverFolderIndex, (LPARAM)&rcNew);
+        InvalidateRect(hwnd, &rcNew, FALSE);
+      }
+      if (!g_isHoveringFolder && !g_folderUnderlineAnimating) {
+        g_folderUnderlineProgress = 0.0f;
+      }
+    }
   }
 
   // 鼠标离开时隐藏 Tooltip 并重置悬浮状态
@@ -2336,11 +2417,21 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     g_isHoveringIcon = false;
     g_hoverIconIndex = -1;
 
+    // 重置文件夹悬浮状态
+    int oldFolderIndex = g_hoverFolderIndex;
+    g_isHoveringFolder = false;
+    g_hoverFolderIndex = -1;
+
     HideListBoxTrackingTooltip();
     // 重绘之前悬浮的项目
     if (oldHoverIndex >= 0) {
       RECT rcOld;
       SendMessageW(hwnd, LB_GETITEMRECT, oldHoverIndex, (LPARAM)&rcOld);
+      InvalidateRect(hwnd, &rcOld, FALSE);
+    }
+    if (oldFolderIndex >= 0) {
+      RECT rcOld;
+      SendMessageW(hwnd, LB_GETITEMRECT, oldFolderIndex, (LPARAM)&rcOld);
       InvalidateRect(hwnd, &rcOld, FALSE);
     }
   }
@@ -2483,6 +2574,22 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       return 0;
     }
     g_dragItemIndex = -1;
+
+    // 文件夹名称点击 - 在资源管理器中打开
+    if (g_isHoveringFolder && g_hoverFolderIndex >= 0) {
+      int displayIndex = g_hoverFolderIndex;
+      if (displayIndex >= 0 && displayIndex < (int)g_displayIndexMap.size()) {
+        int actualIndex = g_displayIndexMap[displayIndex];
+        if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
+          const ClipboardItem &item = g_history[actualIndex];
+          if (item.type == TYPE_FILE) {
+            std::wstring cmd = L"/select,\"" + item.content + L"\"";
+            ShellExecuteW(NULL, NULL, L"explorer.exe", cmd.c_str(), NULL,
+                          SW_SHOWNORMAL);
+          }
+        }
+      }
+    }
   }
 
   if (message == WM_CAPTURECHANGED) {
@@ -3985,7 +4092,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
 
       bool isHover = false;
       const wchar_t *icon = L"";
-      COLORREF hoverBgColor = RGB(229, 229, 229); // 默认悬浮背景色
+      // 暗黑模式下使用深色悬浮背景，避免浅色图标在浅色背景上看不清
+      COLORREF hoverBgColor =
+          g_isDarkMode ? RGB(60, 60, 60) : RGB(229, 229, 229);
 
       switch (lpDIS->CtlID) {
       case ID_TITLEBAR_TOPMOST:
@@ -4581,6 +4690,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                           DT_LEFT | DT_VCENTER | DT_SINGLELINE |
                               DT_END_ELLIPSIS | DT_NOPREFIX);
                 DrawDetectedColorDot(hdc, rcPathText, text);
+
+                // 文件夹悬浮下划线动画
+                if (g_isHoveringFolder &&
+                    (int)lpDIS->itemID == g_hoverFolderIndex &&
+                    g_folderUnderlineProgress > 0.0f) {
+                  SIZE textSize = {};
+                  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
+                                        &textSize);
+                  int underlineWidth =
+                      (int)(textSize.cx * g_folderUnderlineProgress);
+                  int underlineY = rcPathText.bottom - 2;
+                  HPEN hPen = CreatePen(PS_SOLID, 1, GetAccentColor());
+                  HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+                  MoveToEx(hdc, rcPathText.left, underlineY, NULL);
+                  LineTo(hdc, rcPathText.left + underlineWidth, underlineY);
+                  SelectObject(hdc, hOldPen);
+                  DeleteObject(hPen);
+                }
               } else {
                 // 普通文本或文件
                 DrawTextW(hdc, text.c_str(), -1, &rcText,

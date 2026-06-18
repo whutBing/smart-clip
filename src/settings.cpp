@@ -101,6 +101,7 @@ static float g_dataDirUnderlineProgress = 0.0f;
 
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
+static bool g_settingsCloseHover = false;
 static HWND g_hwndToggleNotification = NULL;
 static HWND g_hwndToggleSmoothScroll = NULL;
 static HWND g_hwndToggleScrollbar = NULL;
@@ -285,7 +286,6 @@ static void SyncSettingsNumberEditTextRect(HWND hwnd) {
   int topPadding = (availableHeight - textHeight) / 2;
   if (topPadding < 2)
     topPadding = 2;
-  topPadding += 1;
   int bottomPadding = availableHeight - textHeight - topPadding;
   if (bottomPadding < 2) {
     bottomPadding = 2;
@@ -1311,21 +1311,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     // 关闭按钮
     if (lpDIS->CtlID == IDC_SETTINGS_CLOSE) {
       COLORREF bg = GetTitlebarBgColor();
-      POINT pt;
-      GetCursorPos(&pt);
-      ScreenToClient(hwnd, &pt);
-      RECT rcBtn;
-      GetWindowRect(lpDIS->hwndItem, &rcBtn);
-      MapWindowPoints(HWND_DESKTOP, hwnd, (LPPOINT)&rcBtn, 2);
-      bool hover = PtInRect(&rcBtn, pt);
-      if (hover)
+      if (g_settingsCloseHover)
         bg = RGB(232, 17, 35);
       HBRUSH hBr = CreateSolidBrush(bg);
       FillRect(lpDIS->hDC, &rc, hBr);
       DeleteObject(hBr);
       SetBkMode(lpDIS->hDC, TRANSPARENT);
       SetTextColor(lpDIS->hDC,
-                   hover ? RGB(255, 255, 255) : GetSettingsTextColor());
+                   g_settingsCloseHover ? RGB(255, 255, 255) : GetSettingsTextColor());
       HFONT hOldF = (HFONT)SelectObject(lpDIS->hDC, g_hCloseIconFont);
       DrawTextW(lpDIS->hDC, L"\uE8BB", -1, &rc,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1449,6 +1442,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
     TrackMouseEvent(&tme);
 
+    // 关闭按钮悬浮检测
+    bool overCloseBtn = (pt.x >= SETTINGS_WIDTH - 46 && pt.y < SETTINGS_TITLEBAR_H);
+    if (overCloseBtn != g_settingsCloseHover) {
+      g_settingsCloseHover = overCloseBtn;
+      if (g_hwndSettingsClose)
+        InvalidateRect(g_hwndSettingsClose, NULL, TRUE);
+    }
+
     // 数据目录路径悬浮检测
     if (g_currentSettingsTab == 2 && pt.x > SIDEBAR_W) {
       bool overPath = IsOverDataDirPath(pt);
@@ -1472,6 +1473,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       RECT rcSb = {0, SETTINGS_TITLEBAR_H, SIDEBAR_W,
                    SETTINGS_TITLEBAR_H + SIDEBAR_COUNT * SIDEBAR_ITEM_H};
       InvalidateRect(hwnd, &rcSb, FALSE);
+    }
+    if (g_settingsCloseHover) {
+      g_settingsCloseHover = false;
+      if (g_hwndSettingsClose)
+        InvalidateRect(g_hwndSettingsClose, NULL, TRUE);
     }
     if (g_dataDirHovered) {
       g_dataDirHovered = false;

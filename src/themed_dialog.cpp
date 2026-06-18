@@ -297,7 +297,7 @@ static void InitThemedDialogFonts(HWND hDlg, ThemedDialogConfig *config) {
   EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
 
   config->hTitleFont = CreateFontW(
-      g_fontSize + 6 + (config ? config->titleFontDelta : 0), 0, 0, 0,
+      g_fontSize + 8 + (config ? config->titleFontDelta : 0), 0, 0, 0,
       FW_SEMIBOLD, FALSE, FALSE, FALSE,
       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
