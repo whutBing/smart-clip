@@ -30,6 +30,9 @@ SHELL := cmd.exe
 CXX     := g++
 WINDRES := windres
 
+# ---- 第三方库 ----
+SQLITE_DIR := third_party/sqlite
+
 # ---- 源文件 ----
 SRCS := \
     $(SRCDIR)/smartclip.cpp         \
@@ -51,25 +54,33 @@ SRCS := \
     $(SRCDIR)/listbox_handler.cpp   \
     $(SRCDIR)/ui_state.cpp
 
+# SQLite amalgamation（C 源码，单独编译）
+SQLITE_SRC := $(SQLITE_DIR)/sqlite3.c
+SQLITE_OBJ := $(BUILDDIR)/sqlite3.o
+
 RC   := $(RESDIR)/resource.rc
 RES  := $(BUILDDIR)/resource.res
-OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SRCS))
-DEPS := $(OBJS:.o=.d)
+OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SRCS)) $(SQLITE_OBJ)
+DEPS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.d,$(SRCS))
 
 # ---- 编译 / 链接选项 ----
-CPPFLAGS := -DUNICODE -D_UNICODE -D_WIN32_IE=0x0500 -I$(INCDIR)
+CPPFLAGS := -DUNICODE -D_UNICODE -D_WIN32_IE=0x0500 -I$(INCDIR) -I$(SQLITE_DIR)
 CXXFLAGS := -std=c++11 -Wall -Wextra -MMD -MP -municode
-LDFLAGS  := -mwindows -municode -static-libgcc -static-libstdc++ -static
+# SQLite 编译选项：线程安全、禁用扩展加载、禁用内存统计以减小体积
+SQLITE_CFLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION \
+                 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 \
+                 -DSQLITE_OMIT_DEPRECATED -Os -DNDEBUG
+LDFLAGS  := -mwindows -municode -static-libgcc -static-libstdc++ -static -s
 LDLIBS   := -luser32 -lgdi32 -lcomctl32 -lpsapi -lshell32 -lwinmm \
             -lole32 -loleaut32 -lgdiplus -ldwmapi -lshlwapi -luxtheme -luuid \
-            -lmsimg32 -lcrypt32 -lruntimeobject
+            -lmsimg32 -lcrypt32 -lruntimeobject -ld2d1 -ldwrite
 
 # ---- 构建模式 (release / debug) ----
 BUILD ?= release
 ifeq ($(BUILD),debug)
     CXXFLAGS += -O0 -g -DDEBUG
 else
-    CXXFLAGS += -O2 -DNDEBUG
+    CXXFLAGS += -Os -DNDEBUG
 endif
 
 # ============================================================
@@ -90,6 +101,11 @@ debug:
 $(TARGET): $(OBJS) $(RES)
 	@echo [LINK] $@
 	@$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# 编译 SQLite amalgamation（C 源码，用 gcc 编译以获得最佳兼容性）
+$(SQLITE_OBJ): $(SQLITE_SRC) | $(BUILDDIR)
+	@echo [CC]   $<
+	@gcc $(SQLITE_CFLAGS) -c $< -o $@
 
 # 编译 .cpp -> build/xxx.o (自动生成头文件依赖 .d)
 $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)

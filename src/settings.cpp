@@ -10,6 +10,7 @@
 #include "version.h"
 #include <algorithm>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <gdiplus.h>
 #include <shlobj.h>
 #include <uxtheme.h>
@@ -33,6 +34,7 @@ extern HWND g_hwndMain;
 #define TOGGLE_THUMB_R 9
 #define SIDEBAR_ITEM_H 44
 #define CATEGORY_HEADER_H 56
+#define BACKUP_HEADER_H 56
 
 // ==================== 颜色辅助 ====================
 inline COLORREF GetSettingsBgColor() { return GetThemeSurfaceAltColor(); }
@@ -52,6 +54,7 @@ bool g_isNotificationEnabled = false;
 bool g_isCollapseAfterPaste = true;
 bool g_isQuickPasteEnabled = true;
 UINT g_quickPasteModifiers = MOD_ALT;
+bool g_allHotkeysEnabled = true; // 托盘快捷键总开关（默认启用）
 bool g_isSmoothScrollEnabled = false;
 bool g_isCustomScrollbarEnabled = true;
 bool g_isColorDotEnabled = true;
@@ -59,6 +62,7 @@ bool g_isTaskbarVisible = true;
 bool g_isStartupEnabled = false;
 ImagePreviewQuality g_imagePreviewQuality = PREVIEW_HD;
 int g_customScrollbarHideDelayMs = 1500;
+int g_maxTextSizeKB = 50; // 默认50KB，超过此大小的文本不记录
 std::wstring g_fontName = L"Microsoft YaHei";
 int g_fontSize = 16;
 int g_fontWeight = FW_NORMAL;
@@ -83,6 +87,10 @@ static bool g_searchHotkeyConflict = false;
 static bool g_dataDirHovered = false;
 static float g_dataDirUnderlineProgress = 0.0f;
 #define ID_DATADIR_UNDERLINE_TIMER 301
+// GitHub 仓库链接悬浮动画
+static bool g_githubHovered = false;
+static float g_githubUnderlineProgress = 0.0f;
+#define ID_GITHUB_UNDERLINE_TIMER 302
 
 // 控件句柄
 static HWND g_hwndSettingsClose = NULL;
@@ -109,6 +117,9 @@ static HWND g_hwndHistoryLimitEdit = NULL;
 static HWND g_hwndSetDataDirBtn = NULL;
 static HWND g_hwndClearNonFavBtn = NULL;
 static HWND g_hwndCleanInvalidImagesBtn = NULL;
+static HWND g_hwndExportDataBtn = NULL;
+static HWND g_hwndImportDataBtn = NULL;
+static HWND g_hwndTextSizeLimitEdit = NULL;
 static std::wstring g_dataSizeText = L"计算中...";
 
 static void UpdateScrollbarSettingsControls();
@@ -129,8 +140,6 @@ static HBRUSH g_hEditBgBrush = NULL;
 static int SDpi(int value) { return ScaleForDpi(value, g_settingsDpi); }
 static UINT SettingsCompactDpi() { return std::min<UINT>(g_settingsDpi, 144); }
 static int SCDpi(int value) { return ScaleForDpi(value, SettingsCompactDpi()); }
-static UINT SettingsMiniDpi() { return std::min<UINT>(g_settingsDpi, 120); }
-static int SMDpi(int value) { return ScaleForDpi(value, SettingsMiniDpi()); }
 static int SettingsWidth() { return SDpi(SETTINGS_WIDTH); }
 static int SettingsHeight() { return SDpi(SETTINGS_HEIGHT); }
 static int SettingsTitlebarH() { return SDpi(SETTINGS_TITLEBAR_H); }
@@ -145,7 +154,11 @@ static int CategoryHeaderH() { return SDpi(CATEGORY_HEADER_H); }
 
 // 获取设置行控件的 Y 坐标
 static int GetRowY(int rowIndex) {
-  return SettingsTitlebarH() + CategoryHeaderH() + rowIndex * RowHeight();
+  int y = SettingsTitlebarH() + CategoryHeaderH() + rowIndex * RowHeight();
+  // data 标签页：导出/导入行（i >= 7）上方有"数据备份"分组标题
+  if (g_currentSettingsTab == 2 && rowIndex >= 7)
+    y += SDpi(BACKUP_HEADER_H);
+  return y;
 }
 
 // 获取控件右对齐 X 坐标
@@ -159,7 +172,7 @@ static bool IsOverDataDirPath(POINT pt) {
 
   int contentLeft = SidebarW() + ContentPadding();
   int contentRight = SettingsWidth() - ContentPadding();
-  int row2Y = GetRowY(3);
+  int row2Y = GetRowY(4);
   RECT rcPath = {contentLeft, row2Y + SDpi(30), contentRight - SDpi(70),
                  row2Y + SDpi(50)};
   return PtInRect(&rcPath, pt) != FALSE;
@@ -171,29 +184,55 @@ static bool IsOverAboutLink(POINT pt) {
 
   int contentLeft = SidebarW() + ContentPadding();
   int row1Y = GetRowY(1);
-  if (pt.y < row1Y + SDpi(32) || pt.y > row1Y + SDpi(50))
-    return false;
 
   HDC hdc = GetDC(g_hwndSettingsDlg);
   if (!hdc)
     return false;
   HFONT oldFont = (HFONT)SelectObject(hdc, g_hDescFont);
-  const wchar_t *eulaText = T(STR_EULA);
-  SIZE eulaSize = {0, 0};
-  GetTextExtentPoint32W(hdc, eulaText, (int)wcslen(eulaText), &eulaSize);
-  const wchar_t *privacyText = T(STR_PRIVACY_POLICY);
-  SIZE privacySize = {0, 0};
-  GetTextExtentPoint32W(hdc, privacyText, (int)wcslen(privacyText),
-                        &privacySize);
+
+  // 第1行协议链接区域：row1Y + 32 ~ row1Y + 50
+  if (pt.y >= row1Y + SDpi(32) && pt.y <= row1Y + SDpi(50)) {
+    const wchar_t *eulaText = T(STR_EULA);
+    SIZE eulaSize = {0, 0};
+    GetTextExtentPoint32W(hdc, eulaText, (int)wcslen(eulaText), &eulaSize);
+    const wchar_t *privacyText = T(STR_PRIVACY_POLICY);
+    SIZE privacySize = {0, 0};
+    GetTextExtentPoint32W(hdc, privacyText, (int)wcslen(privacyText),
+                          &privacySize);
+
+    int eulaRight = contentLeft + eulaSize.cx;
+    int privacyLeft = eulaRight + SDpi(24);
+    int privacyRight = privacyLeft + privacySize.cx;
+
+    SelectObject(hdc, oldFont);
+    ReleaseDC(g_hwndSettingsDlg, hdc);
+
+    if ((pt.x >= contentLeft && pt.x <= eulaRight) ||
+        (pt.x >= privacyLeft && pt.x <= privacyRight))
+      return true;
+    return false;
+  }
+
+  // GitHub 仓库链接区域：第2行描述位置（row2Y + 32 ~ row2Y + 50）
+  {
+    int row2Y = GetRowY(1) + RowHeight(); // GetRowY(2)
+    if (pt.y >= row2Y + SDpi(32) && pt.y <= row2Y + SDpi(50)) {
+      const wchar_t *repoUrl = L"https://github.com/whutBing/smart-clip";
+      SIZE urlSize = {0, 0};
+      GetTextExtentPoint32W(hdc, repoUrl, (int)wcslen(repoUrl), &urlSize);
+
+      int urlRight = contentLeft + urlSize.cx;
+
+      SelectObject(hdc, oldFont);
+      ReleaseDC(g_hwndSettingsDlg, hdc);
+
+      return (pt.x >= contentLeft && pt.x <= urlRight);
+    }
+  }
+
   SelectObject(hdc, oldFont);
   ReleaseDC(g_hwndSettingsDlg, hdc);
-
-  int eulaRight = contentLeft + eulaSize.cx;
-  int privacyLeft = eulaRight + SDpi(24);
-  int privacyRight = privacyLeft + privacySize.cx;
-
-  return (pt.x >= contentLeft && pt.x <= eulaRight) ||
-         (pt.x >= privacyLeft && pt.x <= privacyRight);
+  return false;
 }
 
 static std::wstring BuildDataSizeText() {
@@ -372,22 +411,23 @@ static LRESULT CALLBACK IosEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     if (hwnd == g_hwndHotkeyEdit || hwnd == g_hwndSearchHotkeyEdit)
       SyncHotkeyEditTextRect(hwnd);
     else if (hwnd == g_hwndHistoryLimitEdit ||
-             hwnd == g_hwndScrollbarTimeoutEdit)
+             hwnd == g_hwndScrollbarTimeoutEdit ||
+             hwnd == g_hwndTextSizeLimitEdit)
       SyncSettingsNumberEditTextRect(hwnd);
     return result;
   }
   case WM_KEYDOWN:
     // 数字编辑框（ES_MULTILINE）禁止回车换行
-    if ((hwnd == g_hwndHistoryLimitEdit ||
-         hwnd == g_hwndScrollbarTimeoutEdit) &&
+    if ((hwnd == g_hwndHistoryLimitEdit || hwnd == g_hwndScrollbarTimeoutEdit ||
+         hwnd == g_hwndTextSizeLimitEdit) &&
         wParam == VK_RETURN) {
       return 0;
     }
     break;
   case WM_CHAR:
     // 数字编辑框（ES_MULTILINE）禁止回车字符
-    if ((hwnd == g_hwndHistoryLimitEdit ||
-         hwnd == g_hwndScrollbarTimeoutEdit) &&
+    if ((hwnd == g_hwndHistoryLimitEdit || hwnd == g_hwndScrollbarTimeoutEdit ||
+         hwnd == g_hwndTextSizeLimitEdit) &&
         (wParam == VK_RETURN || wParam == L'\n')) {
       return 0;
     }
@@ -533,11 +573,12 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       bool regOk = RegisterHotkey(g_hwndMain);
       if (!regOk) {
         if (g_isNotificationEnabled)
-          ShowTrayBalloon(g_hwndMain, L"快捷键注册失败",
+          ShowTrayBalloon(g_hwndMain, T(STR_TRAY_HOTKEY_FAILED),
                           L"该快捷键可能已被其他程序占用");
       } else {
         if (g_isNotificationEnabled)
-          ShowTrayBalloon(g_hwndMain, L"设置已更新", L"快捷键设置已保存");
+          ShowTrayBalloon(g_hwndMain, T(STR_TRAY_SETTINGS_UPDATED),
+                          T(STR_TRAY_HOTKEY_SAVED));
       }
       InvalidateRect(hwnd, NULL, TRUE);
       if (g_hwndSearchHotkeyEdit)
@@ -664,6 +705,14 @@ static void SwitchSettingsTab(int tab) {
     ShowWindow(g_hwndClearNonFavBtn, showDt);
   if (g_hwndCleanInvalidImagesBtn)
     ShowWindow(g_hwndCleanInvalidImagesBtn, showDt);
+  if (g_hwndExportDataBtn)
+    ShowWindow(g_hwndExportDataBtn, showDt);
+  if (g_hwndImportDataBtn)
+    ShowWindow(g_hwndImportDataBtn, showDt);
+  if (g_hwndTextSizeLimitEdit)
+    ShowWindow(g_hwndTextSizeLimitEdit, showDt);
+
+  // 关于分类控件（tab == 3）— 无动态控件
 
   // 切换到数据页时刷新磁盘空间
   if (tab == 2) {
@@ -719,13 +768,17 @@ static const SettingRowInfo g_dataRows[] = {
     {STR_ROW_DATA_SIZE, STR_COUNT},
     {STR_ROW_PASTE_COUNT, STR_COUNT},
     {STR_ROW_HISTORY_LIMIT, STR_ROW_HISTORY_LIMIT_DESC},
+    {STR_ROW_TEXT_SIZE_LIMIT, STR_ROW_TEXT_SIZE_LIMIT_DESC},
     {STR_ROW_SET_DATA_DIR, STR_COUNT},
     {STR_ROW_CLEAR_NON_FAV, STR_ROW_CLEAR_NON_FAV_DESC},
     {STR_ROW_CLEAN_INVALID_IMAGES, STR_ROW_CLEAN_INVALID_IMAGES_DESC},
+    {STR_ROW_EXPORT_DATA, STR_ROW_EXPORT_DATA_DESC},
+    {STR_ROW_IMPORT_DATA, STR_ROW_IMPORT_DATA_DESC},
 };
 static const SettingRowInfo g_aboutRows[] = {
     {STR_ROW_VERSION, STR_ROW_VERSION_DESC},
     {STR_ROW_AGREEMENT, STR_COUNT},
+    {STR_GITHUB_REPO, STR_COUNT},
     {STR_ROW_CREDITS, STR_ROW_CREDITS_DESC},
 };
 
@@ -734,6 +787,7 @@ static const wchar_t *g_creditsNames[] = {
     L"\u5317\u4e00",
     L"Sulla vetta la Saovia",
     L"Lion",
+    L"\u9648\u968f\u6613",
 };
 static const int g_creditsCount = _countof(g_creditsNames);
 
@@ -759,8 +813,8 @@ struct CategoryHeader {
 static const CategoryHeader g_categories[] = {
     {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 9},
     {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 4},
-    {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 6},
-    {STR_SETTINGS_ABOUT, STR_SETTINGS_ABOUT_DESC, g_aboutRows, 3},
+    {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 9},
+    {STR_SETTINGS_ABOUT, STR_SETTINGS_ABOUT_DESC, g_aboutRows, 4},
 };
 
 // ==================== 绘制辅助 ====================
@@ -938,13 +992,7 @@ bool IsStartupEnabled() {
 #define DROPDOWN_PADDING 6
 #define DROPDOWN_RADIUS 8
 
-static bool IsModifierDropdownControl(int ctlId) {
-  return ctlId == IDC_QUICK_PASTE_COMBO || ctlId == IDC_FAVORITE_HOTKEY_COMBO;
-}
-
-static int DropdownScale(int ctlId, int value) {
-  return IsModifierDropdownControl(ctlId) ? SMDpi(value) : SCDpi(value);
-}
+static int DropdownScale(int /*ctlId*/, int value) { return SDpi(value); }
 
 static int DropdownItemHFor(int ctlId) {
   return DropdownScale(ctlId, DROPDOWN_ITEM_H);
@@ -975,8 +1023,10 @@ static const StringId g_themeItemIds[] = {STR_THEME_LIGHT, STR_THEME_DARK,
 static const StringId g_themeStyleItemIds[] = {
     STR_THEME_STYLE_CLASSIC, STR_THEME_STYLE_GRAPHITE, STR_THEME_STYLE_WARM,
     STR_THEME_STYLE_HIGH_CONTRAST};
-static const StringId g_languageItemIds[] = {STR_LANGUAGE_ZH_CN,
-                                             STR_LANGUAGE_EN_US};
+static const StringId g_languageItemIds[] = {
+    STR_LANGUAGE_ZH_CN, STR_LANGUAGE_EN_US, STR_LANGUAGE_JA_JP,
+    STR_LANGUAGE_KO_KR, STR_LANGUAGE_DE_DE, STR_LANGUAGE_AR_SA,
+    STR_LANGUAGE_TR_TR};
 static const StringId g_previewItemIds[] = {STR_PREVIEW_OFF, STR_PREVIEW_BLUR,
                                             STR_PREVIEW_SD, STR_PREVIEW_HD};
 static const StringId g_quickPasteModItemIds[] = {
@@ -1030,8 +1080,14 @@ static const wchar_t *GetDropdownText(int ctlId) {
     return T(g_themeItemIds[(int)g_themeMode]);
   if (ctlId == IDC_THEME_STYLE_COMBO)
     return T(STR_THEME_STYLE_HIGH_CONTRAST);
-  if (ctlId == IDC_LANGUAGE_COMBO)
-    return T(g_languageItemIds[(int)g_appLanguage]);
+  if (ctlId == IDC_LANGUAGE_COMBO) {
+    const auto &langs = GetAvailableLanguages();
+    for (const auto &lang : langs) {
+      if (lang.lang == g_appLanguage)
+        return lang.name.c_str();
+    }
+    return T(STR_LANGUAGE_EN_US);
+  }
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
     return T(g_previewItemIds[(int)g_imagePreviewQuality]);
   if (ctlId == IDC_QUICK_PASTE_COMBO) {
@@ -1056,8 +1112,15 @@ static int GetDropdownSelectedIndex(int ctlId) {
     return (int)g_themeMode;
   if (ctlId == IDC_THEME_STYLE_COMBO)
     return 3;
-  if (ctlId == IDC_LANGUAGE_COMBO)
-    return (int)g_appLanguage;
+  if (ctlId == IDC_LANGUAGE_COMBO) {
+    // 通过语言枚举值查找在列表中的索引
+    const auto &langs = GetAvailableLanguages();
+    for (int i = 0; i < (int)langs.size(); ++i) {
+      if (langs[i].lang == g_appLanguage)
+        return i;
+    }
+    return 0;
+  }
   if (ctlId == IDC_IMAGE_PREVIEW_COMBO)
     return (int)g_imagePreviewQuality;
   if (ctlId == IDC_QUICK_PASTE_COMBO) {
@@ -1105,7 +1168,7 @@ static void DrawDropdownButton(HDC hdc, RECT rc, int ctlId) {
   Gdiplus::Font font(L"Microsoft YaHei", (Gdiplus::REAL)SDpi(14),
                      Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
   Gdiplus::StringFormat sf;
-  sf.SetAlignment(Gdiplus::StringAlignmentNear);
+  sf.SetAlignment(Gdiplus::StringAlignmentCenter);
   sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
   Gdiplus::RectF textRect((Gdiplus::REAL)textPad, 0,
                           (float)(rc.right - rc.left - arrowReserved),
@@ -1130,11 +1193,20 @@ static void DrawDropdownButton(HDC hdc, RECT rc, int ctlId) {
 LRESULT CALLBACK DropdownPopupProc(HWND hwnd, UINT msg, WPARAM wParam,
                                    LPARAM lParam) {
   switch (msg) {
+  case WM_ERASEBKGND:
+    return 1;
+
   case WM_PAINT: {
     PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
+    HDC screenDc = BeginPaint(hwnd, &ps);
     RECT rcClient;
     GetClientRect(hwnd, &rcClient);
+
+    // 内存DC双缓冲，消除悬浮闪烁
+    HDC hdc = CreateCompatibleDC(screenDc);
+    HBITMAP memBmp =
+        CreateCompatibleBitmap(screenDc, rcClient.right, rcClient.bottom);
+    HBITMAP oldBmp = (HBITMAP)SelectObject(hdc, memBmp);
 
     Gdiplus::Graphics g(hdc);
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -1204,6 +1276,11 @@ LRESULT CALLBACK DropdownPopupProc(HWND hwnd, UINT msg, WPARAM wParam,
       g.DrawString(g_activeDropdown.items[i], -1, &font, textRect, &sf,
                    &textBrush);
     }
+
+    BitBlt(screenDc, 0, 0, rcClient.right, rcClient.bottom, hdc, 0, 0, SRCCOPY);
+    SelectObject(hdc, oldBmp);
+    DeleteObject(memBmp);
+    DeleteDC(hdc);
 
     EndPaint(hwnd, &ps);
     return 0;
@@ -1294,11 +1371,21 @@ static void ShowDropdownPopup(HWND hwndBtn, int ctlId) {
     g_activeDropdown.items = s_themeStyleItems;
     g_activeDropdown.itemCount = 1;
   } else if (ctlId == IDC_LANGUAGE_COMBO) {
-    static const wchar_t *s_languageItems[2];
-    for (int i = 0; i < 2; ++i)
-      s_languageItems[i] = T(g_languageItemIds[i]);
-    g_activeDropdown.items = s_languageItems;
-    g_activeDropdown.itemCount = 2;
+    // 动态获取可用语言列表（内置 + 外部文件）
+    const auto &langs = GetAvailableLanguages();
+    static std::vector<std::wstring> s_languageItems;
+    static std::vector<const wchar_t *> s_languageItemPtrs;
+    s_languageItems.clear();
+    s_languageItemPtrs.clear();
+    // 先 reserve 避免 push_back 扩容导致 c_str() 指针失效
+    s_languageItems.reserve(langs.size());
+    s_languageItemPtrs.reserve(langs.size());
+    for (const auto &lang : langs) {
+      s_languageItems.push_back(lang.name);
+      s_languageItemPtrs.push_back(s_languageItems.back().c_str());
+    }
+    g_activeDropdown.items = s_languageItemPtrs.data();
+    g_activeDropdown.itemCount = (int)s_languageItemPtrs.size();
   } else if (ctlId == IDC_IMAGE_PREVIEW_COMBO) {
     static const wchar_t *s_previewItems[4];
     for (int i = 0; i < 4; ++i)
@@ -1381,6 +1468,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     return 0;
   }
 
+  case WM_ERASEBKGND:
+    // 双缓冲模式下不需要系统擦除背景，避免闪烁
+    return 1;
+
   case WM_NCACTIVATE:
     return TRUE;
 
@@ -1413,11 +1504,17 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
   case WM_PAINT: {
     PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-    SetBkMode(hdc, TRANSPARENT);
+    HDC screenDc = BeginPaint(hwnd, &ps);
 
     RECT rcClient;
     GetClientRect(hwnd, &rcClient);
+
+    // 内存DC双缓冲，消除侧边栏悬浮等闪烁
+    HDC hdc = CreateCompatibleDC(screenDc);
+    HBITMAP memBmp =
+        CreateCompatibleBitmap(screenDc, rcClient.right, rcClient.bottom);
+    HBITMAP oldBmp = (HBITMAP)SelectObject(hdc, memBmp);
+    SetBkMode(hdc, TRANSPARENT);
 
     // 标题栏
     RECT rcTitlebar = {0, 0, rcClient.right, SettingsTitlebarH()};
@@ -1505,6 +1602,32 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     for (int i = 0; i < cat.rowCount; i++) {
       int rowY = GetRowY(i);
 
+      // data 标签页：导出行（i == 7）上方绘制"数据备份"分组标题与分割线
+      if (g_currentSettingsTab == 2 && i == 7) {
+        int headerY = rowY - SDpi(BACKUP_HEADER_H);
+        // 分组标题（与行标题字体一致）
+        SelectObject(hdc, g_hTitleFont);
+        SetTextColor(hdc, GetSettingsTextColor());
+        RECT rcGrpTitle = {contentLeft, headerY + SDpi(10), contentRight,
+                           headerY + SDpi(32)};
+        DrawTextW(hdc, T(STR_DATA_BACKUP_TITLE), -1, &rcGrpTitle,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+        // 分组副标题（与行描述字体一致）
+        SelectObject(hdc, g_hDescFont);
+        SetTextColor(hdc, GetDescTextColor());
+        RECT rcGrpDesc = {contentLeft, headerY + SDpi(34), contentRight,
+                          headerY + SDpi(50)};
+        DrawTextW(hdc, T(STR_DATA_BACKUP_DESC), -1, &rcGrpDesc,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+        // 分组标题下方分割线
+        HPEN hGrpPen = CreatePen(PS_SOLID, 1, GetSeparatorColor());
+        HPEN hOldGrpPen = (HPEN)SelectObject(hdc, hGrpPen);
+        MoveToEx(hdc, contentLeft, headerY + SDpi(BACKUP_HEADER_H) - 1, NULL);
+        LineTo(hdc, contentRight, headerY + SDpi(BACKUP_HEADER_H) - 1);
+        SelectObject(hdc, hOldGrpPen);
+        DeleteObject(hGrpPen);
+      }
+
       // 标题
       SelectObject(hdc, g_hTitleFont);
       SetTextColor(hdc, GetSettingsTextColor());
@@ -1557,8 +1680,13 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
                       row1Y + SDpi(30)};
       DrawTextW(hdc, pasteBuf, -1, &rcPaste, DT_RIGHT | DT_SINGLELINE);
 
-      // 第3行：数据目录路径作为描述文字（按钮左侧）
-      int row2Y = GetRowY(3);
+      // 第3行：文本大小上限（输入框已水平居中文本，无需单位前缀）
+      {
+        // 不再绘制 "KB" 单位前缀
+      }
+
+      // 第4行：数据目录路径作为描述文字（按钮左侧）
+      int row2Y = GetRowY(4);
       SelectObject(hdc, g_hDescFont);
       std::wstring dataPath = GetDataFilePath();
       size_t lastSlash = dataPath.find_last_of(L"\\");
@@ -1653,19 +1781,51 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       SelectObject(hdc, hOldPen);
       DeleteObject(hLinkPen);
 
-      // 第2行：鸣谢——在描述"感谢为本项目提供帮助的人"下方另起一行显示名单
-      int row2Y = GetRowY(2);
+      // 第2行：仓库标题（由通用行绘制逻辑自动绘制）+
+      // 网址（蓝色字体，悬浮动画下划线）
+      {
+        int row2Y = GetRowY(2);
+        const wchar_t *repoUrl = L"https://github.com/whutBing/smart-clip";
+
+        // 绘制网址（蓝色字体，在描述位置）
+        SetTextColor(hdc, RGB(0, 116, 199));
+        RECT rcUrl = {contentLeft, row2Y + SDpi(32), contentLeft + SDpi(400),
+                      row2Y + SDpi(50)};
+        DrawTextW(hdc, repoUrl, -1, &rcUrl, DT_LEFT | DT_SINGLELINE);
+
+        // 动画下划线（根据 g_githubUnderlineProgress 绘制宽度）
+        SIZE urlSize = {0, 0};
+        GetTextExtentPoint32W(hdc, repoUrl, (int)wcslen(repoUrl), &urlSize);
+        if (g_githubUnderlineProgress > 0.0f) {
+          int lineW = (int)(urlSize.cx * g_githubUnderlineProgress);
+          hLinkPen = CreatePen(PS_SOLID, 1, RGB(0, 116, 199));
+          hOldPen = (HPEN)SelectObject(hdc, hLinkPen);
+          MoveToEx(hdc, rcUrl.left, rcUrl.bottom - SDpi(2), NULL);
+          LineTo(hdc, rcUrl.left + lineW, rcUrl.bottom - SDpi(2));
+          SelectObject(hdc, hOldPen);
+          DeleteObject(hLinkPen);
+        }
+      }
+
+      // 第3行：鸣谢——在描述"感谢为本项目提供帮助的人"下方另起一行显示名单
+      int row3Y = GetRowY(3);
       std::wstring creditsText = BuildCreditsText();
       SelectObject(hdc, g_hDescFont);
       SetBkMode(hdc, TRANSPARENT);
       SetTextColor(hdc, COLOR_ACCENT);
-      RECT rcCredits = {contentLeft, row2Y + SDpi(50), contentRight,
-                        row2Y + SDpi(70)};
+      RECT rcCredits = {contentLeft, row3Y + SDpi(50), contentRight,
+                        row3Y + SDpi(70)};
       DrawTextW(hdc, creditsText.c_str(), -1, &rcCredits,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
     SelectObject(hdc, hOld);
+
+    BitBlt(screenDc, 0, 0, rcClient.right, rcClient.bottom, hdc, 0, 0, SRCCOPY);
+    SelectObject(hdc, oldBmp);
+    DeleteObject(memBmp);
+    DeleteDC(hdc);
+
     EndPaint(hwnd, &ps);
     return 0;
   }
@@ -1746,7 +1906,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     // iOS 风格操作按钮（蓝色圆角）
     if (lpDIS->CtlID == IDC_SET_DATA_DIR || lpDIS->CtlID == IDC_CLEAR_NON_FAV ||
-        lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES) {
+        lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES ||
+        lpDIS->CtlID == IDC_EXPORT_DATA || lpDIS->CtlID == IDC_IMPORT_DATA) {
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
       FillRect(lpDIS->hDC, &rc, hBgBr);
       DeleteObject(hBgBr);
@@ -1773,6 +1934,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         text = T(STR_BTN_CLEAN);
       else if (lpDIS->CtlID == IDC_CLEAN_INVALID_IMAGES)
         text = T(STR_BTN_CLEAN);
+      else if (lpDIS->CtlID == IDC_EXPORT_DATA)
+        text = T(STR_BTN_EXPORT);
+      else if (lpDIS->CtlID == IDC_IMPORT_DATA)
+        text = T(STR_BTN_IMPORT);
 
       Gdiplus::Font font(L"Microsoft YaHei", (Gdiplus::REAL)SDpi(13),
                          Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
@@ -1833,6 +1998,21 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       g_dataDirHovered = false;
       SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
     }
+
+    // GitHub 仓库链接悬浮检测（关于页面）
+    if (g_currentSettingsTab == 3 && pt.x > SidebarW()) {
+      bool overLink = IsOverAboutLink(pt);
+      if (overLink && !g_githubHovered) {
+        g_githubHovered = true;
+        SetTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER, 16, NULL);
+      } else if (!overLink && g_githubHovered) {
+        g_githubHovered = false;
+        SetTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER, 16, NULL);
+      }
+    } else if (g_githubHovered) {
+      g_githubHovered = false;
+      SetTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER, 16, NULL);
+    }
     break;
   }
 
@@ -1846,6 +2026,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (g_dataDirHovered) {
       g_dataDirHovered = false;
       SetTimer(hwnd, ID_DATADIR_UNDERLINE_TIMER, 16, NULL);
+    }
+    if (g_githubHovered) {
+      g_githubHovered = false;
+      SetTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER, 16, NULL);
     }
     break;
 
@@ -1866,10 +2050,32 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
       }
       // 只重绘数据目录路径区域
-      int row2Y = GetRowY(3);
+      int row2Y = GetRowY(4);
       RECT rcPath = {SidebarW(), row2Y + SDpi(28), SettingsWidth(),
                      row2Y + SDpi(52)};
       InvalidateRect(hwnd, &rcPath, FALSE);
+      return 0;
+    }
+    if (wParam == ID_GITHUB_UNDERLINE_TIMER) {
+      float step = 0.08f;
+      if (g_githubHovered) {
+        g_githubUnderlineProgress += step;
+        if (g_githubUnderlineProgress >= 1.0f) {
+          g_githubUnderlineProgress = 1.0f;
+          KillTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER);
+        }
+      } else {
+        g_githubUnderlineProgress -= step;
+        if (g_githubUnderlineProgress <= 0.0f) {
+          g_githubUnderlineProgress = 0.0f;
+          KillTimer(hwnd, ID_GITHUB_UNDERLINE_TIMER);
+        }
+      }
+      // 只重绘 GitHub 链接区域（第2行描述位置）
+      int githubRowY = GetRowY(2);
+      RECT rcLink = {SidebarW(), githubRowY + SDpi(28), SettingsWidth(),
+                     githubRowY + SDpi(52)};
+      InvalidateRect(hwnd, &rcLink, FALSE);
       return 0;
     }
     break;
@@ -1890,9 +2096,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         SwitchSettingsTab(idx);
       }
     }
-    // 数据分类：点击数据目录路径打开资源管理器（第3行）
+    // 数据分类：点击数据目录路径打开资源管理器（第4行）
     if (g_currentSettingsTab == 2 && pt.x > SidebarW()) {
-      int row2Y = GetRowY(3);
+      int row2Y = GetRowY(4);
       if (pt.y >= row2Y + SDpi(10) && pt.y <= row2Y + SDpi(45)) {
         std::wstring dataPath = GetDataFilePath();
         size_t lastSlash = dataPath.find_last_of(L"\\");
@@ -1932,6 +2138,12 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
           MessageBoxW(hwnd, T(STR_PRIVACY_BODY), T(STR_PRIVACY_TITLE),
                       MB_OK | MB_ICONINFORMATION);
         }
+      }
+      // GitHub 仓库链接位于第2行描述位置（row2Y + 32 ~ row2Y + 50）
+      int row2Y = GetRowY(2);
+      if (pt.y >= row2Y + SDpi(32) && pt.y <= row2Y + SDpi(50)) {
+        ShellExecuteW(NULL, L"open", L"https://github.com/whutBing/smart-clip",
+                      NULL, NULL, SW_SHOWNORMAL);
       }
     }
     break;
@@ -1986,7 +2198,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         InvalidateRect(g_hwndToggleNotification, NULL, TRUE);
         SaveHotkeySettings();
         if (g_isNotificationEnabled)
-          ShowTrayBalloon(g_hwndMain, L"设置已更新", L"消息通知已启用");
+          ShowTrayBalloon(g_hwndMain, T(STR_TRAY_SETTINGS_UPDATED),
+                          T(STR_TRAY_NOTIFY_ENABLED));
         return 0;
       }
       if (wID == IDC_SMOOTH_SCROLL_CHECK) {
@@ -2100,6 +2313,77 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
         return 0;
       }
+      if (wID == IDC_EXPORT_DATA) {
+        // 导出数据为 ZIP 压缩包
+        wchar_t szFile[MAX_PATH] = {};
+        OPENFILENAMEW ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hwnd;
+        ofn.lpstrFilter = L"ZIP Files (*.zip)\0*.zip\0All Files (*.*)\0*.*\0";
+        ofn.lpstrFile = szFile;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrDefExt = L"zip";
+        std::wstring defaultName =
+            L"smartclip_export_" + GetCurrentTimeString();
+        for (auto &c : defaultName)
+          if (c == L' ' || c == L':' || c == L'-')
+            c = L'_';
+        wcscpy_s(szFile, defaultName.c_str());
+        ofn.lpstrTitle = T(STR_ROW_EXPORT_DATA);
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+
+        if (GetSaveFileNameW(&ofn)) {
+          extern bool ExportData(const std::wstring &outputPath);
+          std::wstring path = szFile;
+          if (ExportData(path)) {
+            MessageBoxW(hwnd, T(STR_ROW_EXPORT_DATA_DESC), T(STR_TRAY_HINT),
+                        MB_OK | MB_ICONINFORMATION);
+          } else {
+            MessageBoxW(hwnd, L"Export failed", T(STR_TRAY_HINT),
+                        MB_OK | MB_ICONERROR);
+          }
+        }
+        return 0;
+      }
+      if (wID == IDC_IMPORT_DATA) {
+        wchar_t szFile[MAX_PATH] = {};
+        OPENFILENAMEW ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hwnd;
+        ofn.lpstrFilter = L"ZIP Files (*.zip)\0*.zip\0All Files (*.*)\0*.*\0";
+        ofn.lpstrFile = szFile;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrDefExt = L"zip";
+        ofn.lpstrTitle = T(STR_ROW_IMPORT_DATA);
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+        if (GetOpenFileNameW(&ofn)) {
+          std::wstring path = szFile;
+
+          int choice = MessageBoxW(
+              hwnd,
+              L"选择导入方式：\n\n是 - 覆盖当前数据（备份当前数据）\n否 - "
+              L"追加合并（保留现有数据）\n取消 - 取消导入",
+              T(STR_ROW_IMPORT_DATA), MB_YESNOCANCEL | MB_ICONQUESTION);
+
+          if (choice == IDCANCEL) {
+            return 0;
+          }
+
+          bool overwrite = (choice == IDYES);
+          extern bool ImportData(const std::wstring &zipPath, bool overwrite);
+          if (ImportData(path, overwrite)) {
+            MessageBoxW(hwnd, T(STR_ROW_IMPORT_DATA_DESC), T(STR_TRAY_HINT),
+                        MB_OK | MB_ICONINFORMATION);
+            extern void UpdateListBox();
+            UpdateListBox();
+          } else {
+            MessageBoxW(hwnd, L"Import failed", T(STR_TRAY_HINT),
+                        MB_OK | MB_ICONERROR);
+          }
+        }
+        return 0;
+      }
       // 下拉按钮点击 → 弹出选择器
       if (wID == IDC_THEME_COMBO) {
         ShowDropdownPopup(g_hwndThemeCombo, IDC_THEME_COMBO);
@@ -2172,11 +2456,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
     if (wID == IDC_LANGUAGE_COMBO && wNotify == CBN_SELCHANGE) {
       int sel = g_activeDropdown.selectedIndex;
-      if (sel >= 0 && sel <= 1) {
-        g_appLanguage = (AppLanguage)sel;
+      const auto &langs = GetAvailableLanguages();
+      if (sel >= 0 && sel < (int)langs.size()) {
+        g_appLanguage = langs[sel].lang;
         ApplyLanguage();
         UpdateModifierDropdownItems();
-        // 刷新列表框以更新收藏按钮文本（含分类计数）的语言
         UpdateListBox();
         SaveHotkeySettings();
         UpdateSettingsBrushes();
@@ -2250,7 +2534,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         std::wstring text =
             FormatHotkeyText(g_hotkeyModifiers, g_hotkeyVirtualKey, L"");
         SetWindowTextW(g_hwndHotkeyEdit, text.c_str());
-        SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, L"请输入快捷键");
+        SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, T(STR_HOTKEY_PLACEHOLDER));
       }
     }
     if (wID == IDC_SEARCH_HOTKEY_EDIT) {
@@ -2266,7 +2550,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         std::wstring text = FormatHotkeyText(g_searchHotkeyModifiers,
                                              g_searchHotkeyVirtualKey, L"F");
         SetWindowTextW(g_hwndSearchHotkeyEdit, text.c_str());
-        SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
+        SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit,
+                                 T(STR_HOTKEY_PLACEHOLDER));
       }
     }
     // 历史记录数量编辑框
@@ -2281,6 +2566,17 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       return 0;
     }
 
+    if (wID == IDC_TEXT_SIZE_LIMIT && wNotify == EN_CHANGE) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndTextSizeLimitEdit, buf, 16);
+      int val = _wtoi(buf);
+      if (val >= 1 && val <= 10240) {
+        g_maxTextSizeKB = val;
+        SaveHotkeySettings();
+      }
+      return 0;
+    }
+
     if (wID == IDC_SCROLLBAR_TIMEOUT_EDIT && wNotify == EN_CHANGE) {
       wchar_t buf[16] = {};
       GetWindowTextW(g_hwndScrollbarTimeoutEdit, buf, 16);
@@ -2288,6 +2584,56 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       if (val >= 600 && val <= 2000) {
         g_customScrollbarHideDelayMs = val;
         SaveHotkeySettings();
+        extern void StartScrollbarHideTimer(HWND hwnd);
+        if (g_hwndListBox) {
+          StartScrollbarHideTimer(g_hwndListBox);
+        }
+      }
+      return 0;
+    }
+
+    // 失焦时若为空，显示默认值
+    if (wID == IDC_SCROLLBAR_TIMEOUT_EDIT && wNotify == EN_KILLFOCUS) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndScrollbarTimeoutEdit, buf, 16);
+      std::wstring trimmed = buf;
+      while (!trimmed.empty() &&
+             (trimmed.back() == L' ' || trimmed.back() == L'\r' ||
+              trimmed.back() == L'\n'))
+        trimmed.pop_back();
+      if (trimmed.empty()) {
+        SetWindowTextW(g_hwndScrollbarTimeoutEdit, L"0");
+        SyncSettingsNumberEditTextRect(g_hwndScrollbarTimeoutEdit);
+      }
+      return 0;
+    }
+
+    if (wID == IDC_HISTORY_LIMIT_EDIT && wNotify == EN_KILLFOCUS) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndHistoryLimitEdit, buf, 16);
+      std::wstring trimmed = buf;
+      while (!trimmed.empty() &&
+             (trimmed.back() == L' ' || trimmed.back() == L'\r' ||
+              trimmed.back() == L'\n'))
+        trimmed.pop_back();
+      if (trimmed.empty()) {
+        SetWindowTextW(g_hwndHistoryLimitEdit, L"100");
+        SyncSettingsNumberEditTextRect(g_hwndHistoryLimitEdit);
+      }
+      return 0;
+    }
+
+    if (wID == IDC_TEXT_SIZE_LIMIT && wNotify == EN_KILLFOCUS) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndTextSizeLimitEdit, buf, 16);
+      std::wstring trimmed = buf;
+      while (!trimmed.empty() &&
+             (trimmed.back() == L' ' || trimmed.back() == L'\r' ||
+              trimmed.back() == L'\n'))
+        trimmed.pop_back();
+      if (trimmed.empty()) {
+        SetWindowTextW(g_hwndTextSizeLimitEdit, L"50");
+        SyncSettingsNumberEditTextRect(g_hwndTextSizeLimitEdit);
       }
       return 0;
     }
@@ -2304,9 +2650,31 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     return 0;
   }
 
-  case WM_CLOSE:
+  case WM_CLOSE: {
+    // 关闭前最终读取滚动条隐藏时间编辑框的值，确保即使用户刚修改未触发
+    // EN_CHANGE 也能保存
+    if (g_hwndScrollbarTimeoutEdit) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndScrollbarTimeoutEdit, buf, 16);
+      int val = _wtoi(buf);
+      if (val >= 600 && val <= 2000) {
+        g_customScrollbarHideDelayMs = val;
+        SaveHotkeySettings();
+      }
+    }
+    // 同样读取历史记录数量
+    if (g_hwndHistoryLimitEdit) {
+      wchar_t buf[16] = {};
+      GetWindowTextW(g_hwndHistoryLimitEdit, buf, 16);
+      int val = _wtoi(buf);
+      if (val >= 10 && val <= 10000) {
+        g_maxHistoryCount = val;
+        SaveHotkeySettings();
+      }
+    }
     DestroyWindow(hwnd);
     return 0;
+  }
 
   case WM_DESTROY:
     g_isRecordingHotkey = false;
@@ -2437,8 +2805,8 @@ static HWND CreateToggle(HWND parent, int rowIndex, int ctlId) {
 
 static HWND CreateSettingsCombo(HWND parent, int rowIndex, int ctlId,
                                 int width) {
-  int w = IsModifierDropdownControl(ctlId) ? SMDpi(width) : SCDpi(width);
-  int h = IsModifierDropdownControl(ctlId) ? SMDpi(32) : SCDpi(32);
+  int w = SDpi(width);
+  int h = SDpi(32);
   int y = GetRowY(rowIndex) + (RowHeight() - h) / 2;
   int x = GetControlX(w);
   return CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, x, y, w, h,
@@ -2581,7 +2949,7 @@ void ShowSettingsDialog(HWND hwndParent) {
   g_isStartupEnabled = IsStartupEnabled();
 
   {
-    int editW = SDpi(80);
+    int editW = SDpi(120);
     int editH = SDpi(28);
     int timeoutY = GetRowY(3) + (RowHeight() - editH) / 2;
     wchar_t timeoutBuf[16];
@@ -2604,7 +2972,7 @@ void ShowSettingsDialog(HWND hwndParent) {
   g_hwndThemeStyleCombo =
       CreateSettingsCombo(hwndDlg, 5, IDC_THEME_STYLE_COMBO, 120);
   g_hwndLanguageCombo =
-      CreateSettingsCombo(hwndDlg, 5, IDC_LANGUAGE_COMBO, 140);
+      CreateSettingsCombo(hwndDlg, 5, IDC_LANGUAGE_COMBO, 120);
 
   g_hwndImagePreviewCombo =
       CreateSettingsCombo(hwndDlg, 6, IDC_IMAGE_PREVIEW_COMBO, 120);
@@ -2629,19 +2997,48 @@ void ShowSettingsDialog(HWND hwndParent) {
   UpdateScrollbarSettingsControls();
 
   // ===== 数据分类控件 =====
+  // 按钮宽度与历史记录数量输入框(SDpi(80))保持一致
   auto CreateIosButton = [&](int rowIndex, int ctlId, int width) -> HWND {
-    int w = SCDpi(width);
-    int h = SCDpi(32);
+    int w = SDpi(width);
+    int h = SDpi(32);
     int y = GetRowY(rowIndex) + (RowHeight() - h) / 2;
     int x = GetControlX(w);
     return CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | BS_OWNERDRAW, x, y, w,
                            h, hwndDlg, (HMENU)(INT_PTR)ctlId,
                            GetModuleHandleW(NULL), NULL);
   };
-  g_hwndSetDataDirBtn = CreateIosButton(3, IDC_SET_DATA_DIR, 60);
-  g_hwndClearNonFavBtn = CreateIosButton(4, IDC_CLEAR_NON_FAV, 60);
+  // 创建数据分类按钮时，临时切换到数据标签页，确保 GetRowY 正确计算偏移
+  int savedTab = g_currentSettingsTab;
+  g_currentSettingsTab = 2;
+  g_hwndSetDataDirBtn = CreateIosButton(4, IDC_SET_DATA_DIR, 80);
+  g_hwndClearNonFavBtn = CreateIosButton(5, IDC_CLEAR_NON_FAV, 80);
   g_hwndCleanInvalidImagesBtn =
-      CreateIosButton(5, IDC_CLEAN_INVALID_IMAGES, 60);
+      CreateIosButton(6, IDC_CLEAN_INVALID_IMAGES, 80);
+  g_hwndExportDataBtn = CreateIosButton(7, IDC_EXPORT_DATA, 80);
+  g_hwndImportDataBtn = CreateIosButton(8, IDC_IMPORT_DATA, 80);
+  g_currentSettingsTab = savedTab;
+
+  // 文本大小上限输入框（与历史数量输入框一致：ES_CENTER + ES_MULTILINE
+  // 实现水平居中）
+  {
+    int w = SDpi(80);
+    int h = SDpi(28);
+    int y = GetRowY(3) + SDpi(16);
+    int x = GetControlX(w);
+    g_hwndTextSizeLimitEdit = CreateWindowExW(
+        0, L"EDIT", L"",
+        WS_CHILD | WS_TABSTOP | ES_CENTER | ES_NUMBER | ES_MULTILINE, x, y, w,
+        h, hwndDlg, (HMENU)(INT_PTR)IDC_TEXT_SIZE_LIMIT, GetModuleHandleW(NULL),
+        NULL);
+    ConfigureSettingsEdit(g_hwndTextSizeLimitEdit);
+    SendMessageW(g_hwndTextSizeLimitEdit, WM_SETFONT, (WPARAM)hCtlFont, TRUE);
+    g_oldIosEditProc = (WNDPROC)SetWindowLongPtrW(
+        g_hwndTextSizeLimitEdit, GWLP_WNDPROC, (LONG_PTR)IosEditProc);
+    wchar_t buf[16];
+    _snwprintf_s(buf, _countof(buf), L"%d", g_maxTextSizeKB);
+    SetWindowTextW(g_hwndTextSizeLimitEdit, buf);
+    SyncSettingsNumberEditTextRect(g_hwndTextSizeLimitEdit);
+  }
 
   // ===== 快捷键分类控件 =====
   g_hwndHotkeyEdit = CreateHotkeyEditBox(hwndDlg, 0, IDC_HOTKEY_EDIT);
@@ -2653,7 +3050,7 @@ void ShowSettingsDialog(HWND hwndParent) {
                             ? FormatHotkeyText(oldMod, oldVk, L"")
                             : L"";
   SetWindowTextW(g_hwndHotkeyEdit, hkText.c_str());
-  SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, L"请输入快捷键");
+  SetHotkeyEditPlaceholder(g_hwndHotkeyEdit, T(STR_HOTKEY_PLACEHOLDER));
   SyncHotkeyEditTextRect(g_hwndHotkeyEdit);
 
   g_hwndSearchHotkeyEdit =
@@ -2665,15 +3062,15 @@ void ShowSettingsDialog(HWND hwndParent) {
   std::wstring shText =
       FormatHotkeyText(g_searchHotkeyModifiers, g_searchHotkeyVirtualKey, L"F");
   SetWindowTextW(g_hwndSearchHotkeyEdit, shText.c_str());
-  SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, L"请输入快捷键");
+  SetHotkeyEditPlaceholder(g_hwndSearchHotkeyEdit, T(STR_HOTKEY_PLACEHOLDER));
   SyncHotkeyEditTextRect(g_hwndSearchHotkeyEdit);
 
-  // 快捷粘贴修饰键下拉选择器
+  // 快捷粘贴修饰键下拉选择器（与快捷键输入框宽度一致）
   g_hwndQuickPasteCombo =
-      CreateSettingsCombo(hwndDlg, 2, IDC_QUICK_PASTE_COMBO, 120);
-  // 收藏快捷键修饰键下拉选择器
+      CreateSettingsCombo(hwndDlg, 2, IDC_QUICK_PASTE_COMBO, 180);
+  // 收藏快捷键修饰键下拉选择器（与快捷键输入框宽度一致）
   g_hwndFavoriteHotkeyCombo =
-      CreateSettingsCombo(hwndDlg, 3, IDC_FAVORITE_HOTKEY_COMBO, 120);
+      CreateSettingsCombo(hwndDlg, 3, IDC_FAVORITE_HOTKEY_COMBO, 180);
 
   // 初始显示通用分类
   g_currentSettingsTab = 0;
@@ -2683,7 +3080,17 @@ void ShowSettingsDialog(HWND hwndParent) {
   UpdateHotkeyConflictState();
 
   ShowWindow(hwndDlg, SW_SHOW);
-  SetForegroundWindow(hwndDlg);
+  // 使用 AttachThreadInput 绕过 Windows
+  // 前台窗口限制，防止从托盘菜单调用时无法前台显示
+  {
+    DWORD foreThread = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+    DWORD curThread = GetCurrentThreadId();
+    if (foreThread != curThread)
+      AttachThreadInput(curThread, foreThread, TRUE);
+    SetForegroundWindow(hwndDlg);
+    if (foreThread != curThread)
+      AttachThreadInput(curThread, foreThread, FALSE);
+  }
   UpdateWindow(hwndDlg);
 }
 

@@ -75,12 +75,11 @@ static void SyncDialogEditTextRect(HWND hwnd) {
     bottomPadding = 3;
     topPadding = std::max(3, availableHeight - textHeight - bottomPadding);
   }
-  RECT rcText = {horizontalPadding,
-                 topPadding,
-                 std::max(horizontalPadding + 1,
-                          (int)rcClient.right - horizontalPadding),
-                 std::max(topPadding + textHeight + 1,
-                          (int)rcClient.bottom - bottomPadding)};
+  RECT rcText = {
+      horizontalPadding, topPadding,
+      std::max(horizontalPadding + 1, (int)rcClient.right - horizontalPadding),
+      std::max(topPadding + textHeight + 1,
+               (int)rcClient.bottom - bottomPadding)};
   SendMessageW(hwnd, EM_SETRECT, 0, (LPARAM)&rcText);
 }
 
@@ -160,8 +159,8 @@ static LRESULT CALLBACK DialogEditProc(HWND hwnd, UINT message, WPARAM wParam,
       g.SetSmoothingMode(SmoothingModeAntiAlias);
       g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
 
-      COLORREF borderColor = g_isDarkMode ? RGB(86, 90, 98)
-                                          : RGB(210, 214, 220);
+      COLORREF borderColor =
+          g_isDarkMode ? RGB(86, 90, 98) : RGB(210, 214, 220);
       GraphicsPath path;
       CreateRoundRectPath(&path, rcBorder.left, rcBorder.top, w, h, 6);
       Pen pen(Color(255, GetRValue(borderColor), GetGValue(borderColor),
@@ -282,11 +281,17 @@ static void CenterDialogToParent(HWND hDlg, HWND hwndParent) {
 }
 
 static void InitThemedDialogFonts(HWND hDlg, ThemedDialogConfig *config) {
-  config->hFont = CreateFontW(
-      g_fontSize + (config ? config->bodyFontDelta : 4), 0, 0, 0, FW_NORMAL,
-      FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-      CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-      g_fontName.c_str());
+  // DPI 缩放：4K 等高分辨率下字体需要同步放大
+  UINT dpi = GetWindowDpi(hDlg);
+  if (dpi == 0)
+    dpi = 96;
+
+  int bodySize =
+      ScaleForDpi(g_fontSize + (config ? config->bodyFontDelta : 4), dpi);
+  config->hFont = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
   EnumChildWindows(
       hDlg,
       [](HWND h, LPARAM lp) -> BOOL {
@@ -296,20 +301,22 @@ static void InitThemedDialogFonts(HWND hDlg, ThemedDialogConfig *config) {
       (LPARAM)config->hFont);
   EnumChildWindows(hDlg, StyleDialogEditChildren, 0);
 
+  int titleSize =
+      ScaleForDpi(g_fontSize + 8 + (config ? config->titleFontDelta : 0), dpi);
   config->hTitleFont = CreateFontW(
-      g_fontSize + 8 + (config ? config->titleFontDelta : 0), 0, 0, 0,
-      FW_SEMIBOLD, FALSE, FALSE, FALSE,
-      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+      titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
   HWND hTitle = GetDlgItem(hDlg, IDC_THEMED_DIALOG_TITLE);
   if (hTitle) {
     SendMessageW(hTitle, WM_SETFONT, (WPARAM)config->hTitleFont, TRUE);
   }
 
+  int closeSize = ScaleForDpi(g_fontSize - 3, dpi);
   config->hCloseFont = CreateFontW(
-      g_fontSize - 3, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
+      closeSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
   HWND hClose = GetDlgItem(hDlg, config->closeBtnId);
   if (hClose) {
     SendMessageW(hClose, WM_SETFONT, (WPARAM)config->hCloseFont, TRUE);
@@ -344,8 +351,8 @@ void ApplyDialogPasswordMask(HWND hEdit, bool revealed) {
                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
 }
 
-static PasswordToggleBinding *FindDialogPasswordToggleBinding(
-    ThemedDialogConfig *config, int controlId) {
+static PasswordToggleBinding *
+FindDialogPasswordToggleBinding(ThemedDialogConfig *config, int controlId) {
   if (!config || !config->userData)
     return NULL;
 
@@ -358,8 +365,8 @@ static PasswordToggleBinding *FindDialogPasswordToggleBinding(
   return NULL;
 }
 
-static PasswordToggleBinding *FindDialogPasswordToggleBindingByButton(
-    HWND hButton, HWND *outDialog = NULL) {
+static PasswordToggleBinding *
+FindDialogPasswordToggleBindingByButton(HWND hButton, HWND *outDialog = NULL) {
   HWND hDlg = GetParent(hButton);
   if (outDialog)
     *outDialog = hDlg;
@@ -378,11 +385,10 @@ static void DrawDialogPasswordEye(HDC hdc, const RECT &rc, bool revealed,
   FillRect(hdc, &rc, hBrush);
   DeleteObject(hBrush);
 
-  HFONT hEye = CreateFontW(17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE,
-                           L"Segoe MDL2 Assets");
+  HFONT hEye =
+      CreateFontW(17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                  DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
   HFONT hOldFont = (HFONT)SelectObject(hdc, hEye);
   int oldBkMode = SetBkMode(hdc, TRANSPARENT);
   COLORREF oldTextColor = GetTextColor(hdc);
@@ -400,8 +406,7 @@ static void DrawDialogPasswordEye(HDC hdc, const RECT &rc, bool revealed,
 }
 
 static LRESULT CALLBACK DialogPasswordToggleProc(HWND hwnd, UINT message,
-                                                 WPARAM wParam,
-                                                 LPARAM lParam) {
+                                                 WPARAM wParam, LPARAM lParam) {
   static bool s_pressed = false;
 
   switch (message) {
@@ -410,7 +415,8 @@ static LRESULT CALLBACK DialogPasswordToggleProc(HWND hwnd, UINT message,
     HDC hdc = BeginPaint(hwnd, &ps);
     RECT rc = {};
     GetClientRect(hwnd, &rc);
-    PasswordToggleBinding *binding = FindDialogPasswordToggleBindingByButton(hwnd);
+    PasswordToggleBinding *binding =
+        FindDialogPasswordToggleBindingByButton(hwnd);
     DrawDialogPasswordEye(hdc, rc, binding && binding->revealed, s_pressed);
     EndPaint(hwnd, &ps);
     return 0;
@@ -481,8 +487,7 @@ int GetDialogPasswordToggleX(int editX, int fullWidth) {
 }
 
 static LRESULT CALLBACK ThemedDialogCloseBtnProc(HWND hwnd, UINT message,
-                                                 WPARAM wParam,
-                                                 LPARAM lParam) {
+                                                 WPARAM wParam, LPARAM lParam) {
   switch (message) {
   case WM_MOUSEMOVE: {
     if (!g_themedDialogCloseHover) {
@@ -536,8 +541,8 @@ static LRESULT CALLBACK ThemedDialogCloseBtnProc(HWND hwnd, UINT message,
 
 static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
                                          LPARAM lParam) {
-  ThemedDialogConfig *config =
-      reinterpret_cast<ThemedDialogConfig *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  ThemedDialogConfig *config = reinterpret_cast<ThemedDialogConfig *>(
+      GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (config && config->onMessage) {
     LRESULT handledResult = 0;
     if (config->onMessage(hwnd, message, wParam, lParam, config->userData,
@@ -620,14 +625,13 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
       }
 
       SetBkMode(hdc, TRANSPARENT);
-      SetTextColor(hdc,
-                   (hover || pressed) ? RGB(255, 255, 255)
-                                      : (g_isDarkMode ? RGB(220, 223, 228)
-                                                      : RGB(90, 96, 108)));
-      HFONT hOldFont =
-          (HFONT)SelectObject(hdc, (HFONT)SendMessageW((HWND)dis->hwndItem,
-                                                       WM_GETFONT, 0, 0));
-      DrawTextW(hdc, L"\uE8BB", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      SetTextColor(hdc, (hover || pressed) ? RGB(255, 255, 255)
+                                           : (g_isDarkMode ? RGB(220, 223, 228)
+                                                           : RGB(90, 96, 108)));
+      HFONT hOldFont = (HFONT)SelectObject(
+          hdc, (HFONT)SendMessageW((HWND)dis->hwndItem, WM_GETFONT, 0, 0));
+      DrawTextW(hdc, L"\uE8BB", -1, &rc,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       SelectObject(hdc, hOldFont);
       return TRUE;
     }
@@ -644,8 +648,8 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
     Graphics g(hdc);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     GraphicsPath path;
-    CreateRoundRectPath(&path, rc.left + 1, rc.top + 1,
-                        rc.right - rc.left - 2, rc.bottom - rc.top - 2, 10);
+    CreateRoundRectPath(&path, rc.left + 1, rc.top + 1, rc.right - rc.left - 2,
+                        rc.bottom - rc.top - 2, 10);
 
     COLORREF fill;
     COLORREF border;
@@ -655,16 +659,16 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
       border = pressed ? (g_isDarkMode ? RGB(170, 70, 74) : RGB(202, 58, 64))
                        : (g_isDarkMode ? RGB(194, 82, 88) : RGB(228, 84, 92));
     } else {
-      fill = isPrimary ? (pressed ? (g_isDarkMode ? RGB(86, 118, 168)
-                                                  : RGB(0, 94, 184))
-                                  : GetThemeAccentColor())
-                       : (g_isDarkMode ? RGB(38, 40, 46)
-                                       : RGB(247, 248, 250));
-      border = isPrimary ? (pressed ? (g_isDarkMode ? RGB(78, 108, 154)
-                                                    : RGB(0, 88, 172))
-                                    : GetThemeAccentColor())
-                         : (g_isDarkMode ? RGB(74, 76, 82)
-                                         : RGB(208, 212, 220));
+      fill =
+          isPrimary
+              ? (pressed ? (g_isDarkMode ? RGB(86, 118, 168) : RGB(0, 94, 184))
+                         : GetThemeAccentColor())
+              : (g_isDarkMode ? RGB(38, 40, 46) : RGB(247, 248, 250));
+      border =
+          isPrimary
+              ? (pressed ? (g_isDarkMode ? RGB(78, 108, 154) : RGB(0, 88, 172))
+                         : GetThemeAccentColor())
+              : (g_isDarkMode ? RGB(74, 76, 82) : RGB(208, 212, 220));
     }
     SolidBrush brush(
         Color(255, GetRValue(fill), GetGValue(fill), GetBValue(fill)));
@@ -674,19 +678,24 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
     g.DrawPath(&pen, &path);
 
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, isPrimary ? RGB(255, 255, 255)
-                                : (g_isDarkMode ? RGB(226, 228, 232)
-                                                : RGB(52, 58, 66)));
+    SetTextColor(
+        hdc, isPrimary ? RGB(255, 255, 255)
+                       : (g_isDarkMode ? RGB(226, 228, 232) : RGB(52, 58, 66)));
+    // 按钮字体 DPI 缩放：4K 等高分辨率下文字需同步放大
+    UINT btnDpi = GetWindowDpi(hwnd);
+    if (btnDpi == 0)
+      btnDpi = 96;
+    int btnFontSize = ScaleForDpi(g_fontSize + 1, btnDpi);
     HFONT hBtnFont = CreateFontW(
-        g_fontSize + 1, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
+        btnFontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, g_fontName.c_str());
     HFONT hOldFont = (HFONT)SelectObject(hdc, hBtnFont);
     const wchar_t *buttonText =
-        isPrimary ? (config->primaryButtonText ? config->primaryButtonText
-                                               : L"确定")
-                  : (config->secondaryButtonText ? config->secondaryButtonText
-                                                 : L"取消");
+        isPrimary
+            ? (config->primaryButtonText ? config->primaryButtonText : L"确定")
+            : (config->secondaryButtonText ? config->secondaryButtonText
+                                           : L"取消");
     DrawTextW(hdc, buttonText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     SelectObject(hdc, hOldFont);
     DeleteObject(hBtnFont);
@@ -704,15 +713,18 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
       g.SetSmoothingMode(SmoothingModeAntiAlias);
 
       GraphicsPath outerPath;
-      CreateRoundRectPath(&outerPath, 0, 0, config->dlgW - 1, config->dlgH - 1, 18);
-      COLORREF outerBorder = g_isDarkMode ? RGB(62, 64, 70) : RGB(218, 222, 228);
+      CreateRoundRectPath(&outerPath, 0, 0, config->dlgW - 1, config->dlgH - 1,
+                          18);
+      COLORREF outerBorder =
+          g_isDarkMode ? RGB(62, 64, 70) : RGB(218, 222, 228);
       Pen outerPen(Color(255, GetRValue(outerBorder), GetGValue(outerBorder),
                          GetBValue(outerBorder)),
                    1.0f);
       g.DrawPath(&outerPen, &outerPath);
 
       GraphicsPath cardPath;
-      CreateRoundRectPath(&cardPath, config->cardRect.left, config->cardRect.top,
+      CreateRoundRectPath(&cardPath, config->cardRect.left,
+                          config->cardRect.top,
                           config->cardRect.right - config->cardRect.left,
                           config->cardRect.bottom - config->cardRect.top, 18);
       COLORREF fill = GetThemeDialogCardBgColor();
@@ -723,32 +735,44 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
         g.FillPath(&brush, &cardPath);
       }
       if (config->drawCardBorder) {
-        Pen pen(Color(255, GetRValue(border), GetGValue(border),
-                      GetBValue(border)),
-                1.0f);
+        Pen pen(
+            Color(255, GetRValue(border), GetGValue(border), GetBValue(border)),
+            1.0f);
         g.DrawPath(&pen, &cardPath);
       }
 
       // 绘制警告图标（感叹号圆圈）
+      // DPI 缩放：4K 等高分辨率下图标需要同步放大
       if (config->showWarningIcon) {
-        // 图标垂直居中于正文文字区域
-        // 正文 y = cardRect.top + 24, height = 52, 中心 = cardRect.top + 50
-        int iconCx = config->cardRect.left + 40;
-        int iconCy = config->cardRect.top + 50;
-        int iconR = 14;
+        UINT warnDpi = GetWindowDpi(hwnd);
+        if (warnDpi == 0)
+          warnDpi = 96;
+        // 图标垂直居中于 cardRect，与 body 控件（同样居中于 cardRect）对齐
+        int iconCx = config->cardRect.left + ScaleForDpi(40, warnDpi);
+        int iconCy =
+            config->cardRect.top +
+            (config->cardRect.bottom - config->cardRect.top) / 2;
+        int iconR = ScaleForDpi(14, warnDpi);
         // 圆圈背景（橙黄色）
         COLORREF iconBg = RGB(255, 193, 7);
-        SolidBrush iconBrush(Color(255, GetRValue(iconBg),
-                                   GetGValue(iconBg), GetBValue(iconBg)));
-        g.FillEllipse(&iconBrush, iconCx - iconR, iconCy - iconR,
-                      iconR * 2, iconR * 2);
+        SolidBrush iconBrush(Color(255, GetRValue(iconBg), GetGValue(iconBg),
+                                   GetBValue(iconBg)));
+        g.FillEllipse(&iconBrush, (REAL)(iconCx - iconR),
+                      (REAL)(iconCy - iconR), (REAL)(iconR * 2),
+                      (REAL)(iconR * 2));
         // 感叹号（白色）
         SolidBrush exclBrush(Color(255, 255, 255, 255));
         // 竖线
-        g.FillRectangle(&exclBrush, (REAL)(iconCx - 1.5f), (REAL)(iconCy - 6),
-                        (REAL)3, (REAL)9);
+        REAL barW = (REAL)ScaleForDpi(3, warnDpi);
+        REAL barH = (REAL)ScaleForDpi(9, warnDpi);
+        REAL barX = (REAL)(iconCx)-barW / 2.0f;
+        REAL barY = (REAL)(iconCy) - (REAL)ScaleForDpi(6, warnDpi);
+        g.FillRectangle(&exclBrush, barX, barY, barW, barH);
         // 点
-        g.FillEllipse(&exclBrush, iconCx - 2, iconCy + 4, 4, 4);
+        int dotSize = ScaleForDpi(4, warnDpi);
+        g.FillEllipse(&exclBrush, (REAL)(iconCx - dotSize / 2),
+                      (REAL)(iconCy + ScaleForDpi(4, warnDpi)), (REAL)dotSize,
+                      (REAL)dotSize);
       }
     }
     EndPaint(hwnd, &ps);
@@ -797,47 +821,60 @@ static LRESULT CALLBACK ThemedDialogProc(HWND hwnd, UINT message, WPARAM wParam,
 
 HWND CreateThemedDialog(HWND hwndParent, HINSTANCE hInst,
                         ThemedDialogConfig *config) {
-  HWND hDlg =
-      CreateWindowExW(0, L"#32770", config->windowTitle,
-                      WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-                      CW_USEDEFAULT, CW_USEDEFAULT, config->dlgW, config->dlgH,
-                      hwndParent, NULL, hInst, NULL);
+  UINT dpi = GetWindowDpi(hwndParent);
+  if (dpi == 0)
+    dpi = 96;
+
+  HWND hDlg = CreateWindowExW(0, L"#32770", config->windowTitle,
+                              WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                              CW_USEDEFAULT, CW_USEDEFAULT, config->dlgW,
+                              config->dlgH, hwndParent, NULL, hInst, NULL);
   if (!hDlg) {
     return NULL;
   }
 
-  HRGN hRgn =
-      CreateRoundRectRgn(0, 0, config->dlgW + 1, config->dlgH + 1, 22, 22);
+  int cornerR = ScaleForDpi(22, dpi);
+  HRGN hRgn = CreateRoundRectRgn(0, 0, config->dlgW + 1, config->dlgH + 1,
+                                 cornerR, cornerR);
   SetWindowRgn(hDlg, hRgn, TRUE);
 
-  CreateWindowExW(0, L"STATIC", config->title, WS_CHILD | WS_VISIBLE, 22, 16,
-                  260, 28, hDlg, (HMENU)IDC_THEMED_DIALOG_TITLE, hInst, NULL);
-  CreateWindowExW(0, L"STATIC", config->subtitle, WS_CHILD | WS_VISIBLE, 22, 46,
-                  320, 18, hDlg, (HMENU)IDC_THEMED_DIALOG_SUBTITLE, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", config->title, WS_CHILD | WS_VISIBLE,
+                  ScaleForDpi(22, dpi), ScaleForDpi(16, dpi),
+                  ScaleForDpi(260, dpi), ScaleForDpi(28, dpi), hDlg,
+                  (HMENU)IDC_THEMED_DIALOG_TITLE, hInst, NULL);
+  CreateWindowExW(0, L"STATIC", config->subtitle, WS_CHILD | WS_VISIBLE,
+                  ScaleForDpi(22, dpi), ScaleForDpi(46, dpi),
+                  ScaleForDpi(320, dpi), ScaleForDpi(18, dpi), hDlg,
+                  (HMENU)IDC_THEMED_DIALOG_SUBTITLE, hInst, NULL);
   if (config->bodyText && config->bodyText[0] != L'\0') {
-    int bodyX = config->cardRect.left + 20;
-    int bodyW = config->cardRect.right - config->cardRect.left - 40;
+    int pad20 = ScaleForDpi(20, dpi);
+    int bodyX = config->cardRect.left + pad20;
+    int bodyW = config->cardRect.right - config->cardRect.left - pad20 * 2;
     // 显示警告图标时，正文右移给图标让出空间
     if (config->showWarningIcon) {
-      bodyX += 40;
-      bodyW -= 40;
+      int iconSpace = ScaleForDpi(40, dpi);
+      bodyX += iconSpace;
+      bodyW -= iconSpace;
     }
+    // body 控件垂直居中于 cardRect，配合 SS_CENTERIMAGE 让文字垂直居中显示
+    int bodyH = ScaleForDpi(52, dpi);
+    int cardH = config->cardRect.bottom - config->cardRect.top;
+    int bodyY = config->cardRect.top + (cardH - bodyH) / 2;
     CreateWindowExW(WS_EX_TRANSPARENT, L"STATIC", config->bodyText,
-                    WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, bodyX,
-                    config->cardRect.top + 24,
-                    bodyW, 52, hDlg,
-                    (HMENU)IDC_THEMED_DIALOG_BODY, hInst, NULL);
+                    WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, bodyX, bodyY, bodyW,
+                    bodyH, hDlg, (HMENU)IDC_THEMED_DIALOG_BODY, hInst, NULL);
   }
   g_themedDialogCloseHover = false;
   g_themedDialogClosePressed = false;
   g_hwndThemedDialogCloseBtn =
       CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                      config->dlgW - 44, 4, 40, 24, hDlg,
+                      config->dlgW - ScaleForDpi(44, dpi), ScaleForDpi(4, dpi),
+                      ScaleForDpi(40, dpi), ScaleForDpi(24, dpi), hDlg,
                       (HMENU)(INT_PTR)config->closeBtnId, hInst, NULL);
   if (g_hwndThemedDialogCloseBtn) {
-    g_oldThemedDialogCloseProc = (WNDPROC)SetWindowLongPtrW(
-        g_hwndThemedDialogCloseBtn, GWLP_WNDPROC,
-        (LONG_PTR)ThemedDialogCloseBtnProc);
+    g_oldThemedDialogCloseProc =
+        (WNDPROC)SetWindowLongPtrW(g_hwndThemedDialogCloseBtn, GWLP_WNDPROC,
+                                   (LONG_PTR)ThemedDialogCloseBtnProc);
   }
 
   SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)config);
@@ -893,18 +930,21 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   s_confirmDone = false;
   s_confirmAccepted = false;
 
+  // DPI 缩放：4K 等高分辨率下弹窗尺寸需要放大
+  UINT dpi = GetWindowDpi(hwndParent);
+  if (dpi == 0)
+    dpi = 96;
+
   ThemedDialogConfig config = {};
   config.windowTitle = dialog.windowTitle;
   config.title = dialog.title;
   config.subtitle = NULL; // 不显示副标题（标题下的说明行）
   config.bodyText = dialog.bodyText;
-  config.primaryButtonText =
-      dialog.confirmText ? dialog.confirmText : L"确定";
-  config.secondaryButtonText =
-      dialog.cancelText ? dialog.cancelText : L"取消";
-  config.dlgW = dialog.dlgW > 0 ? dialog.dlgW : 424;
+  config.primaryButtonText = dialog.confirmText ? dialog.confirmText : L"确定";
+  config.secondaryButtonText = dialog.cancelText ? dialog.cancelText : L"取消";
+  config.dlgW = ScaleForDpi(dialog.dlgW > 0 ? dialog.dlgW : 424, dpi);
   // 去掉副标题后减小高度
-  config.dlgH = dialog.dlgH > 0 ? dialog.dlgH - 30 : 216;
+  config.dlgH = ScaleForDpi(dialog.dlgH > 0 ? dialog.dlgH - 30 : 216, dpi);
   config.closeBtnId = closeBtnId;
   config.bodyFontDelta = 4;   // 说明文字增大4px
   config.titleFontDelta = -2; // 标题字体减小2px
@@ -912,13 +952,13 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   // 调整 cardRect：上移 30px（去掉副标题空间），下边界相应调整
   if (dialog.cardRect.right > dialog.cardRect.left &&
       dialog.cardRect.bottom > dialog.cardRect.top) {
-    config.cardRect = {
-        dialog.cardRect.left,
-        dialog.cardRect.top - 30,
-        dialog.cardRect.right,
-        dialog.cardRect.bottom - 30};
+    config.cardRect = {ScaleForDpi(dialog.cardRect.left, dpi),
+                       ScaleForDpi(dialog.cardRect.top - 30, dpi),
+                       ScaleForDpi(dialog.cardRect.right, dpi),
+                       ScaleForDpi(dialog.cardRect.bottom - 30, dpi)};
   } else {
-    config.cardRect = {14, 48, 410, 150};
+    config.cardRect = {ScaleForDpi(14, dpi), ScaleForDpi(48, dpi),
+                       ScaleForDpi(410, dpi), ScaleForDpi(150, dpi)};
   }
   config.doneFlag = &s_confirmDone;
   config.primaryButtonDanger = dialog.danger;
@@ -928,19 +968,18 @@ bool ShowThemedConfirmDialog(HWND hwndParent,
   if (!hDlg)
     return false;
 
-  const int btnW = 78;
-  const int btnH = 27;
-  const int btnGap = 10;
-  const int btnY = config.dlgH - 42;
-  const int cancelBtnX = config.dlgW - 24 - btnW;
+  const int btnW = ScaleForDpi(78, dpi);
+  const int btnH = ScaleForDpi(27, dpi);
+  const int btnGap = ScaleForDpi(10, dpi);
+  const int btnY = config.dlgH - ScaleForDpi(42, dpi);
+  const int cancelBtnX = config.dlgW - ScaleForDpi(24, dpi) - btnW;
   const int okBtnX = cancelBtnX - btnGap - btnW;
   CreateWindowExW(0, L"BUTTON", config.primaryButtonText,
                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
                   okBtnX, btnY, btnW, btnH, hDlg, (HMENU)IDOK, hInst, NULL);
   CreateWindowExW(0, L"BUTTON", config.secondaryButtonText,
-                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                  cancelBtnX, btnY, btnW, btnH, hDlg, (HMENU)IDCANCEL, hInst,
-                  NULL);
+                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, cancelBtnX, btnY, btnW,
+                  btnH, hDlg, (HMENU)IDCANCEL, hInst, NULL);
 
   config.initialFocus = GetDlgItem(hDlg, IDCANCEL);
   config.onOk = +[](HWND, void *) -> bool {

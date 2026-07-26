@@ -66,11 +66,6 @@ static int TagPopupItemHeight() { return TDpi(32); }
 static int TagPopupColorBoxSize() { return TDpi(16); }
 static int TagPopupPadding() { return TDpi(8); }
 static int TagPopupCornerRadius() { return TDpi(8); }
-static int TagPopupWidth() { return TDpi(220); }
-static int TagPopupColorAreaHeight() {
-  int colorRows = (g_commonColorsCount + 5) / 6;
-  return TDpi(20) + colorRows * TDpi(22) + TDpi(8);
-}
 
 static void RefreshTagPopupTooltipTheme() {
   if (!g_hwndTagPopupTooltip)
@@ -261,12 +256,22 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
     return 0;
   }
 
+  case WM_ERASEBKGND:
+    // 抑制背景擦除，避免悬浮时闪烁（WM_PAINT 中已绘制整个背景）
+    return 1;
+
   case WM_PAINT: {
     PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
+    HDC hdcReal = BeginPaint(hwnd, &ps);
 
     RECT rcClient;
     GetClientRect(hwnd, &rcClient);
+
+    // 双缓冲：在内存 DC 上绘制，避免悬浮时闪烁
+    HDC hdc = CreateCompatibleDC(hdcReal);
+    HBITMAP hMemBmp =
+        CreateCompatibleBitmap(hdcReal, rcClient.right, rcClient.bottom);
+    HBITMAP hOldMemBmp = (HBITMAP)SelectObject(hdc, hMemBmp);
 
     HBRUSH hBgBrush = CreateSolidBrush(GetTagPopupBgColor());
     FillRect(hdc, &rcClient, hBgBrush);
@@ -548,6 +553,12 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
     SelectObject(hdc, hOldFont);
     DeleteObject(hFont);
+
+    // 将内存 DC 复制到屏幕
+    BitBlt(hdcReal, 0, 0, rcClient.right, rcClient.bottom, hdc, 0, 0, SRCCOPY);
+    SelectObject(hdc, hOldMemBmp);
+    DeleteObject(hMemBmp);
+    DeleteDC(hdc);
     EndPaint(hwnd, &ps);
     return 0;
   }
@@ -738,7 +749,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
           editHeight, hwnd, (HMENU)IDC_TAG_POPUP_NAME, GetModuleHandle(NULL),
           NULL);
 
-      HFONT hFont = CreateFontW(TDpi(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+      HFONT hFont = CreateFontW(TDpi(18), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                 CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                 DEFAULT_PITCH | FF_DONTCARE,
@@ -780,11 +791,11 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
 
       g_currentFilterTagId = 0;
       g_currentTab = 4;
-      InvalidateRect(g_hwndFilterAll, NULL, TRUE);
-      InvalidateRect(g_hwndFilterText, NULL, TRUE);
-      InvalidateRect(g_hwndFilterImage, NULL, TRUE);
-      InvalidateRect(g_hwndFilterFile, NULL, TRUE);
-      InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
+      InvalidateRect(g_hwndFilterAll, NULL, FALSE);
+      InvalidateRect(g_hwndFilterText, NULL, FALSE);
+      InvalidateRect(g_hwndFilterImage, NULL, FALSE);
+      InvalidateRect(g_hwndFilterFile, NULL, FALSE);
+      InvalidateRect(g_hwndFilterFavorite, NULL, FALSE);
       UpdateListBox();
       DestroyWindow(hwnd);
       // 销毁弹窗后确保主窗体保持前台
@@ -806,11 +817,11 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
         if (g_tagPopupFilterMode) {
           g_currentFilterTagId = g_tags[i].id;
           g_currentTab = 4;
-          InvalidateRect(g_hwndFilterAll, NULL, TRUE);
-          InvalidateRect(g_hwndFilterText, NULL, TRUE);
-          InvalidateRect(g_hwndFilterImage, NULL, TRUE);
-          InvalidateRect(g_hwndFilterFile, NULL, TRUE);
-          InvalidateRect(g_hwndFilterFavorite, NULL, TRUE);
+          InvalidateRect(g_hwndFilterAll, NULL, FALSE);
+          InvalidateRect(g_hwndFilterText, NULL, FALSE);
+          InvalidateRect(g_hwndFilterImage, NULL, FALSE);
+          InvalidateRect(g_hwndFilterFile, NULL, FALSE);
+          InvalidateRect(g_hwndFilterFavorite, NULL, FALSE);
           UpdateListBox();
           DestroyWindow(hwnd);
           // 销毁弹窗后确保主窗体保持前台，避免被其他窗口覆盖
@@ -855,7 +866,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
               editHeight, hwnd, (HMENU)IDC_TAG_POPUP_NAME, GetModuleHandle(NULL),
               NULL);
 
-          HFONT hFont = CreateFontW(TDpi(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+          HFONT hFont = CreateFontW(TDpi(18), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                     DEFAULT_PITCH | FF_DONTCARE,
@@ -1007,7 +1018,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
               editHeight, hwnd, (HMENU)IDC_TAG_POPUP_NAME, GetModuleHandle(NULL),
               NULL);
 
-          HFONT hFont = CreateFontW(TDpi(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+          HFONT hFont = CreateFontW(TDpi(18), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                     DEFAULT_PITCH | FF_DONTCARE,
@@ -1050,7 +1061,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
             editHeight, hwnd, (HMENU)IDC_TAG_POPUP_NAME, GetModuleHandle(NULL),
             NULL);
 
-        HFONT hFont = CreateFontW(TDpi(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        HFONT hFont = CreateFontW(TDpi(18), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                   CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                   DEFAULT_PITCH | FF_DONTCARE,

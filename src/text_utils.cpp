@@ -47,7 +47,41 @@ LinkType GetLinkType(const std::wstring& text) {
     if (IsIPAddress(text)) {
         return LINK_IP;
     }
+    if (IsEmailAddress(text)) {
+        return LINK_EMAIL;
+    }
     return LINK_NONE;
+}
+
+// 检测文本是否为邮箱地址：local@domain.tld
+bool IsEmailAddress(const std::wstring& text) {
+    if (text.empty() || text.length() < 5) return false;
+    // 必须包含且仅包含一个 @
+    size_t atPos = text.find(L'@');
+    if (atPos == std::wstring::npos || atPos == 0) return false;
+    if (text.find(L'@', atPos + 1) != std::wstring::npos) return false;
+    // @ 后必须有一个点
+    size_t dotPos = text.find(L'.', atPos + 1);
+    if (dotPos == std::wstring::npos || dotPos == atPos + 1 ||
+        dotPos == text.length() - 1) return false;
+    // local 部分：字母/数字/._%+-
+    for (size_t i = 0; i < atPos; i++) {
+        wchar_t ch = text[i];
+        if (!((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+              (ch >= L'0' && ch <= L'9') || ch == L'.' || ch == L'_' ||
+              ch == L'%' || ch == L'+' || ch == L'-')) {
+            return false;
+        }
+    }
+    // domain 部分：字母/数字/.-
+    for (size_t i = atPos + 1; i < text.length(); i++) {
+        wchar_t ch = text[i];
+        if (!((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+              (ch >= L'0' && ch <= L'9') || ch == L'.' || ch == L'-')) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool IsLinkText(const std::wstring& text) {

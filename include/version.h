@@ -4,8 +4,8 @@
 // 修改版本时只需修改这里，然后同步 AppxManifest.xml 中的 Version 属性
 #define APP_VERSION_MAJOR 0
 #define APP_VERSION_MINOR 1
-#define APP_VERSION_BUILD 6
+#define APP_VERSION_BUILD 10
 #define APP_VERSION_REVISION 0
 
-#define APP_VERSION_STRING L"0.1.6.0"
-#define APP_VERSION_STRING_A "0.1.6.0"
+#define APP_VERSION_STRING L"0.1.10.0"
+#define APP_VERSION_STRING_A "0.1.10.0"

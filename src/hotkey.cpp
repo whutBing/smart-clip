@@ -9,8 +9,8 @@
 // 全局变量定义
 int g_hotkeyId = 1;
 bool g_isHotkeyEnabled = false;
-UINT g_hotkeyVirtualKey = 0;                    // 默认未设置
-UINT g_hotkeyModifiers = 0;                     // 默认未设置
+UINT g_hotkeyVirtualKey = 0; // 默认未设置
+UINT g_hotkeyModifiers = 0;  // 默认未设置
 
 // 搜索框快捷键全局变量定义
 bool g_isSearchHotkeyEnabled = true;        // 默认启用
@@ -20,433 +20,404 @@ UINT g_searchHotkeyModifiers = MOD_CONTROL; // 默认Ctrl
 // 历史记录数量限制
 int g_maxHistoryCount = 100; // 默认100条
 
-// 保存快捷键设置
+// 保存快捷键设置到 SQLite
 void SaveHotkeySettings() {
-  std::wstring filePath = GetDataFilePath();
-  // 用不同的文件名保存快捷键设置
-  size_t dotPos = filePath.rfind(L'.');
-  if (dotPos != std::wstring::npos) {
-    filePath = filePath.substr(0, dotPos) + L"_hotkey.txt";
-  }
+  DbSetSettingInt("hotkey_enabled", g_isHotkeyEnabled ? 1 : 0);
+  DbSetSettingInt("hotkey_modifiers", (int)g_hotkeyModifiers);
+  DbSetSettingInt("hotkey_vk", (int)g_hotkeyVirtualKey);
+  DbSetSettingInt("notification_enabled", g_isNotificationEnabled ? 1 : 0);
+  DbSetSettingInt("search_hotkey_enabled", g_isSearchHotkeyEnabled ? 1 : 0);
+  DbSetSettingInt("search_hotkey_modifiers", (int)g_searchHotkeyModifiers);
+  DbSetSettingInt("search_hotkey_vk", (int)g_searchHotkeyVirtualKey);
+  DbSetSettingInt("theme_mode", (int)g_themeMode);
+  DbSetSettingInt("smooth_scroll", g_isSmoothScrollEnabled ? 1 : 0);
+  DbSetSettingInt("image_preview_quality", (int)g_imagePreviewQuality);
+  DbSetSettingInt("max_history_count", g_maxHistoryCount);
+  DbSetSettingInt("custom_scrollbar", g_isCustomScrollbarEnabled ? 1 : 0);
+  DbSetSettingInt("scrollbar_hide_delay", g_customScrollbarHideDelayMs);
+  DbSetSettingInt("color_dot", g_isColorDotEnabled ? 1 : 0);
+  DbSetSettingInt("theme_id", (int)g_themeId);
+  DbSetSettingInt("language", (int)g_appLanguage);
+  DbSetSettingInt("quick_paste_modifiers", (int)g_quickPasteModifiers);
+  DbSetSettingInt("taskbar_visible", g_isTaskbarVisible ? 1 : 0);
+  DbSetSettingInt("favorite_hotkey_modifiers",
+                  (int)g_favoriteHotkeyModifiers);
+  DbSetSettingInt("max_text_size_kb", g_maxTextSizeKB);
+  DbSetSettingInt("quick_paste_enabled", g_isQuickPasteEnabled ? 1 : 0);
+  DbSetSettingInt("all_hotkeys_enabled", g_allHotkeysEnabled ? 1 : 0);
 
-  // 保存快捷键设置到文件
-  std::wstring content = std::to_wstring(g_isHotkeyEnabled) + L"|" +
-                         std::to_wstring(g_hotkeyModifiers) + L"|" +
-                         std::to_wstring(g_hotkeyVirtualKey) + L"\n" +
-                         std::to_wstring(g_isSearchHotkeyEnabled) + L"|" +
-                         std::to_wstring(g_searchHotkeyModifiers) + L"|" +
-                         std::to_wstring(g_searchHotkeyVirtualKey) + L"\n" +
-                         L"0|0\n" +
-                         std::to_wstring((int)g_themeMode) + L"\n" +
-                         std::to_wstring(g_isSmoothScrollEnabled) + L"\n" +
-                         std::to_wstring((int)g_imagePreviewQuality) + L"\n" +
-                         std::to_wstring(g_maxHistoryCount) + L"\n" +
-                         std::to_wstring(g_isCustomScrollbarEnabled) + L"\n" +
-                         std::to_wstring(g_customScrollbarHideDelayMs) + L"\n" +
-                         std::to_wstring(g_isColorDotEnabled) + L"\n" +
-                         std::to_wstring((int)g_themeId) + L"\n" +
-                         std::to_wstring((int)g_appLanguage) + L"\n" +
-                         std::to_wstring((int)g_quickPasteModifiers) + L"\n" +
-                         std::to_wstring(g_isTaskbarVisible) + L"\n" +
-                         std::to_wstring((int)g_favoriteHotkeyModifiers) + L"\n";
-
-  // 转换为UTF-8
-  int utf8Length = WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, NULL,
-                                       0, NULL, NULL);
-  if (utf8Length <= 0)
-    return;
-
-  std::vector<char> utf8Content(utf8Length);
-  WideCharToMultiByte(CP_UTF8, 0, content.c_str(), -1, &utf8Content[0],
-                      utf8Length, NULL, NULL);
-
-  // 确保数据目录存在（递归创建，处理用户手动删除目录的情况）
-  size_t slashPos = filePath.find_last_of(L"\\");
-  if (slashPos != std::wstring::npos) {
-    std::wstring dir = filePath.substr(0, slashPos);
-    // 递归创建目录链
-    std::wstring curPath;
-    size_t start = 0;
-    while (start < dir.length()) {
-      size_t next = dir.find(L'\\', start);
-      if (next == std::wstring::npos) {
-        curPath = dir;
-      } else {
-        curPath = dir.substr(0, next);
-      }
-      if (!curPath.empty() && curPath.length() > 2) {
-        CreateDirectoryW(curPath.c_str(), NULL);
-      }
-      if (next == std::wstring::npos)
-        break;
-      start = next + 1;
-    }
-    // 最后确保完整目录存在
-    CreateDirectoryW(dir.c_str(), NULL);
-  }
-
-  HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_WRITE, 0, NULL,
-                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (hFile != INVALID_HANDLE_VALUE) {
-    DWORD dwBytesWritten = 0;
-    WriteFile(hFile, &utf8Content[0], utf8Length - 1, &dwBytesWritten, NULL);
-    FlushFileBuffers(hFile);
-    CloseHandle(hFile);
-  }
-
-  // 快捷键变更后刷新托盘提示（显示/隐藏切换快捷键行）
   RefreshTrayTooltip();
 }
 
-// 加载快捷键设置
-void LoadHotkeySettings() {
-  std::wstring filePath = GetDataFilePath();
-  // 用不同的文件名加载快捷键设置
-  size_t dotPos = filePath.rfind(L'.');
-  if (dotPos != std::wstring::npos) {
-    filePath = filePath.substr(0, dotPos) + L"_hotkey.txt";
+// 根据系统区域检测语言（首次运行或旧配置无 language 行时使用）
+static void DetectSystemLanguage() {
+  wchar_t localeName[LOCALE_NAME_MAX_LENGTH] = {};
+  bool gotLocale = false;
+  LANGID uiLang = GetUserDefaultUILanguage();
+  wchar_t uiLocaleName[LOCALE_NAME_MAX_LENGTH] = {};
+  if (LCIDToLocaleName(MAKELCID(uiLang, SORT_DEFAULT), uiLocaleName,
+                       LOCALE_NAME_MAX_LENGTH, 0) > 0) {
+    wcscpy_s(localeName, uiLocaleName);
+    gotLocale = true;
+  } else if (GetUserDefaultLocaleName(localeName, LOCALE_NAME_MAX_LENGTH) > 0) {
+    gotLocale = true;
   }
+  if (gotLocale) {
+    if (_wcsicmp(localeName, L"zh-CN") == 0 ||
+        _wcsicmp(localeName, L"zh-Hans-CN") == 0 ||
+        _wcsicmp(localeName, L"zh-SG") == 0 ||
+        _wcsicmp(localeName, L"zh-Hans-SG") == 0 ||
+        _wcsicmp(localeName, L"zh-Hans") == 0 ||
+        _wcsicmp(localeName, L"zh") == 0) {
+      g_appLanguage = LANG_ZH_CN;
+    } else if (_wcsicmp(localeName, L"ja-JP") == 0 ||
+               _wcsicmp(localeName, L"ja") == 0) {
+      g_appLanguage = LANG_JA_JP;
+    } else if (_wcsicmp(localeName, L"ko-KR") == 0 ||
+               _wcsicmp(localeName, L"ko") == 0) {
+      g_appLanguage = LANG_KO_KR;
+    } else if (_wcsicmp(localeName, L"de-DE") == 0 ||
+               _wcsicmp(localeName, L"de-AT") == 0 ||
+               _wcsicmp(localeName, L"de-CH") == 0 ||
+               _wcsicmp(localeName, L"de") == 0) {
+      g_appLanguage = LANG_DE_DE;
+    } else if (_wcsicmp(localeName, L"ar-SA") == 0 ||
+               _wcsicmp(localeName, L"ar-EG") == 0 ||
+               _wcsicmp(localeName, L"ar-AE") == 0 ||
+               _wcsicmp(localeName, L"ar") == 0) {
+      g_appLanguage = LANG_AR_SA;
+    } else if (_wcsicmp(localeName, L"tr-TR") == 0 ||
+               _wcsicmp(localeName, L"tr") == 0) {
+      g_appLanguage = LANG_TR_TR;
+    } else {
+      g_appLanguage = LANG_EN_US;
+    }
+  } else {
+    g_appLanguage = LANG_EN_US;
+  }
+}
 
-  // 读取保存的设置
-  bool settingsLoaded = false;
-  bool searchSettingsLoaded = false;
+// 从旧版 _hotkey.txt 迁移到 SQLite（仅解析设置全局变量，不保存/删除文件）
+static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
+  languageLoaded = false;
+
+  std::wstring filePath = GetDataFilePath();
+  size_t dotPos = filePath.rfind(L'.');
+  if (dotPos != std::wstring::npos)
+    filePath = filePath.substr(0, dotPos) + L"_hotkey.txt";
+
   HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ,
                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (hFile != INVALID_HANDLE_VALUE) {
-    DWORD dwFileSize = GetFileSize(hFile, NULL);
-    if (dwFileSize > 0) {
-      std::vector<BYTE> fileContent(dwFileSize);
-      DWORD dwBytesRead = 0;
-      if (ReadFile(hFile, &fileContent[0], dwFileSize, &dwBytesRead, NULL)) {
-        // 转换为Unicode
-        int unicodeLength = MultiByteToWideChar(
-            CP_UTF8, 0, (LPCSTR)(&fileContent[0]), dwFileSize, NULL, 0);
-        if (unicodeLength > 0) {
-          std::vector<wchar_t> unicodeContent(unicodeLength + 1);
-          MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)(&fileContent[0]), dwFileSize,
-                              &unicodeContent[0], unicodeLength);
-          unicodeContent[unicodeLength] = L'\0';
+  if (hFile == INVALID_HANDLE_VALUE)
+    return false;
 
-          // 解析第一行：enabled|modifiers|virtualKey
-          wchar_t *pLine = &unicodeContent[0];
-          wchar_t *pNextLine = wcsstr(pLine, L"\n");
-          if (pNextLine != NULL) {
-            *pNextLine = L'\0';
-            pNextLine++;
+  DWORD dwFileSize = GetFileSize(hFile, NULL);
+  if (dwFileSize == 0 || dwFileSize == INVALID_FILE_SIZE) {
+    CloseHandle(hFile);
+    return false;
+  }
+
+  std::vector<BYTE> fileContent(dwFileSize);
+  DWORD dwBytesRead = 0;
+  bool ok = false;
+  if (ReadFile(hFile, &fileContent[0], dwFileSize, &dwBytesRead, NULL)) {
+    int unicodeLength = MultiByteToWideChar(
+        CP_UTF8, 0, (LPCSTR)(&fileContent[0]), dwFileSize, NULL, 0);
+    if (unicodeLength > 0) {
+      std::vector<wchar_t> unicodeContent(unicodeLength + 1);
+      MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)(&fileContent[0]), dwFileSize,
+                          &unicodeContent[0], unicodeLength);
+      unicodeContent[unicodeLength] = L'\0';
+
+      wchar_t *pLine = &unicodeContent[0];
+      wchar_t *pNextLine = wcsstr(pLine, L"\n");
+      if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+
+      // 第一行：enabled|modifiers|virtualKey
+      wchar_t *pDelim = wcsstr(pLine, L"|");
+      if (pDelim) {
+        *pDelim = L'\0';
+        g_isHotkeyEnabled = (wcstol(pLine, NULL, 10) != 0);
+        pLine = pDelim + 1;
+        pDelim = wcsstr(pLine, L"|");
+        if (pDelim) {
+          *pDelim = L'\0';
+          g_hotkeyModifiers = (UINT)wcstol(pLine, NULL, 10);
+          pLine = pDelim + 1;
+          g_hotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
+          if (g_hotkeyModifiers == 0 || g_hotkeyVirtualKey == 0) {
+            g_isHotkeyEnabled = false;
+            g_hotkeyModifiers = 0;
+            g_hotkeyVirtualKey = 0;
           }
+          ok = true;
+        }
+      }
 
-          wchar_t *pDelim = wcsstr(pLine, L"|");
-          if (pDelim != NULL) {
+      // 第二行：searchEnabled|searchModifiers|searchVirtualKey
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        pNextLine = wcsstr(pLine, L"\n");
+        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+        pDelim = wcsstr(pLine, L"|");
+        if (pDelim) {
+          *pDelim = L'\0';
+          g_isSearchHotkeyEnabled = (wcstol(pLine, NULL, 10) != 0);
+          pLine = pDelim + 1;
+          pDelim = wcsstr(pLine, L"|");
+          if (pDelim) {
             *pDelim = L'\0';
-            g_isHotkeyEnabled = (wcstol(pLine, NULL, 10) != 0);
-
+            g_searchHotkeyModifiers = (UINT)wcstol(pLine, NULL, 10);
             pLine = pDelim + 1;
-            pDelim = wcsstr(pLine, L"|");
-            if (pDelim != NULL) {
-              *pDelim = L'\0';
-              g_hotkeyModifiers = (UINT)wcstol(pLine, NULL, 10);
-
-              pLine = pDelim + 1;
-              g_hotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
-              // 仅当修饰键或虚拟键无效时才重置（保留禁用状态的快捷键配置）
-              if (g_hotkeyModifiers == 0 || g_hotkeyVirtualKey == 0) {
-                g_isHotkeyEnabled = false;
-                g_hotkeyModifiers = 0;
-                g_hotkeyVirtualKey = 0;
-              }
-              settingsLoaded = true;
-            }
-          }
-
-          // 解析第二行：searchEnabled|searchModifiers|searchVirtualKey
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            pNextLine = wcsstr(pLine, L"\n");
-            if (pNextLine != NULL) {
-              *pNextLine = L'\0';
-              pNextLine++;
-            }
-
-            pDelim = wcsstr(pLine, L"|");
-            if (pDelim != NULL) {
-              *pDelim = L'\0';
-              g_isSearchHotkeyEnabled = (wcstol(pLine, NULL, 10) != 0);
-
-              pLine = pDelim + 1;
-              pDelim = wcsstr(pLine, L"|");
-              if (pDelim != NULL) {
-                *pDelim = L'\0';
-                g_searchHotkeyModifiers = (UINT)wcstol(pLine, NULL, 10);
-
-                pLine = pDelim + 1;
-                g_searchHotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
-                searchSettingsLoaded = true;
-              }
-            }
-          }
-
-          // 解析第三行：保留兼容占位
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            pNextLine = wcsstr(pLine, L"\n");
-            if (pNextLine != NULL) {
-              *pNextLine = L'\0';
-              pNextLine++;
-            }
-
-          }
-
-          // 解析第四行：themeMode
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            // 去除可能的换行符
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            int themeValue = (int)wcstol(pLine, NULL, 10);
-            if (themeValue >= 0 && themeValue <= 2) {
-              g_themeMode = (ThemeMode)themeValue;
-            }
-          }
-
-          // 解析第五行：smoothScrollEnabled
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            // 去除可能的换行符
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            g_isSmoothScrollEnabled = (wcstol(pLine, NULL, 10) != 0);
-          }
-
-          // 解析第六行：imagePreviewQuality
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            // 去除可能的换行符
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            int qualityValue = (int)wcstol(pLine, NULL, 10);
-            if (qualityValue >= 0 && qualityValue <= 3) {
-              g_imagePreviewQuality = (ImagePreviewQuality)qualityValue;
-            }
-          }
-
-          // 解析第七行：maxHistoryCount
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            int historyCount = (int)wcstol(pLine, NULL, 10);
-            if (historyCount >= 10 && historyCount <= 10000) {
-              g_maxHistoryCount = historyCount;
-            }
-          }
-
-          // 解析第八行：customScrollbarEnabled
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            g_isCustomScrollbarEnabled = (wcstol(pLine, NULL, 10) != 0);
-          }
-
-          // 解析第九行：customScrollbarHideDelayMs
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-
-            int hideDelay = (int)wcstol(pLine, NULL, 10);
-            if (hideDelay >= 600 && hideDelay <= 2000) {
-              g_customScrollbarHideDelayMs = hideDelay;
-            }
-          }
-
-          // 解析第十行：colorDotEnabled
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-            g_isColorDotEnabled = (wcstol(pLine, NULL, 10) != 0);
-          }
-
-          // 解析第十一行：themeId（旧配置可能不存在）
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-            g_themeId = APP_THEME_HIGH_CONTRAST;
-          }
-
-          // 解析第十二行：language（旧配置可能不存在）
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-            int languageValue = (int)wcstol(pLine, NULL, 10);
-            if (languageValue >= 0 && languageValue <= 1) {
-              g_appLanguage = (AppLanguage)languageValue;
-            }
-          }
-
-          // 解析第十三行：quickPasteModifiers（旧配置可能不存在）
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-            UINT modValue = (UINT)wcstol(pLine, NULL, 10);
-            if (modValue != 0) {
-              g_quickPasteModifiers = modValue;
-            }
-          }
-
-          // 解析第十四行：taskbarVisible（旧配置为兼容占位 0|0|0）
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            pNextLine = wcsstr(pLine, L"\n");
-            if (pNextLine != NULL) {
-              *pNextLine = L'\0';
-              pNextLine++;
-            }
-            // 去除回车
-            wchar_t *pCR = wcsstr(pLine, L"\r");
-            if (pCR != NULL)
-              *pCR = L'\0';
-            // 兼容旧配置的 "0|0|0" 占位格式：如果包含 "|"，则为旧格式，保持默认值
-            if (wcsstr(pLine, L"|") == NULL) {
-              g_isTaskbarVisible = (wcstol(pLine, NULL, 10) != 0);
-            }
-          }
-
-          // 解析第十五行：favoriteHotkeyModifiers（旧配置可能不存在）
-          if (pNextLine != NULL && *pNextLine != L'\0') {
-            pLine = pNextLine;
-            wchar_t *pEnd = wcsstr(pLine, L"\n");
-            if (pEnd != NULL) {
-              *pEnd = L'\0';
-              pNextLine = pEnd + 1;
-            } else {
-              pNextLine = NULL;
-            }
-            pEnd = wcsstr(pLine, L"\r");
-            if (pEnd != NULL)
-              *pEnd = L'\0';
-            UINT favModValue = (UINT)wcstol(pLine, NULL, 10);
-            if (favModValue != 0) {
-              g_favoriteHotkeyModifiers = favModValue;
-            }
+            g_searchHotkeyVirtualKey = (UINT)wcstol(pLine, NULL, 10);
           }
         }
       }
-    }
 
-    CloseHandle(hFile);
-  } else {
-    // 首次运行（配置文件不存在）：非中国大陆地区默认英语
-    wchar_t localeName[LOCALE_NAME_MAX_LENGTH] = {};
-    if (GetUserDefaultLocaleName(localeName, LOCALE_NAME_MAX_LENGTH) > 0) {
-      if (_wcsicmp(localeName, L"zh-CN") != 0) {
-        g_appLanguage = LANG_EN_US;
+      // 第三行：兼容占位
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        pNextLine = wcsstr(pLine, L"\n");
+        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+      }
+
+      // 第四行：themeMode
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int tv = (int)wcstol(pLine, NULL, 10);
+        if (tv >= 0 && tv <= 2) g_themeMode = (ThemeMode)tv;
+      }
+
+      // 第五行：smoothScrollEnabled
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        g_isSmoothScrollEnabled = (wcstol(pLine, NULL, 10) != 0);
+      }
+
+      // 第六行：imagePreviewQuality
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int qv = (int)wcstol(pLine, NULL, 10);
+        if (qv >= 0 && qv <= 3) g_imagePreviewQuality = (ImagePreviewQuality)qv;
+      }
+
+      // 第七行：maxHistoryCount
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int hc = (int)wcstol(pLine, NULL, 10);
+        if (hc >= 10 && hc <= 10000) g_maxHistoryCount = hc;
+      }
+
+      // 第八行：customScrollbarEnabled
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        g_isCustomScrollbarEnabled = (wcstol(pLine, NULL, 10) != 0);
+      }
+
+      // 第九行：customScrollbarHideDelayMs
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int hd = (int)wcstol(pLine, NULL, 10);
+        if (hd >= 600 && hd <= 2000) g_customScrollbarHideDelayMs = hd;
+      }
+
+      // 第十行：colorDotEnabled
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        g_isColorDotEnabled = (wcstol(pLine, NULL, 10) != 0);
+      }
+
+      // 第十一行：themeId
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int tid = (int)wcstol(pLine, NULL, 10);
+        if (tid >= 0 && tid <= 3) g_themeId = (ThemeId)tid;
+      }
+
+      // 第十二行：language
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int lv = (int)wcstol(pLine, NULL, 10);
+        if (lv >= 0 && lv < (int)LANG_COUNT) {
+          g_appLanguage = (AppLanguage)lv;
+          languageLoaded = true;
+        }
+      }
+
+      // 第十三行：quickPasteModifiers
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        UINT mv = (UINT)wcstol(pLine, NULL, 10);
+        if (mv != 0) g_quickPasteModifiers = mv;
+      }
+
+      // 第十四行：taskbarVisible
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        pNextLine = wcsstr(pLine, L"\n");
+        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+        wchar_t *pCR = wcsstr(pLine, L"\r"); if (pCR) *pCR = L'\0';
+        if (wcsstr(pLine, L"|") == NULL)
+          g_isTaskbarVisible = (wcstol(pLine, NULL, 10) != 0);
+      }
+
+      // 第十五行：favoriteHotkeyModifiers
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        UINT fv = (UINT)wcstol(pLine, NULL, 10);
+        if (fv != 0) g_favoriteHotkeyModifiers = fv;
+      }
+
+      // 第十六行：maxTextSizeKB
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        int sk = (int)wcstol(pLine, NULL, 10);
+        if (sk >= 1 && sk <= 10240) g_maxTextSizeKB = sk;
+      }
+
+      // 第十七行：isQuickPasteEnabled
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        g_isQuickPasteEnabled = (wcstol(pLine, NULL, 10) != 0);
+      }
+
+      // 第十八行：allHotkeysEnabled
+      if (pNextLine && *pNextLine) {
+        pLine = pNextLine;
+        wchar_t *pEnd = wcsstr(pLine, L"\n");
+        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        g_allHotkeysEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
     }
   }
 
-  // 如果没有加载到设置，使用默认值
-  if (!settingsLoaded) {
-    g_isHotkeyEnabled = false; // 默认关闭，用户手动开启
+  CloseHandle(hFile);
+  return ok;
+}
+
+// 从 SQLite 加载快捷键设置
+void LoadHotkeySettings() {
+  // 检查数据库中是否有设置
+  std::wstring dummy;
+  bool dbHasSettings = DbGetSetting("hotkey_enabled", dummy);
+
+  if (!dbHasSettings) {
+    // 数据库无设置，尝试从旧 _hotkey.txt 迁移
+    bool languageLoaded = false;
+    bool migrated = MigrateHotkeyFromTxt(languageLoaded);
+
+    if (!migrated) {
+      // 无旧文件也无数据库设置，使用默认值
+      g_isHotkeyEnabled = false;
+      g_hotkeyModifiers = 0;
+      g_hotkeyVirtualKey = 0;
+      g_isSearchHotkeyEnabled = true;
+      g_searchHotkeyModifiers = MOD_CONTROL;
+      g_searchHotkeyVirtualKey = 'F';
+    }
+
+    // 若语言未从配置加载，根据系统区域检测
+    if (!languageLoaded)
+      DetectSystemLanguage();
+
+    // 保存到数据库
+    SaveHotkeySettings();
+
+    // 迁移成功则删除旧文件
+    if (migrated) {
+      std::wstring filePath = GetDataFilePath();
+      size_t dotPos = filePath.rfind(L'.');
+      if (dotPos != std::wstring::npos)
+        filePath = filePath.substr(0, dotPos) + L"_hotkey.txt";
+      DeleteFileW(filePath.c_str());
+    }
+    return;
+  }
+
+  // 从数据库加载
+  g_isHotkeyEnabled = DbGetSettingInt("hotkey_enabled", 0) != 0;
+  g_hotkeyModifiers = (UINT)DbGetSettingInt("hotkey_modifiers", 0);
+  g_hotkeyVirtualKey = (UINT)DbGetSettingInt("hotkey_vk", 0);
+  g_isNotificationEnabled = DbGetSettingInt("notification_enabled", 0) != 0;
+  if (g_hotkeyModifiers == 0 || g_hotkeyVirtualKey == 0) {
+    g_isHotkeyEnabled = false;
     g_hotkeyModifiers = 0;
     g_hotkeyVirtualKey = 0;
   }
 
-  if (!searchSettingsLoaded) {
-    g_isSearchHotkeyEnabled = true; // 默认启用
-    g_searchHotkeyModifiers = MOD_CONTROL;
-    g_searchHotkeyVirtualKey = 'F';
-  }
+  g_isSearchHotkeyEnabled = DbGetSettingInt("search_hotkey_enabled", 1) != 0;
+  g_searchHotkeyModifiers =
+      (UINT)DbGetSettingInt("search_hotkey_modifiers", MOD_CONTROL);
+  g_searchHotkeyVirtualKey = (UINT)DbGetSettingInt("search_hotkey_vk", 'F');
 
+  int tv = DbGetSettingInt("theme_mode", (int)THEME_SYSTEM);
+  if (tv >= 0 && tv <= 2)
+    g_themeMode = (ThemeMode)tv;
+  g_isSmoothScrollEnabled = DbGetSettingInt("smooth_scroll", 0) != 0;
+  int qv = DbGetSettingInt("image_preview_quality", (int)PREVIEW_HD);
+  if (qv >= 0 && qv <= 3)
+    g_imagePreviewQuality = (ImagePreviewQuality)qv;
+  g_maxHistoryCount = DbGetSettingInt("max_history_count", 100);
+  g_isCustomScrollbarEnabled = DbGetSettingInt("custom_scrollbar", 1) != 0;
+  g_customScrollbarHideDelayMs = DbGetSettingInt("scrollbar_hide_delay", 1500);
+  g_isColorDotEnabled = DbGetSettingInt("color_dot", 1) != 0;
+  int tid = DbGetSettingInt("theme_id", (int)APP_THEME_HIGH_CONTRAST);
+  if (tid >= 0 && tid <= 3)
+    g_themeId = (ThemeId)tid;
+
+  int lv = DbGetSettingInt("language", (int)LANG_ZH_CN);
+  if (lv >= 0 && lv < (int)LANG_COUNT)
+    g_appLanguage = (AppLanguage)lv;
+
+  g_quickPasteModifiers =
+      (UINT)DbGetSettingInt("quick_paste_modifiers", MOD_ALT);
+  g_isTaskbarVisible = DbGetSettingInt("taskbar_visible", 1) != 0;
+  g_favoriteHotkeyModifiers =
+      (UINT)DbGetSettingInt("favorite_hotkey_modifiers",
+                            MOD_CONTROL | MOD_ALT);
+  g_maxTextSizeKB = DbGetSettingInt("max_text_size_kb", 50);
+  g_isQuickPasteEnabled = DbGetSettingInt("quick_paste_enabled", 1) != 0;
+  g_allHotkeysEnabled = DbGetSettingInt("all_hotkeys_enabled", 1) != 0;
 }
 
 // 注册快捷键
@@ -464,9 +435,7 @@ bool RegisterHotkey(HWND hwnd) {
 }
 
 // 注销快捷键
-void UnregisterHotkey(HWND hwnd) {
-  ::UnregisterHotKey(hwnd, ID_HOTKEY_TOGGLE);
-}
+void UnregisterHotkey(HWND hwnd) { ::UnregisterHotKey(hwnd, ID_HOTKEY_TOGGLE); }
 
 // 切换快捷键状态
 void ToggleHotkey(HWND hwnd) {
@@ -481,7 +450,7 @@ void ToggleHotkey(HWND hwnd) {
   SaveHotkeySettings();
 
   // 显示提示
-  ShowTrayBalloon(hwnd, L"快捷键设置",
+  ShowTrayBalloon(hwnd, T(STR_TRAY_HOTKEY_SETTINGS),
                   g_isHotkeyEnabled ? L"快捷键已启用" : L"快捷键已禁用",
                   g_isHotkeyEnabled ? NIIF_INFO : NIIF_WARNING);
 }

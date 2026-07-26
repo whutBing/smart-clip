@@ -34,6 +34,7 @@ install_manifest.txt
 # Qt MOC/RCC/UIC 生成的文件
 moc_*.cpp
 ui_*.h
+!src/ui_state.h
 qrc_*.cpp
 *.moc
 # Qt 资源文件编译产物

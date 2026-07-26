@@ -26,7 +26,7 @@ jobs:
     - name: Build SmartClip
       shell: msys2 {0}
       run: |
-        mingw32-make
+        mingw32-make -j$(nproc)
     
     - name: Create Release
       uses: softprops/action-gh-release@v1

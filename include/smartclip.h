@@ -42,6 +42,7 @@ void EnsureListSelectionVisible(int index);
 bool SelectListDisplayIndex(int index);
 bool MoveListSelection(int delta);
 bool JumpListSelectionToBoundary(bool toBottom);
+bool JumpListSelectionToPageBoundary(bool toBottom);
 
 // 拖放相关
 void SwapHistoryItems(int srcDisplayIndex, int dstDisplayIndex);

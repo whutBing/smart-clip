@@ -33,6 +33,20 @@ void ShowTrayBalloon(HWND /*hwnd*/, const wchar_t *title, const wchar_t *text,
 static std::wstring BuildTrayTooltip() {
   std::wstring tip = L"SmartClip Free V" + std::wstring(APP_VERSION_STRING);
 
+  // 暂停状态指示
+  extern bool g_isClipboardPaused;
+  if (g_isClipboardPaused) {
+    tip += L"\n";
+    tip += T(STR_TRAY_PAUSED);
+  }
+
+  // 快捷键总开关关闭状态指示
+  extern bool g_allHotkeysEnabled;
+  if (!g_allHotkeysEnabled) {
+    tip += L"\n";
+    tip += T(STR_TRAY_QUICK_PASTE_DISABLED);
+  }
+
   // 仅当切换快捷键已配置时才显示第二行
   if (g_isHotkeyEnabled && g_hotkeyModifiers != 0 && g_hotkeyVirtualKey != 0) {
     std::wstring hotkeyText;

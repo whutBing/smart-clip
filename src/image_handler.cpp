@@ -4,6 +4,7 @@
 #include <gdiplus.h>
 #include <shlwapi.h>
 #include <vector>
+#include "i18n.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "shlwapi.lib")
@@ -198,7 +199,7 @@ LRESULT CALLBACK ImagePreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
         }
 
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) {
+            if (wParam == VK_ESCAPE || wParam == VK_SPACE) {
                 DestroyWindow(hwnd);
             }
             return 0;
@@ -234,11 +235,19 @@ void ShowImagePreview(HWND hwndParent, const ClipboardItem& item) {
         classRegistered = true;
     }
 
+    // Toggle 切换：若已有预览窗口存在，则关闭它而非再开（避免空格键
+    // 反复打开新窗口，让空格键在"打开/关闭"间切换）
+    HWND existing = FindWindowW(L"ImagePreviewClass", NULL);
+    if (existing && IsWindow(existing)) {
+        PostMessageW(existing, WM_CLOSE, 0, 0);
+        return;
+    }
+
     // 创建全屏预览窗口
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-    HWND hwndPreview = CreateWindowW(L"ImagePreviewClass", L"图像预览 - 点击或按ESC关闭",
+    HWND hwndPreview = CreateWindowW(L"ImagePreviewClass", T(STR_IMAGE_PREVIEW_TITLE),
                                      WS_POPUP | WS_VISIBLE,
                                      0, 0, screenWidth, screenHeight,
                                      hwndParent, NULL, GetModuleHandle(NULL), (LPVOID)&item);

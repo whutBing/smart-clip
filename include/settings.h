@@ -22,6 +22,9 @@
 #define IDC_HOTKEY_BTN 124
 #define IDC_SEARCH_HOTKEY_BTN 125
 #define IDC_CLEAN_INVALID_IMAGES 127
+#define IDC_EXPORT_DATA 136
+#define IDC_TEXT_SIZE_LIMIT 137
+#define IDC_IMPORT_DATA 138
 #define IDC_SCROLLBAR_CHECK 128
 #define IDC_SCROLLBAR_TIMEOUT_EDIT 129
 #define IDC_COLOR_DOT_CHECK 130
@@ -45,6 +48,7 @@ extern bool g_isQuickPasteEnabled;
 extern UINT g_quickPasteModifiers;
 extern bool g_isFavoriteHotkeyEnabled;
 extern UINT g_favoriteHotkeyModifiers;
+extern bool g_allHotkeysEnabled; // 托盘快捷键总开关（false 时禁用本 app 所有快捷键）
 extern bool g_isSmoothScrollEnabled;
 extern bool g_isCustomScrollbarEnabled;
 extern bool g_isColorDotEnabled;
@@ -53,6 +57,7 @@ extern bool g_isStartupEnabled;
 extern ImagePreviewQuality g_imagePreviewQuality;
 extern int g_maxHistoryCount;
 extern int g_customScrollbarHideDelayMs;
+extern int g_maxTextSizeKB;
 extern std::wstring g_fontName;
 extern int g_fontSize;
 extern bool g_isSettingsDialogOpen;
@@ -65,6 +70,9 @@ extern void RegisterQuickPasteHotkeys(HWND hwnd);
 extern void UnregisterQuickPasteHotkeys(HWND hwnd);
 extern void RegisterFavoriteHotkeys(HWND hwnd);
 extern void UnregisterFavoriteHotkeys(HWND hwnd);
+// 托盘快捷键总开关：根据各独立开关与总开关状态注册/注销本 app 所有快捷键
+extern void RegisterAllHotkeys(HWND hwnd);
+extern void UnregisterAllHotkeys(HWND hwnd);
 extern void ApplyTaskbarVisibility(HWND hwnd);
 extern void ApplyStartupPreference(bool enable);
 extern bool IsStartupEnabled();

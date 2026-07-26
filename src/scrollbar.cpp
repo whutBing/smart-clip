@@ -62,10 +62,14 @@ bool GetCustomScrollbarThumbRect(HWND hwnd, RECT *rcThumb) {
   if (trackHeight <= 0 || visibleHeight <= 0 || totalContentHeight <= 0)
     return false;
 
-  int drawableTrackHeight = std::max(0, trackHeight - 4);
+  // 滑块上下内边距按轨道宽度联动，与下方 pad 计算保持一致
+  int trackW0 = rcTrack.right - rcTrack.left;
+  int pad0 = std::max(1, trackW0 / 12);
+  int drawableTrackHeight = std::max(0, trackHeight - 2 * pad0);
   int thumbHeight = (visibleHeight * drawableTrackHeight) / totalContentHeight;
-  if (thumbHeight < 30)
-    thumbHeight = 30;
+  int minThumbH0 = std::max(30, trackW0);
+  if (thumbHeight < minThumbH0)
+    thumbHeight = minThumbH0;
   if (thumbHeight > drawableTrackHeight)
     thumbHeight = drawableTrackHeight;
 
@@ -87,14 +91,19 @@ bool GetCustomScrollbarThumbRect(HWND hwnd, RECT *rcThumb) {
     }
   }
 
-  rcThumb->left = std::max(rcTrack.left + 2, rcTrack.right - 8);
-  rcThumb->top = rcTrack.top + thumbY + 2;
-  rcThumb->right = rcTrack.right - 2;
+  // 滑块宽度按轨道宽度的固定比例缩放，与高 DPI 下的轨道宽度联动
+  int trackW = rcTrack.right - rcTrack.left;
+  int thumbW = std::max(4, (trackW * 2) / 3);
+  int pad = std::max(1, trackW / 12);
+  rcThumb->left = std::max(rcTrack.left + pad, rcTrack.right - thumbW - pad);
+  rcThumb->top = rcTrack.top + thumbY + pad;
+  rcThumb->right = rcTrack.right - pad;
   rcThumb->bottom = rcThumb->top + thumbHeight;
-  if (rcThumb->bottom < rcThumb->top + 12)
-    rcThumb->bottom = rcThumb->top + 12;
-  if (rcThumb->bottom > rcTrack.bottom - 2)
-    rcThumb->bottom = rcTrack.bottom - 2;
+  int minThumbH = std::max(12, trackW);
+  if (rcThumb->bottom < rcThumb->top + minThumbH)
+    rcThumb->bottom = rcThumb->top + minThumbH;
+  if (rcThumb->bottom > rcTrack.bottom - pad)
+    rcThumb->bottom = rcTrack.bottom - pad;
   return true;
 }
 
@@ -222,7 +231,11 @@ void HandleScrollbarDrag(HWND hwnd, int mouseY) {
 
   int trackHeight = rcTrack.bottom - rcTrack.top;
   int thumbHeight = rcThumb.bottom - rcThumb.top;
-  int travel = trackHeight - thumbHeight - 4;
+  // 滑块上下内边距与 GetCustomScrollbarThumbRect 中的 pad 保持一致：
+  // pad = max(1, trackW/12)，travel = trackHeight - thumbHeight - 2*pad
+  int trackW = rcTrack.right - rcTrack.left;
+  int pad = std::max(1, trackW / 12);
+  int travel = trackHeight - thumbHeight - 2 * pad;
   if (travel <= 0)
     return;
 

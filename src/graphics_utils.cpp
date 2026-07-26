@@ -76,6 +76,10 @@ static UINT GetNativeDpiForWindow(HWND hwnd) {
     return dpi > 0 ? dpi : 96;
 }
 
+UINT GetWindowDpi(HWND hwnd) {
+    return GetNativeDpiForWindow(hwnd);
+}
+
 UINT GetSmartClipUiDpi(HWND hwnd) {
     UINT dpi = GetNativeDpiForWindow(hwnd);
 
@@ -210,4 +214,191 @@ void CreateRoundRectPath(Gdiplus::GraphicsPath* path, int x, int y, int width, i
     path->AddArc(x + width - radius * 2, y + height - radius * 2, radius * 2, radius * 2, 0, 90);
     path->AddArc(x, y + height - radius * 2, radius * 2, radius * 2, 90, 90);
     path->CloseFigure();
+}
+
+// ==================== Direct2D + DirectWrite：彩色 emoji 渲染 ====================
+
+#include <d2d1.h>
+#include <dwrite.h>
+
+// MinGW 旧版 d2d1.h 可能未定义此选项；手动补全
+#ifndef D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT
+#define D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT 0x00000004
+#endif
+
+static ID2D1Factory *g_pD2DFactory = nullptr;
+static IDWriteFactory *g_pDWriteFactory = nullptr;
+static ID2D1DCRenderTarget *g_pDCRT = nullptr;
+static ID2D1SolidColorBrush *g_pSolidBrush = nullptr;
+
+static bool EnsureDirectWriteResources() {
+    if (!g_pD2DFactory) {
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                          __uuidof(ID2D1Factory),
+                          reinterpret_cast<void **>(&g_pD2DFactory));
+    }
+    if (!g_pDWriteFactory) {
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                            __uuidof(IDWriteFactory),
+                            reinterpret_cast<IUnknown **>(&g_pDWriteFactory));
+    }
+    if (!g_pDCRT && g_pD2DFactory) {
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                              D2D1_ALPHA_MODE_PREMULTIPLIED),
+            0, 0);
+        g_pD2DFactory->CreateDCRenderTarget(&props, &g_pDCRT);
+    }
+    if (!g_pSolidBrush && g_pDCRT) {
+        g_pDCRT->CreateSolidColorBrush(
+            D2D1::ColorF(D2D1::ColorF::Black, 1.0f), &g_pSolidBrush);
+    }
+    return g_pD2DFactory && g_pDWriteFactory && g_pDCRT && g_pSolidBrush;
+}
+
+bool TextContainsEmoji(const wchar_t *text, int len) {
+    if (!text) return false;
+    if (len < 0) len = (int)wcslen(text);
+    for (int i = 0; i < len; ++i) {
+        wchar_t c = text[i];
+        // 代理对（非 BMP 字符，如 😀 等高码位 emoji，0x1F300+）
+        if (c >= 0xD800 && c <= 0xDBFF) return true;
+        // BMP 内常见 emoji 范围
+        if (c >= 0x2600 && c <= 0x27BF) return true;  // Misc Symbols + Dingbats
+        if (c >= 0x2300 && c <= 0x23FF) return true;  // Misc Technical
+        if (c >= 0x25A0 && c <= 0x25FF) return true;  // Geometric Shapes
+        if (c >= 0x2B00 && c <= 0x2BFF) return true;  // Misc Symbols & Arrows
+        if (c >= 0x2190 && c <= 0x21FF) return true;  // Arrows
+    }
+    return false;
+}
+
+void DrawTextWithColorEmoji(HDC hdc, const wchar_t *text, int textLen,
+                            const RECT &rcText,
+                            HFONT referenceFont,
+                            const wchar_t *fontFamily,
+                            int fontWeight, COLORREF textColor,
+                            int align, bool verticalCenter,
+                            bool endEllipsis, float emojiScale) {
+    if (!hdc || !text || !*text) return;
+    if (!EnsureDirectWriteResources()) return;
+
+    if (textLen < 0) textLen = (int)wcslen(text);
+    if (textLen == 0) return;
+
+    // 通过参考字体的 GDI TextMetrics 换算 DirectWrite em size：
+    // GDI lfHeight 是 cell height（含 internal leading），而 DirectWrite
+    // fontSize 是 em size（ascent + descent）。两者不一致会导致带 emoji
+    // 的行渲染文字过大。em size = tmHeight - tmInternalLeading。
+    float fontSize = 0.0f;
+    if (referenceFont) {
+        HFONT oldFont = (HFONT)SelectObject(hdc, referenceFont);
+        TEXTMETRICW tm = {};
+        if (GetTextMetricsW(hdc, &tm) && tm.tmHeight > 0) {
+            int em = tm.tmHeight - tm.tmInternalLeading;
+            if (em <= 0) em = tm.tmHeight;
+            fontSize = (float)em;
+        }
+        SelectObject(hdc, oldFont);
+    }
+    if (fontSize <= 0.0f) {
+        // 极端 fallback（理论上不会走到）
+        fontSize = 16.0f;
+    }
+    // emoji 默认按 em box 满框绘制，视觉上比中文字大。对 emoji 字符
+    // 单独设置较小的字号，文字保持原 em size 不变。
+    float emojiFontSize = fontSize * emojiScale;
+
+    // 绑定 HDC 的目标矩形到 DC Render Target（坐标系变为该矩形内局部坐标）
+    RECT rcBind = rcText;
+    if (FAILED(g_pDCRT->BindDC(hdc, &rcBind))) return;
+
+    // 创建 TextFormat（默认字号用于文字部分）
+    IDWriteTextFormat *pFormat = nullptr;
+    if (FAILED(g_pDWriteFactory->CreateTextFormat(
+            fontFamily, nullptr, (DWRITE_FONT_WEIGHT)fontWeight,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, fontSize, L"",
+            &pFormat)) ||
+        !pFormat) {
+        return;
+    }
+
+    pFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    DWRITE_TEXT_ALIGNMENT ta = DWRITE_TEXT_ALIGNMENT_LEADING;
+    if (align == 1) ta = DWRITE_TEXT_ALIGNMENT_TRAILING;
+    else if (align == 2) ta = DWRITE_TEXT_ALIGNMENT_CENTER;
+    pFormat->SetTextAlignment(ta);
+    pFormat->SetParagraphAlignment(verticalCenter
+                                       ? DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+                                       : DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+
+    // 创建 TextLayout（宽高用 rcText 的逻辑尺寸）
+    float width = (float)(rcText.right - rcText.left);
+    float height = (float)(rcText.bottom - rcText.top);
+    if (width <= 0 || height <= 0) {
+        pFormat->Release();
+        return;
+    }
+    IDWriteTextLayout *pLayout = nullptr;
+    if (FAILED(g_pDWriteFactory->CreateTextLayout(text, (UINT32)textLen, pFormat,
+                                                  width, height, &pLayout)) ||
+        !pLayout) {
+        pFormat->Release();
+        return;
+    }
+
+    // 字符级省略号截断：MinGW 旧版 dwrite.h 缺少 CreateEllipsisTrimming，
+    // 这里通过 SetTrimming + nullptr ellipsis 实现"硬截断"，
+    // 然后用 GetMetrics 测量后判断是否需要追加省略号。
+    if (endEllipsis) {
+        DWRITE_TRIMMING trimming = {DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                                     0, 0};
+        pLayout->SetTrimming(&trimming, nullptr);
+    }
+
+    // 对每个 emoji 字符单独设置较小的字号，让 emoji 视觉上与文字匹配。
+    // 不影响文字字符的大小（文字仍用 TextFormat 默认的 fontSize）。
+    // 处理代理对：高位代理 + 低位代理组成一个 emoji 字形，整个代理对
+    // 设置一次 emojiFontSize。
+    for (int i = 0; i < textLen; ++i) {
+        wchar_t c = text[i];
+        bool isHighSurrogate = (c >= 0xD800 && c <= 0xDBFF);
+        bool isEmojiBmp = (c >= 0x2600 && c <= 0x27BF) ||
+                          (c >= 0x2300 && c <= 0x23FF) ||
+                          (c >= 0x25A0 && c <= 0x25FF) ||
+                          (c >= 0x2B00 && c <= 0x2BFF) ||
+                          (c >= 0x2190 && c <= 0x21FF);
+        if (isHighSurrogate) {
+            // 代理对占 2 个 wchar_t，设置 2 长度的 range
+            UINT32 rangeLen = (i + 1 < textLen) ? 2u : 1u;
+            DWRITE_TEXT_RANGE range = {(UINT32)i, rangeLen};
+            pLayout->SetFontSize(emojiFontSize, range);
+            // 跳过低位代理
+            i += 1;
+        } else if (isEmojiBmp) {
+            DWRITE_TEXT_RANGE range = {(UINT32)i, 1u};
+            pLayout->SetFontSize(emojiFontSize, range);
+        }
+    }
+
+    pFormat->Release();
+
+    // 设置画刷颜色
+    g_pSolidBrush->SetColor(D2D1::ColorF(textColor, 1.0f));
+
+    // 绘制（启用 color font，emoji 部分会自动 fallback 到 Segoe UI Emoji 渲染彩色）
+    g_pDCRT->BeginDraw();
+    g_pDCRT->DrawTextLayout(
+        D2D1::Point2F(0, 0), pLayout, g_pSolidBrush,
+        (D2D1_DRAW_TEXT_OPTIONS)D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+    HRESULT endHr = g_pDCRT->EndDraw();
+
+    pLayout->Release();
+
+    // 设备丢失时重建 DCRT，避免后续绘制持续失败
+    if (endHr == (HRESULT)D2DERR_RECREATE_TARGET) {
+        if (g_pSolidBrush) { g_pSolidBrush->Release(); g_pSolidBrush = nullptr; }
+        if (g_pDCRT) { g_pDCRT->Release(); g_pDCRT = nullptr; }
+    }
 }

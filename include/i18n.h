@@ -1,8 +1,21 @@
 #pragma once
 
+#include <map>
 #include <string>
+#include <vector>
 
-enum AppLanguage { LANG_ZH_CN = 0, LANG_EN_US = 1 };
+// 内置语言（代码中硬编码）
+enum AppLanguage {
+  LANG_ZH_CN = 0,
+  LANG_EN_US = 1,
+  // 外部语言（通过 lang/*.ini 文件加载）
+  LANG_JA_JP = 2,
+  LANG_KO_KR = 3,
+  LANG_DE_DE = 4,
+  LANG_AR_SA = 5,
+  LANG_TR_TR = 6,
+  LANG_COUNT
+};
 
 enum StringId {
   STR_APP_TITLE = 0,
@@ -51,6 +64,10 @@ enum StringId {
   STR_ROW_CLEAR_NON_FAV_DESC,
   STR_ROW_CLEAN_INVALID_IMAGES,
   STR_ROW_CLEAN_INVALID_IMAGES_DESC,
+  STR_ROW_EXPORT_DATA,
+  STR_ROW_EXPORT_DATA_DESC,
+  STR_ROW_TEXT_SIZE_LIMIT,
+  STR_ROW_TEXT_SIZE_LIMIT_DESC,
   STR_THEME_LIGHT,
   STR_THEME_DARK,
   STR_THEME_SYSTEM,
@@ -60,6 +77,11 @@ enum StringId {
   STR_THEME_STYLE_HIGH_CONTRAST,
   STR_LANGUAGE_ZH_CN,
   STR_LANGUAGE_EN_US,
+  STR_LANGUAGE_JA_JP,
+  STR_LANGUAGE_KO_KR,
+  STR_LANGUAGE_DE_DE,
+  STR_LANGUAGE_AR_SA,
+  STR_LANGUAGE_TR_TR,
   STR_PREVIEW_OFF,
   STR_PREVIEW_BLUR,
   STR_PREVIEW_SD,
@@ -89,6 +111,7 @@ enum StringId {
   STR_TRAY_MENU_LIGHT,
   STR_TRAY_MENU_DARK,
   STR_TRAY_MENU_EXIT,
+  STR_TRAY_MENU_RESTART,
   STR_TRAY_NOTIFY_UPDATED,
   STR_TRAY_NOTIFICATIONS_ENABLED,
   STR_TRAY_TIP,
@@ -116,6 +139,12 @@ enum StringId {
   STR_PASTE_COUNT_SUFFIX,
   STR_BTN_SELECT,
   STR_BTN_CLEAN,
+  STR_BTN_EXPORT,
+  STR_ROW_IMPORT_DATA,
+  STR_ROW_IMPORT_DATA_DESC,
+  STR_BTN_IMPORT,
+  STR_DATA_BACKUP_TITLE,
+  STR_DATA_BACKUP_DESC,
   STR_BTN_CONFIRM_CLEAR,
   STR_DLG_SELECT_DATA_DIR,
   STR_DLG_CLEAR_NON_FAV_TITLE,
@@ -147,6 +176,77 @@ enum StringId {
   STR_MOD_CTRL_SHIFT,
   STR_MOD_ALT_SHIFT,
   STR_MOD_CTRL_ALT_SHIFT,
+
+  // 右键菜单
+  STR_CTX_COPY,
+  STR_CTX_PASTE,
+  STR_CTX_TAG,
+  STR_CTX_OPEN_LOCATION,
+  STR_CTX_DELETE,
+  STR_CTX_BATCH_ADD_TAG,
+  STR_CTX_BATCH_DELETE,
+  STR_CTX_NO_TAGS,
+
+  // 删除收藏确认对话框
+  STR_DLG_DELETE_FAV_TITLE,
+  STR_DLG_DELETE_FAV_SUBTITLE,
+  STR_DLG_DELETE_FAV_BODY1,
+  STR_DLG_DELETE_FAV_BODY2,
+  STR_DLG_DELETE_FAV_CONFIRM,
+
+  // 批量操作通知
+  STR_TRAY_BATCH_DELETED,
+  STR_TRAY_BATCH_TAGGED,
+
+  // 快捷键占位文本
+  STR_HOTKEY_PLACEHOLDER,
+
+  // GitHub 仓库链接
+  STR_GITHUB_REPO,
+
+  // 通知消息
+  STR_TRAY_NEW_CONTENT,
+  STR_TRAY_COPY_TITLE,
+  STR_TRAY_IMAGE_COPIED,
+  STR_TRAY_FILE_PATH_COPIED,
+  STR_TRAY_IMAGE_ADDED,
+  STR_TRAY_DELETED,
+  STR_TRAY_COPIED,
+  STR_TRAY_PINNED,
+  STR_TRAY_UNPINNED,
+  // 多文件记录显示与图片预览
+  STR_MULTI_FILES_FMT,        // "等 %d 个文件"
+  STR_IMAGE_PREVIEW_TITLE,    // "图像预览 - 点击或按ESC关闭"
+  STR_CTX_SELECT_IN_EXPLORER, // "在资源管理器中选中"
+  STR_TRAY_QUICK_PASTE_TITLE,
+  STR_TRAY_HOTKEY_SETTINGS,
+  STR_TRAY_SETTINGS_UPDATED,
+  STR_TRAY_HOTKEY_SAVED,
+  STR_TRAY_HOTKEY_FAILED,
+  STR_TRAY_NOTIFY_ENABLED,
+  STR_TOOLTIP_FILTER_BY_APP,
+  STR_TOOLTIP_FILTER_BY_DATE,
+
+  // 托盘暂停/恢复
+  STR_TRAY_MENU_PAUSE,
+  STR_TRAY_MENU_RESUME,
+  STR_TRAY_PAUSED,
+  STR_TRAY_RESUMED,
+
+  // 托盘启用/关闭快捷键
+  STR_TRAY_MENU_QUICK_PASTE_ENABLE,
+  STR_TRAY_MENU_QUICK_PASTE_DISABLE,
+  STR_TRAY_QUICK_PASTE_ENABLED,
+  STR_TRAY_QUICK_PASTE_DISABLED,
+
+  // 首次运行用户协议弹窗
+  STR_AGREEMENT_DIALOG_TITLE,
+  STR_AGREEMENT_DIALOG_SUBTITLE,
+  STR_AGREEMENT_DIALOG_BODY,
+  STR_AGREEMENT_DIALOG_ACCEPT,
+  STR_AGREEMENT_DIALOG_DECLINE,
+  STR_AGREEMENT_DIALOG_REMIND,
+
   STR_COUNT
 };
 
@@ -155,3 +255,19 @@ extern AppLanguage g_appLanguage;
 const wchar_t *T(StringId id);
 void ApplyLanguage();
 std::wstring GetLanguageCode(AppLanguage lang);
+
+// 外部语言文件支持
+struct LanguageInfo {
+  AppLanguage lang;
+  std::wstring code; // e.g. "ja-JP"
+  std::wstring name; // e.g. "日本語"
+  bool isExternal;   // true = 从文件加载, false = 内置
+  bool isRtl;        // 阿拉伯语等RTL语言
+};
+
+// 获取可用语言列表（内置 + 外部）
+const std::vector<LanguageInfo> &GetAvailableLanguages();
+// 初始化时加载外部语言文件
+void LoadExternalLanguages();
+// 检查当前语言是否RTL
+bool IsRtlLanguage();

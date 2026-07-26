@@ -7,6 +7,10 @@ IDB_FOLDER_ICON RCDATA "images/file.png"
 IDB_NOEXIST_ICON RCDATA "images/noexist.png"
 IDB_TOPMOST_SELECTED RCDATA "images/topmost-selected.png"
 IDB_TOPMOST_UNSELECTED RCDATA "images/topmost-unslected.png"
+IDB_TEXT_ICON RCDATA "images/text.png"
+IDB_NET_ICON RCDATA "images/net.png"
+IDB_MAIL_ICON RCDATA "images/mail.png"
+IDB_APP_ICON RCDATA "images/app-icon.png"
 
 // 应用程序清单
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
