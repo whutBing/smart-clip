@@ -62,6 +62,7 @@ extern std::wstring g_fontName;
 extern int g_fontSize;
 extern bool g_isSettingsDialogOpen;
 extern HWND g_hwndSettingsDlg;
+extern int g_currentSettingsTab;
 
 // 函数声明
 extern void ShowSettingsDialog(HWND hwndParent);

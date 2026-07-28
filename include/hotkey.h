@@ -21,6 +21,7 @@ extern UINT g_searchHotkeyModifiers;
 extern bool g_isCustomScrollbarEnabled;
 extern int g_customScrollbarHideDelayMs;
 extern bool g_isColorDotEnabled;
+extern bool g_isTopmost;
 
 // 主题模式枚举
 enum ThemeMode {

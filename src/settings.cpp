@@ -73,7 +73,7 @@ HWND g_hwndSettingsDlg = NULL;
 
 // 设置对话框内部状态
 static UINT g_settingsDpi = 96;
-static int g_currentSettingsTab = 0;
+int g_currentSettingsTab = 0;
 static int g_settingsHoverSidebar = -1;
 static bool g_isRecordingHotkey = false;
 static bool g_isRecordingSearchHotkey = false;
@@ -661,6 +661,7 @@ LRESULT CALLBACK SearchHotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
 
 static void SwitchSettingsTab(int tab) {
   g_currentSettingsTab = tab;
+  DbSetSettingInt("settings_last_tab", g_currentSettingsTab);
 
   int showGen = (tab == 0) ? SW_SHOW : SW_HIDE;
   int showHk = (tab == 1) ? SW_SHOW : SW_HIDE;
@@ -944,30 +945,212 @@ static bool QueryDesktopStartup() {
   return result == ERROR_SUCCESS;
 }
 
+// MSIX 启动任务 TaskId（与 AppxManifest.xml 中声明一致）
+static const wchar_t *kMSIXStartupTaskId = L"SmartClipFreeStartup";
+// 查询缓存（避免每次打开设置都调用 PowerShell，30 秒 TTL）
+static bool g_msixStartupCacheValid = false;
+static bool g_msixStartupCacheValue = false;
+static DWORD g_msixStartupCacheTick = 0;
+
+// 通过 PowerShell 调用 WinRT StartupTask API（MinGW 无 WinRT 头文件，用 PS
+// 桥接） action: L"query" / L"enable" / L"disable" outState: query 返回
+// StartupTaskState 枚举（0=Disabled,1=DisabledByUser,
+//           2=Enabled,3=DisabledByPolicy,4=EnabledByPolicy）；enable
+//           返回请求后的状态
+// 返回: 脚本执行成功且未报错返回 true
+static bool RunStartupTaskViaPowerShell(const std::wstring &action,
+                                        const std::wstring &taskId,
+                                        int &outState) {
+  outState = -1;
+
+  // 生成临时脚本文件路径
+  wchar_t tempDir[MAX_PATH] = {};
+  GetTempPathW(MAX_PATH, tempDir);
+  std::wstring scriptPath = std::wstring(tempDir) + L"sc_startup_task.ps1";
+
+  // PowerShell 脚本：加载 WinRT 类型，调用
+  // StartupTask.GetAsync/RequestEnableAsync/Disable 使用
+  // System.Runtime.WindowsRuntime 的 AsTask 扩展等待异步操作完成
+  std::wstring script =
+      L"param([string]$action,[string]$taskId)\n"
+      L"$ErrorActionPreference='Stop'\n"
+      L"try{\n"
+      L"  [Windows.ApplicationModel.StartupTask,Windows.ApplicationModel,"
+      L"ContentType=WindowsRuntime]|Out-Null\n"
+      L"  Add-Type -AssemblyName System.Runtime.WindowsRuntime\n"
+      L"  $m=[System.WindowsRuntimeSystemExtensions].GetMethods()|Where-Object{"
+      L"$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and "
+      L"$_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'}\n"
+      L"  $asTask=$m[0]\n"
+      L"  function AwaitOp($op,$rt){$t=$asTask.MakeGenericMethod($rt).Invoke("
+      L"$null,@($op));$t.Wait(10000)|Out-Null;$t.Result}\n"
+      L"  $task=AwaitOp ([Windows.ApplicationModel.StartupTask]::GetAsync("
+      L"$taskId)) ([Windows.ApplicationModel.StartupTask])\n"
+      L"  if($null -eq $task){Write-Output 'ERROR:TASK_NOT_FOUND';exit 1}\n"
+      L"  if($action -eq 'query'){Write-Output ('STATE='+[int]$task.State)}\n"
+      L"  elseif($action -eq 'enable'){"
+      L"$r=AwaitOp $task.RequestEnableAsync() "
+      L"([Windows.ApplicationModel.StartupTaskState]);"
+      L"Write-Output ('RESULT='+[int]$r)}\n"
+      L"  elseif($action -eq 'disable'){$task.Disable();"
+      L"Write-Output 'RESULT=0'}\n"
+      L"}catch{Write-Output ('ERROR:'+$_.Exception.Message);exit 1}\n";
+
+  // 写入脚本文件（UTF-16 LE BOM + 内容，PowerShell 默认能识别）
+  HANDLE hFile = CreateFileW(scriptPath.c_str(), GENERIC_WRITE, 0, NULL,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
+  if (hFile == INVALID_HANDLE_VALUE)
+    return false;
+  // 写入 UTF-16 LE BOM
+  DWORD written = 0;
+  BYTE bom[] = {0xFF, 0xFE};
+  WriteFile(hFile, bom, 2, &written, NULL);
+  // 写入脚本内容（宽字符）
+  WriteFile(hFile, script.c_str(), (DWORD)(script.size() * sizeof(wchar_t)),
+            &written, NULL);
+  CloseHandle(hFile);
+
+  // 构造 PowerShell 命令行
+  std::wstring cmd =
+      L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"";
+  cmd += scriptPath;
+  cmd += L"\" -action ";
+  cmd += action;
+  cmd += L" -taskId ";
+  cmd += taskId;
+
+  // 创建管道捕获输出
+  SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+  HANDLE hReadPipe = NULL, hWritePipe = NULL;
+  CreatePipe(&hReadPipe, &hWritePipe, &sa, 0);
+  SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOW si = {sizeof(si)};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = hWritePipe;
+  si.hStdError = hWritePipe;
+  PROCESS_INFORMATION pi = {};
+  std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+  cmdBuf.push_back(0);
+
+  BOOL ok = CreateProcessW(NULL, cmdBuf.data(), NULL, NULL, TRUE,
+                           CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+  CloseHandle(hWritePipe);
+  if (!ok) {
+    CloseHandle(hReadPipe);
+    DeleteFileW(scriptPath.c_str());
+    return false;
+  }
+
+  // 等待进程结束（PowerShell 启动+执行通常 2-4 秒，给 12 秒上限）
+  if (WaitForSingleObject(pi.hProcess, 12000) != WAIT_OBJECT_0) {
+    // 超时则强制终止，避免 ReadFile 永久阻塞
+    TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CloseHandle(hReadPipe);
+    DeleteFileW(scriptPath.c_str());
+    return false;
+  }
+
+  // 读取输出（进程已退出，管道有数据可读，不会阻塞）
+  std::string output;
+  char buf[4096];
+  DWORD bytesRead = 0;
+  while (ReadFile(hReadPipe, buf, sizeof(buf), &bytesRead, NULL) &&
+         bytesRead > 0) {
+    output.append(buf, bytesRead);
+  }
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  CloseHandle(hReadPipe);
+  DeleteFileW(scriptPath.c_str());
+
+  // 解析输出（输出为 UTF-16，转宽字符）
+  // PowerShell 输出可能是 UTF-16 或 ANSI，统一处理
+  std::wstring wout;
+  // 尝试 UTF-16 解码（跳过可能的 BOM）
+  const BYTE *p = (const BYTE *)output.data();
+  size_t len = output.size();
+  if (len >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
+    p += 2;
+    len -= 2;
+    wout.assign((const wchar_t *)p, len / 2);
+  } else if (len >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
+    // UTF-16 BE，转 LE
+    p += 2;
+    len -= 2;
+    wout.resize(len / 2);
+    for (size_t i = 0; i < len / 2; i++) {
+      wout[i] = (wchar_t)(p[i * 2] << 8 | p[i * 2 + 1]);
+    }
+  } else {
+    // ANSI/UTF-8，按 UTF-8 解码
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, output.c_str(),
+                                   (int)output.size(), NULL, 0);
+    if (wlen > 0) {
+      wout.resize(wlen);
+      MultiByteToWideChar(CP_UTF8, 0, output.c_str(), (int)output.size(),
+                          &wout[0], wlen);
+    }
+  }
+
+  // 移除换行和空白
+  while (!wout.empty() &&
+         (wout.back() == L'\r' || wout.back() == L'\n' || wout.back() == L' '))
+    wout.pop_back();
+
+  if (wout.find(L"ERROR:") == 0)
+    return false;
+
+  if (wout.find(L"STATE=") == 0) {
+    outState = _wtoi(wout.c_str() + 6);
+    return true;
+  }
+  if (wout.find(L"RESULT=") == 0) {
+    outState = _wtoi(wout.c_str() + 7);
+    return true;
+  }
+  return false;
+}
+
 // 通过 MSIX StartupTask API 设置开机启动
 static bool SetMSIXStartup(bool enable) {
-  // 使用 IStartupTask COM 接口（Windows.ApplicationModel.StartupTask）
-  // 由于 C++ 直接调用 WinRT 较复杂，这里使用动态加载方式
-  // 简化实现：写入本地配置，由用户在系统设置中手动启用
-  // 真正的 MSIX 启用需要调用 StartupTask.RequestEnableAsync
-  // 这里通过 shell32 启动 Windows 设置页面让用户操作
-  if (enable) {
-    // 弹出提示，引导用户到系统设置
-    MessageBoxW(g_hwndSettingsDlg,
-                L"请在系统设置 - 应用 - 启动 中启用 "
-                L"SmartClip。\n即将打开启动设置页面。",
-                L"提示", MB_OK | MB_ICONINFORMATION);
-    ShellExecuteW(NULL, L"open", L"ms-settings:startupapps", NULL, NULL,
-                  SW_SHOWNORMAL);
+  // 失效查询缓存
+  g_msixStartupCacheValid = false;
+  int state = -1;
+  bool ok = RunStartupTaskViaPowerShell(enable ? L"enable" : L"disable",
+                                        kMSIXStartupTaskId, state);
+  if (!ok) {
+    // PS 桥接失败（如未安装 PowerShell 或任务未注册），回退到打开系统设置
+    if (enable) {
+      MessageBoxW(g_hwndSettingsDlg,
+                  L"请在系统设置 - 应用 - 启动 中启用 "
+                  L"SmartClip。\n即将打开启动设置页面。",
+                  L"提示", MB_OK | MB_ICONINFORMATION);
+      ShellExecuteW(NULL, L"open", L"ms-settings:startupapps", NULL, NULL,
+                    SW_SHOWNORMAL);
+    }
+    return false;
   }
   return true;
 }
 
-// 查询 MSIX 启动任务状态
+// 查询 MSIX 启动任务状态（带 30 秒缓存，避免频繁调用 PowerShell）
 static bool QueryMSIXStartup() {
-  // MSIX 模式下无法直接查询，返回 false 让用户手动确认
-  // 实际状态由系统管理
-  return false;
+  DWORD now = GetTickCount();
+  if (g_msixStartupCacheValid && (now - g_msixStartupCacheTick) < 30000) {
+    return g_msixStartupCacheValue;
+  }
+  int state = -1;
+  if (!RunStartupTaskViaPowerShell(L"query", kMSIXStartupTaskId, state))
+    return false;
+  // StartupTaskState: 2=Enabled, 4=EnabledByPolicy
+  bool enabled = (state == 2 || state == 4);
+  g_msixStartupCacheValue = enabled;
+  g_msixStartupCacheTick = now;
+  g_msixStartupCacheValid = true;
+  return enabled;
 }
 
 void ApplyStartupPreference(bool enable) {
@@ -3072,9 +3255,12 @@ void ShowSettingsDialog(HWND hwndParent) {
   g_hwndFavoriteHotkeyCombo =
       CreateSettingsCombo(hwndDlg, 3, IDC_FAVORITE_HOTKEY_COMBO, 180);
 
-  // 初始显示通用分类
-  g_currentSettingsTab = 0;
-  SwitchSettingsTab(0);
+  // 初始显示最后一次使用的分类
+  int initialTab = (g_currentSettingsTab >= 0 && g_currentSettingsTab < SIDEBAR_COUNT)
+                       ? g_currentSettingsTab
+                       : 0;
+  g_currentSettingsTab = initialTab;
+  SwitchSettingsTab(initialTab);
 
   // 初始化冲突检测状态
   UpdateHotkeyConflictState();

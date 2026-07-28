@@ -60,6 +60,11 @@ void DrawCardText(Graphics& graphics, const RECT& contentRect, const ClipboardIt
 
 // 绘制卡片图片内容
 void DrawCardImage(Graphics& graphics, const RECT& contentRect, const ClipboardItem& item) {
+    // 懒加载：启动时未预加载缩略图，按需从 images\thumbs 文件加载
+    if (item.imageData.empty()) {
+        if (!EnsureItemImageLoaded(item))
+            return;
+    }
     if (item.imageData.empty()) return;
 
     BITMAPINFO bmi = {};

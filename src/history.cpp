@@ -1068,7 +1068,10 @@ bool MigrateDataDir(const std::wstring& newDir) {
     ShowWindow(hwndProg, SW_SHOW);
     UpdateWindow(hwndProg);
 
-    CreateThread(NULL, 0, MigrateThreadProc, ctx, 0, NULL);
+    // 创建迁移线程并立即关闭线程句柄（线程继续运行，避免句柄泄漏）
+    HANDLE hThread = CreateThread(NULL, 0, MigrateThreadProc, ctx, 0, NULL);
+    if (hThread)
+        CloseHandle(hThread);
     return true;
 }
 
@@ -2173,7 +2176,6 @@ void LoadTags() {
                 DWORD dwBytesRead;
                 ReadFile(hFile, &buffer[0], fileSize, &dwBytesRead, NULL);
                 buffer[dwBytesRead] = '\0';
-                CloseHandle(hFile);
 
                 char* pData = &buffer[0];
                 if (dwBytesRead >= 3 && (BYTE)pData[0] == 0xEF && (BYTE)pData[1] == 0xBB && (BYTE)pData[2] == 0xBF) {
@@ -2209,6 +2211,8 @@ void LoadTags() {
                 sqlite3_finalize(insStmt);
                 sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
             }
+            // 确保所有路径都关闭句柄（修复 fileSize==0 时的句柄泄漏）
+            CloseHandle(hFile);
             DeleteFileW(legacyPath.c_str());
         }
     }

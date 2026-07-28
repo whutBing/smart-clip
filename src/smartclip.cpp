@@ -82,6 +82,9 @@ bool InputBox(HWND hwnd, const wchar_t *title, const wchar_t *prompt,
 #define IDM_TAG_ADD_NEW 3300      // 新增标签
 #define IDM_BATCH_PASTE_ASC 3400  // 连续粘贴-正序
 #define IDM_BATCH_PASTE_DESC 3401 // 连续粘贴-反序
+#define ID_RESTORE_TOPMOST_AFTER_PASTE 209
+#define ID_RESTORE_FOCUS_FOR_PASTE 210
+#define ID_SEND_DEFERRED_PASTE 211
 
 // 增加新的控件ID定义
 #define ID_TAB_CONTROL 103
@@ -122,6 +125,10 @@ HWND g_hwndFilterFavorite = NULL;
 bool g_isRestoringClipboard = false;
 // 剪贴板监听暂停标志（托盘菜单切换，暂停期间不录入新剪贴板内容）
 bool g_isClipboardPaused = false;
+static bool g_deferredPasteSimulate = false;
+static bool g_deferredPasteWaitForModifierRelease = false;
+static bool g_restoreMainWindowAfterPaste = false;
+static bool g_deferredPasteKeepsTopmostVisible = false;
 // 主窗口句柄
 extern HWND g_hwndMain;
 HWND g_hwndMain;
@@ -1121,12 +1128,89 @@ static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
   return count;
 }
 
-static bool PasteHistoryItemByActualIndex(HWND hwnd, int actualIndex) {
-  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
-    return false;
+static bool AreModifierKeysDown() {
+  const int keys[] = {VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL,
+                      VK_LSHIFT, VK_RSHIFT};
+  for (int key : keys) {
+    if ((GetAsyncKeyState(key) & 0x8000) != 0)
+      return true;
+  }
+  return false;
+}
 
-  const ClipboardItem &item = g_history[actualIndex];
+static void ReleaseAllModifierKeys() {
+  const int keys[] = {VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL,
+                      VK_LSHIFT, VK_RSHIFT};
+  for (int key : keys) {
+    if ((GetAsyncKeyState(key) & 0x8000) != 0)
+      keybd_event((BYTE)key, 0, KEYEVENTF_KEYUP, 0);
+  }
+}
 
+static void RestoreForegroundWindow(HWND target) {
+  if (!target || !IsWindow(target))
+    return;
+  DWORD targetThread = GetWindowThreadProcessId(target, NULL);
+  DWORD currentThread = GetCurrentThreadId();
+  bool needAttach = (targetThread != currentThread);
+  if (needAttach)
+    AttachThreadInput(currentThread, targetThread, TRUE);
+  SetForegroundWindow(target);
+  if (g_previousFocusWindow != NULL && IsWindow(g_previousFocusWindow)) {
+    SetFocus(g_previousFocusWindow);
+  }
+  if (needAttach)
+    AttachThreadInput(currentThread, targetThread, FALSE);
+}
+
+static void RememberPasteTarget(HWND mainWindow) {
+  HWND foreground = GetForegroundWindow();
+  if (!foreground || foreground == mainWindow)
+    return;
+
+  g_previousActiveWindow = foreground;
+  g_previousFocusWindow = NULL;
+  DWORD targetThread = GetWindowThreadProcessId(foreground, NULL);
+  DWORD currentThread = GetCurrentThreadId();
+  bool needAttach = targetThread != currentThread;
+  if (needAttach)
+    AttachThreadInput(currentThread, targetThread, TRUE);
+  g_previousFocusWindow = GetFocus();
+  if (needAttach)
+    AttachThreadInput(currentThread, targetThread, FALSE);
+}
+
+static void SendCtrlVInput() {
+  INPUT inputs[4] = {};
+  inputs[0].type = INPUT_KEYBOARD;
+  inputs[0].ki.wVk = VK_CONTROL;
+  inputs[1].type = INPUT_KEYBOARD;
+  inputs[1].ki.wVk = 'V';
+  inputs[2].type = INPUT_KEYBOARD;
+  inputs[2].ki.wVk = 'V';
+  inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+  inputs[3].type = INPUT_KEYBOARD;
+  inputs[3].ki.wVk = VK_CONTROL;
+  inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+  SendInput(_countof(inputs), inputs, sizeof(INPUT));
+}
+
+static void RestoreFocusAndPaste(HWND hwnd, bool simulatePaste = true,
+                                 bool waitForModifierRelease = false,
+                                 bool restoreMainWindow = false) {
+  CloseTagPopup();
+  g_deferredPasteSimulate = simulatePaste;
+  g_deferredPasteWaitForModifierRelease = waitForModifierRelease;
+  g_restoreMainWindowAfterPaste = restoreMainWindow;
+  g_deferredPasteKeepsTopmostVisible = g_isTopmost && restoreMainWindow;
+  if (!g_deferredPasteKeepsTopmostVisible)
+    ShowWindow(hwnd, SW_HIDE);
+  KillTimer(hwnd, ID_RESTORE_TOPMOST_AFTER_PASTE);
+  KillTimer(hwnd, ID_SEND_DEFERRED_PASTE);
+  SetTimer(hwnd, ID_RESTORE_FOCUS_FOR_PASTE, 35, NULL);
+}
+
+static bool SetClipboardFromItem(const ClipboardItem &item) {
   if (!OpenClipboard(NULL))
     return false;
 
@@ -1144,7 +1228,6 @@ static bool PasteHistoryItemByActualIndex(HWND hwnd, int actualIndex) {
       }
     }
   } else if (item.type == TYPE_FILE) {
-    // 多文件记录（content 含 L'\n'）：构建 CF_HDROP；单文件：CF_UNICODETEXT
     size_t nlPos = item.content.find(L'\n');
     if (nlPos != std::wstring::npos) {
       std::vector<std::wstring> paths;
@@ -1220,47 +1303,21 @@ static bool PasteHistoryItemByActualIndex(HWND hwnd, int actualIndex) {
 
   g_isRestoringClipboard = true;
   CloseClipboard();
-  SetTimer(hwnd, 1, 100, NULL);
+  if (g_hwndMain)
+    SetTimer(g_hwndMain, 1, 100, NULL);
+  return true;
+}
 
-  Sleep(100);
-  while ((GetAsyncKeyState(VK_MENU) & 0x8000) ||
-         (GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
-         (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-    Sleep(10);
-  }
+static bool PasteHistoryItemByActualIndex(HWND hwnd, int actualIndex) {
+  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
+    return false;
 
-  // 隐藏 SmartClip 并恢复焦点到原应用窗口
-  if (!g_isTopmost) {
-    ShowWindow(hwnd, SW_HIDE);
-  }
+  if (!SetClipboardFromItem(g_history[actualIndex]))
+    return false;
 
-  if (g_previousActiveWindow != NULL && IsWindow(g_previousActiveWindow)) {
-    // 使用 AttachThreadInput 确保跨进程 SetForegroundWindow 可靠
-    DWORD targetThread = GetWindowThreadProcessId(g_previousActiveWindow, NULL);
-    DWORD currentThread = GetCurrentThreadId();
-    bool needAttach = (targetThread != currentThread);
-    if (needAttach)
-      AttachThreadInput(currentThread, targetThread, TRUE);
-    SetForegroundWindow(g_previousActiveWindow);
-    // 恢复焦点到原子窗口（如资源管理器地址栏编辑框）
-    if (g_previousFocusWindow != NULL && IsWindow(g_previousFocusWindow)) {
-      SetFocus(g_previousFocusWindow);
-    }
-    if (needAttach)
-      AttachThreadInput(currentThread, targetThread, FALSE);
-    Sleep(100);
-  }
-
-  // 使用 keybd_event 模拟 Ctrl+V 粘贴
-  keybd_event(VK_CONTROL, 0, 0, 0);
-  keybd_event('V', 0, 0, 0);
-  keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
-  keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
-
-  IncrementPasteCount();
-  if (g_isNotificationEnabled) {
-    ShowTrayBalloon(hwnd, T(STR_TRAY_QUICK_PASTE_TITLE), T(STR_TRAY_PASTED));
-  }
+  RememberPasteTarget(hwnd);
+  bool wasVisible = IsWindowVisible(hwnd) && !IsIconic(hwnd);
+  RestoreFocusAndPaste(hwnd, true, true, wasVisible);
   return true;
 }
 
@@ -4714,6 +4771,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     LoadHotkeySettings();
     // 加载后立即保存一次，将旧格式（6行）迁移为新格式（14行）
     SaveHotkeySettings();
+    if (g_isTopmost) {
+      SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+      HWND hTopmostBtn = GetDlgItem(hwnd, ID_TOPMOST_BUTTON);
+      if (hTopmostBtn)
+        SetWindowTextW(hTopmostBtn, L"取消置顶");
+      if (g_hwndTitleTopmost)
+        InvalidateRect(g_hwndTitleTopmost, NULL, TRUE);
+    }
 
     // 加载外部语言文件（扫描 lang/ 目录）
     LoadExternalLanguages();
@@ -6549,77 +6614,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         const ClipboardItem &item = g_history[actualIndex];
 
         if (item.type == TYPE_TEXT) {
-          // 文本类型：双击直接粘贴
-          if (OpenClipboard(NULL)) {
-            EmptyClipboard();
-
-            HGLOBAL hGlobal = GlobalAlloc(
-                GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-            if (hGlobal != NULL) {
-              wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-              if (pData != NULL) {
-                wcscpy_s(pData, item.content.length() + 1,
-                         item.content.c_str());
-                GlobalUnlock(hGlobal);
-                SetClipboardData(CF_UNICODETEXT, hGlobal);
-              }
-            }
-
-            g_isRestoringClipboard = true;
-            CloseClipboard();
-            SetTimer(hwnd, 1, 100, NULL);
-          }
-
-          bool wasNoActivateMode = g_isNoActivateMode;
           if (!g_isTopmost) {
             CloseTagPopup();
-            // 清除不抢焦点模式
             g_isNoActivateMode = false;
             LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             ex &= ~WS_EX_NOACTIVATE;
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
           }
 
-          Sleep(100);
-
-          if (!wasNoActivateMode && g_previousActiveWindow != NULL &&
-              IsWindow(g_previousActiveWindow)) {
-            // 用户曾点击 SmartClip（非不抢焦点模式），需要恢复焦点到原窗口
-            // 在隐藏 SmartClip 前恢复前台窗口（此时 SmartClip 仍是前台，
-            // SetForegroundWindow 更可靠）
-            DWORD targetThread =
-                GetWindowThreadProcessId(g_previousActiveWindow, NULL);
-            DWORD currentThread = GetCurrentThreadId();
-            bool needAttach = (targetThread != currentThread);
-            if (needAttach)
-              AttachThreadInput(currentThread, targetThread, TRUE);
-            SetForegroundWindow(g_previousActiveWindow);
-            // 恢复焦点到原子窗口（如资源管理器地址栏编辑框）
-            if (g_previousFocusWindow != NULL &&
-                IsWindow(g_previousFocusWindow)) {
-              SetFocus(g_previousFocusWindow);
+          if (SetClipboardFromItem(item)) {
+            RememberPasteTarget(hwnd);
+            RestoreFocusAndPaste(hwnd);
+            IncrementPasteCount();
+            if (g_isNotificationEnabled) {
+              ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_PASTED));
             }
-            if (!g_isTopmost)
-              ShowWindow(hwnd, SW_HIDE);
-            if (needAttach)
-              AttachThreadInput(currentThread, targetThread, FALSE);
-            Sleep(100);
-          } else {
-            // 不抢焦点模式下原窗口仍有焦点，或无目标窗口，直接隐藏
-            if (!g_isTopmost)
-              ShowWindow(hwnd, SW_HIDE);
-            Sleep(100);
-          }
-
-          // 使用 keybd_event 模拟 Ctrl+V 粘贴
-          keybd_event(VK_CONTROL, 0, 0, 0);
-          keybd_event('V', 0, 0, 0);
-          keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
-          keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
-
-          IncrementPasteCount();
-          if (g_isNotificationEnabled) {
-            ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_PASTED));
           }
         } else if (item.type == TYPE_FILE) {
           // 文件类型：复制文件路径到剪贴板
@@ -6746,6 +6755,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         if (g_isNotificationEnabled) {
           ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_UNPINNED));
         }
+        SaveHotkeySettings();
       }
     } else if (wID == ID_DARKMODE_BUTTON && wNotifyCode == BN_CLICKED) {
       // 切换暗黑模式
@@ -6844,6 +6854,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
           ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_UNPINNED));
         }
       }
+      SaveHotkeySettings();
       InvalidateRect(g_hwndTitleTopmost, NULL, TRUE);
     } else if (wID == ID_TITLEBAR_MINIMIZE && wNotifyCode == BN_CLICKED) {
       // 防御性检查：确认光标确实在最小化按钮上，避免误触发的最小化
@@ -7067,209 +7078,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 右键菜单：执行粘贴（模拟Ctrl+V）
       if (g_contextMenuIndex >= 0 &&
           g_contextMenuIndex < (int)g_displayIndexMap.size()) {
-        int actualIndex = g_displayIndexMap[g_contextMenuIndex]; // 获取实际索引
+        int actualIndex = g_displayIndexMap[g_contextMenuIndex];
         const ClipboardItem &item = g_history[actualIndex];
-        if (OpenClipboard(NULL)) {
-          EmptyClipboard();
-
-          if (item.type == TYPE_TEXT) {
-            // 文本类型：复制文本内容
-            HGLOBAL hGlobal = GlobalAlloc(
-                GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-            if (hGlobal != NULL) {
-              wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-              if (pData != NULL) {
-                wcscpy_s(pData, item.content.length() + 1,
-                         item.content.c_str());
-                GlobalUnlock(hGlobal);
-                SetClipboardData(CF_UNICODETEXT, hGlobal);
-              }
-            }
-          } else if (item.type == TYPE_FILE) {
-            // 文件类型：多文件记录构建 CF_HDROP，单文件用 CF_UNICODETEXT
-            size_t nlPos = item.content.find(L'\n');
-            if (nlPos != std::wstring::npos) {
-              // 多文件：拆分路径构建 CF_HDROP
-              std::vector<std::wstring> paths;
-              size_t start = 0;
-              while (start <= item.content.size()) {
-                size_t end = item.content.find(L'\n', start);
-                if (end == std::wstring::npos)
-                  end = item.content.size();
-                if (end > start) {
-                  paths.push_back(item.content.substr(start, end - start));
-                }
-                if (end == item.content.size())
-                  break;
-                start = end + 1;
-              }
-              size_t totalLen = 0;
-              for (const auto &p : paths)
-                totalLen += (p.size() + 1) * sizeof(wchar_t);
-              totalLen += sizeof(wchar_t);
-              HGLOBAL hGlobal =
-                  GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + totalLen);
-              if (hGlobal != NULL) {
-                DROPFILES *pDrop = (DROPFILES *)GlobalLock(hGlobal);
-                if (pDrop != NULL) {
-                  pDrop->pFiles = sizeof(DROPFILES);
-                  pDrop->pt.x = 0;
-                  pDrop->pt.y = 0;
-                  pDrop->fNC = FALSE;
-                  pDrop->fWide = TRUE;
-                  wchar_t *pStr =
-                      (wchar_t *)((BYTE *)pDrop + sizeof(DROPFILES));
-                  for (size_t i = 0; i < paths.size(); ++i) {
-                    wcscpy_s(pStr, paths[i].size() + 1, paths[i].c_str());
-                    pStr += paths[i].size() + 1;
-                  }
-                  *pStr = L'\0';
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_HDROP, hGlobal);
-                }
-              }
-            } else {
-              // 单文件：CF_UNICODETEXT
-              HGLOBAL hGlobal = GlobalAlloc(
-                  GMEM_MOVEABLE, (item.content.length() + 1) * sizeof(wchar_t));
-              if (hGlobal != NULL) {
-                wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
-                if (pData != NULL) {
-                  wcscpy_s(pData, item.content.length() + 1,
-                           item.content.c_str());
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_UNICODETEXT, hGlobal);
-                }
-              }
-            }
-          } else if (item.type == TYPE_IMAGE) {
-            // 图像类型：复制图像数据（从原图文件加载）
-            std::vector<BYTE> originalData;
-            int origWidth = 0, origHeight = 0;
-            bool loadedFromFile = false;
-
-            if (!item.imageFileName.empty()) {
-              loadedFromFile = LoadOriginalImage(
-                  item.imageFileName, originalData, origWidth, origHeight);
-            }
-
-            if (loadedFromFile) {
-              // 使用原图数据
-              BITMAPINFO bmi = {};
-              bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-              bmi.bmiHeader.biWidth = origWidth;
-              bmi.bmiHeader.biHeight = -origHeight;
-              bmi.bmiHeader.biPlanes = 1;
-              bmi.bmiHeader.biBitCount = 24;
-              bmi.bmiHeader.biCompression = BI_RGB;
-
-              DWORD imageSize = originalData.size();
-              HGLOBAL hGlobal = GlobalAlloc(
-                  GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + imageSize);
-              if (hGlobal != NULL) {
-                BYTE *pData = (BYTE *)GlobalLock(hGlobal);
-                if (pData != NULL) {
-                  memcpy(pData, &bmi.bmiHeader, sizeof(BITMAPINFOHEADER));
-                  memcpy(pData + sizeof(BITMAPINFOHEADER), &originalData[0],
-                         imageSize);
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_DIB, hGlobal);
-                }
-              }
-            } else {
-              // 回退到使用缩略图数据（兼容旧数据）
-              // 懒加载：启动时未预加载缩略图，按需从文件加载
-              EnsureItemImageLoaded(item);
-              if (item.imageData.empty())
-                return false;
-              int srcWidth =
-                  item.thumbWidth > 0 ? item.thumbWidth : item.imageWidth;
-              int srcHeight =
-                  item.thumbHeight > 0 ? item.thumbHeight : item.imageHeight;
-
-              BITMAPINFO bmi = {};
-              bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-              bmi.bmiHeader.biWidth = srcWidth;
-              bmi.bmiHeader.biHeight = -srcHeight;
-              bmi.bmiHeader.biPlanes = 1;
-              bmi.bmiHeader.biBitCount = 24;
-              bmi.bmiHeader.biCompression = BI_RGB;
-
-              DWORD imageSize = item.imageData.size();
-              HGLOBAL hGlobal = GlobalAlloc(
-                  GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + imageSize);
-              if (hGlobal != NULL) {
-                BYTE *pData = (BYTE *)GlobalLock(hGlobal);
-                if (pData != NULL) {
-                  memcpy(pData, &bmi.bmiHeader, sizeof(BITMAPINFOHEADER));
-                  memcpy(pData + sizeof(BITMAPINFOHEADER), &item.imageData[0],
-                         imageSize);
-                  GlobalUnlock(hGlobal);
-                  SetClipboardData(CF_DIB, hGlobal);
-                }
-              }
-            }
-          }
-
-          g_isRestoringClipboard = true;
-          CloseClipboard();
-          SetTimer(hwnd, 1, 100, NULL);
-        }
-
-        // 如果不是置顶状态，隐藏剪贴板窗口
-        bool wasNoActivateMode = g_isNoActivateMode;
-        if (!g_isTopmost) {
-          CloseTagPopup();
-          // 清除不抢焦点模式
+        if (SetClipboardFromItem(item)) {
           g_isNoActivateMode = false;
           LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
           ex &= ~WS_EX_NOACTIVATE;
           SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
-        }
-
-        // 等待剪贴板数据设置完成
-        Sleep(100);
-
-        if (!wasNoActivateMode && g_previousActiveWindow != NULL &&
-            IsWindow(g_previousActiveWindow)) {
-          // 用户曾点击 SmartClip（非不抢焦点模式），需要恢复焦点到原窗口
-          // 在隐藏 SmartClip 前恢复前台窗口（此时 SmartClip 仍是前台，
-          // SetForegroundWindow 更可靠）
-          DWORD targetThread =
-              GetWindowThreadProcessId(g_previousActiveWindow, NULL);
-          DWORD currentThread = GetCurrentThreadId();
-          bool needAttach = (targetThread != currentThread);
-          if (needAttach)
-            AttachThreadInput(currentThread, targetThread, TRUE);
-          SetForegroundWindow(g_previousActiveWindow);
-          // 恢复焦点到原子窗口（如资源管理器地址栏编辑框）
-          if (g_previousFocusWindow != NULL &&
-              IsWindow(g_previousFocusWindow)) {
-            SetFocus(g_previousFocusWindow);
+          RememberPasteTarget(hwnd);
+          RestoreFocusAndPaste(hwnd);
+          if (g_isNotificationEnabled) {
+            ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_PASTED));
           }
-          if (!g_isTopmost)
-            ShowWindow(hwnd, SW_HIDE);
-          if (needAttach)
-            AttachThreadInput(currentThread, targetThread, FALSE);
-          // 等待窗口激活
-          Sleep(100);
-        } else {
-          // 不抢焦点模式下原窗口仍有焦点，或无目标窗口，直接隐藏
-          if (!g_isTopmost)
-            ShowWindow(hwnd, SW_HIDE);
-          Sleep(100);
         }
-
-        // 使用 keybd_event 模拟 Ctrl+V 粘贴
-        keybd_event(VK_CONTROL, 0, 0, 0);
-        keybd_event('V', 0, 0, 0);
-        keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
-        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
-
-        if (g_isNotificationEnabled) {
-          ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_PASTED));
-        }
-        IncrementPasteCount();
       }
     } else if (wID == IDM_FAVORITE) {
       // 收藏/取消收藏
@@ -7666,6 +7487,43 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wParam == 1) {
       g_isRestoringClipboard = false;
       KillTimer(hwnd, 1);
+    } else if (wParam == ID_RESTORE_FOCUS_FOR_PASTE) {
+      KillTimer(hwnd, ID_RESTORE_FOCUS_FOR_PASTE);
+      if (g_previousActiveWindow && IsWindow(g_previousActiveWindow))
+        RestoreForegroundWindow(g_previousActiveWindow);
+      SetTimer(hwnd, ID_SEND_DEFERRED_PASTE, 20, NULL);
+    } else if (wParam == ID_SEND_DEFERRED_PASTE) {
+      KillTimer(hwnd, ID_SEND_DEFERRED_PASTE);
+      if (g_deferredPasteWaitForModifierRelease && AreModifierKeysDown()) {
+        SetTimer(hwnd, ID_SEND_DEFERRED_PASTE, 10, NULL);
+        break;
+      }
+      if (g_deferredPasteSimulate) {
+        ReleaseAllModifierKeys();
+        SendCtrlVInput();
+      }
+      g_deferredPasteSimulate = false;
+      g_deferredPasteWaitForModifierRelease = false;
+      IncrementPasteCount();
+      if ((g_isTopmost && !g_deferredPasteKeepsTopmostVisible) ||
+          (!g_isTopmost && g_restoreMainWindowAfterPaste))
+        SetTimer(hwnd, ID_RESTORE_TOPMOST_AFTER_PASTE, 180, NULL);
+      if (g_deferredPasteKeepsTopmostVisible) {
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      }
+      g_deferredPasteKeepsTopmostVisible = false;
+    } else if (wParam == ID_RESTORE_TOPMOST_AFTER_PASTE) {
+      KillTimer(hwnd, ID_RESTORE_TOPMOST_AFTER_PASTE);
+      if (g_isTopmost) {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      } else {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      }
     } else if (wParam == 2) {
       // 延迟刷新列表项高度
       if (g_hwndListBox) {
@@ -8548,7 +8406,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       int visibleIds[10] = {};
       int visibleCount = CollectVisibleShortcutDisplayIndices(visibleIds, 10);
       if (pasteOffset >= 0 && pasteOffset < visibleCount) {
-        PasteHistoryItemByDisplayIndex(hwnd, visibleIds[pasteOffset]);
+        if (PasteHistoryItemByDisplayIndex(hwnd, visibleIds[pasteOffset]) &&
+            g_isNotificationEnabled) {
+          ShowTrayBalloon(hwnd, T(STR_TRAY_QUICK_PASTE_TITLE), T(STR_TRAY_PASTED));
+        }
       }
     } else if (wParam >= ID_HOTKEY_FAVORITE_1 &&
                wParam <= ID_HOTKEY_FAVORITE_9) {

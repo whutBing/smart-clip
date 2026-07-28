@@ -137,6 +137,14 @@ LRESULT CALLBACK ImagePreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
                     ReleaseDC(hwnd, hdc);
                 } else {
                     // 回退到使用缩略图数据（兼容旧数据）
+                    // 懒加载：启动时 imageData 为空，需先从文件加载
+                    if (pItem->imageData.empty()) {
+                        EnsureItemImageLoaded(*pItem);
+                    }
+                    if (pItem->imageData.empty()) {
+                        // 加载失败，无法预览
+                        return 0;
+                    }
                     imgWidth = pItem->thumbWidth > 0 ? pItem->thumbWidth : pItem->imageWidth;
                     imgHeight = pItem->thumbHeight > 0 ? pItem->thumbHeight : pItem->imageHeight;
 

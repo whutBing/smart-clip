@@ -113,7 +113,14 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 # 编译资源文件
-$(RES): $(RC) $(INCDIR)/resource.h | $(BUILDDIR)
+# 注意：windres 不会自动检测 .rc 引用的图片/图标文件变化，
+# 必须显式将所有资源素材列入依赖，否则更换图片后增量编译不会
+# 重新生成 .res，导致 EXE 里嵌入的还是旧图片。
+RESOURCE_ASSETS := $(RESDIR)/clip.ico $(RESDIR)/app.manifest \
+                   $(wildcard $(RESDIR)/images/*.png) \
+                   $(wildcard $(RESDIR)/images/*.ico) \
+                   $(wildcard $(RESDIR)/images/*.bmp)
+$(RES): $(RC) $(INCDIR)/resource.h $(RESOURCE_ASSETS) | $(BUILDDIR)
 	@echo [RC]   $<
 	@$(WINDRES) --include-dir $(INCDIR) --include-dir $(RESDIR) -i $< -O coff -o $@
 

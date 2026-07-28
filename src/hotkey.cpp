@@ -45,6 +45,8 @@ void SaveHotkeySettings() {
   DbSetSettingInt("max_text_size_kb", g_maxTextSizeKB);
   DbSetSettingInt("quick_paste_enabled", g_isQuickPasteEnabled ? 1 : 0);
   DbSetSettingInt("all_hotkeys_enabled", g_allHotkeysEnabled ? 1 : 0);
+  DbSetSettingInt("window_topmost", g_isTopmost ? 1 : 0);
+  DbSetSettingInt("settings_last_tab", g_currentSettingsTab);
 
   RefreshTrayTooltip();
 }
@@ -418,6 +420,11 @@ void LoadHotkeySettings() {
   g_maxTextSizeKB = DbGetSettingInt("max_text_size_kb", 50);
   g_isQuickPasteEnabled = DbGetSettingInt("quick_paste_enabled", 1) != 0;
   g_allHotkeysEnabled = DbGetSettingInt("all_hotkeys_enabled", 1) != 0;
+  g_isTopmost = DbGetSettingInt("window_topmost", 0) != 0;
+
+  int savedSettingsTab = DbGetSettingInt("settings_last_tab", 0);
+  if (savedSettingsTab >= 0 && savedSettingsTab < 4)
+    g_currentSettingsTab = savedSettingsTab;
 }
 
 // 注册快捷键
