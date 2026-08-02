@@ -32,6 +32,7 @@
 #define IDC_LANGUAGE_COMBO 132
 #define IDC_TASKBAR_CHECK 133
 #define IDC_STARTUP_CHECK 134
+#define IDC_HOVER_SELECT_CHECK 139
 
 // 图片预览质量枚举
 enum ImagePreviewQuality {
@@ -54,6 +55,7 @@ extern bool g_isCustomScrollbarEnabled;
 extern bool g_isColorDotEnabled;
 extern bool g_isTaskbarVisible;
 extern bool g_isStartupEnabled;
+extern bool g_isHoverSelectEnabled;
 extern ImagePreviewQuality g_imagePreviewQuality;
 extern int g_maxHistoryCount;
 extern int g_customScrollbarHideDelayMs;

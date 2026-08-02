@@ -359,8 +359,9 @@ void DrawTextWithColorEmoji(HDC hdc, const wchar_t *text, int textLen,
 
     // 对每个 emoji 字符单独设置较小的字号，让 emoji 视觉上与文字匹配。
     // 不影响文字字符的大小（文字仍用 TextFormat 默认的 fontSize）。
-    // 处理代理对：高位代理 + 低位代理组成一个 emoji 字形，整个代理对
-    // 设置一次 emojiFontSize。
+    // 同时把紧跟 emoji 的变体选择符(U+FE0F/U+FE0E)与 ZWJ 序列(U+200D+字符)
+    // 一并纳入同一 range，否则这些零宽修饰符会被当作独立文字字符渲染成
+    // tofu(口字形)。例如 "⏸️" = U+23F8 + U+FE0F，"👨‍👩‍👧" 含 U+200D。
     for (int i = 0; i < textLen; ++i) {
         wchar_t c = text[i];
         bool isHighSurrogate = (c >= 0xD800 && c <= 0xDBFF);
@@ -369,17 +370,33 @@ void DrawTextWithColorEmoji(HDC hdc, const wchar_t *text, int textLen,
                           (c >= 0x25A0 && c <= 0x25FF) ||
                           (c >= 0x2B00 && c <= 0x2BFF) ||
                           (c >= 0x2190 && c <= 0x21FF);
-        if (isHighSurrogate) {
-            // 代理对占 2 个 wchar_t，设置 2 长度的 range
-            UINT32 rangeLen = (i + 1 < textLen) ? 2u : 1u;
-            DWRITE_TEXT_RANGE range = {(UINT32)i, rangeLen};
-            pLayout->SetFontSize(emojiFontSize, range);
-            // 跳过低位代理
-            i += 1;
-        } else if (isEmojiBmp) {
-            DWRITE_TEXT_RANGE range = {(UINT32)i, 1u};
-            pLayout->SetFontSize(emojiFontSize, range);
+        if (!isHighSurrogate && !isEmojiBmp)
+            continue;
+
+        int start = i;
+        int j = i;
+        // 首个 emoji 字符：代理对占 2 个 wchar_t
+        if (isHighSurrogate && j + 1 < textLen)
+            j += 1;
+        // 向后吞掉变体选择符与 ZWJ 序列，整体作为同一 emoji 簇
+        while (j + 1 < textLen) {
+            wchar_t next = text[j + 1];
+            if (next == 0xFE0F || next == 0xFE0E) {
+                j += 1;
+                continue;
+            }
+            if (next == 0x200D && j + 2 < textLen) {
+                j += 2;  // 跳过 ZWJ 及其后的一个字符
+                if (text[j] >= 0xD800 && text[j] <= 0xDBFF && j + 1 < textLen)
+                    j += 1;  // 该字符是高代理，再跳低位代理
+                continue;
+            }
+            break;
         }
+
+        DWRITE_TEXT_RANGE range = {(UINT32)start, (UINT32)(j - start + 1)};
+        pLayout->SetFontSize(emojiFontSize, range);
+        i = j;  // 跳过已纳入 range 的字符
     }
 
     pFormat->Release();

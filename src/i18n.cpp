@@ -124,7 +124,7 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"鸣谢",
     L"感谢为本项目提供帮助的人",
     L"感谢所有支持 SmartClip 的朋友：\n北一、Sulla vetta la "
-    L"Saovia、Lion、陈随易",
+    L"Saovia、Lion、陈随易、Liu Hao",
     L"协议",
     L"最终用户许可协议与隐私政策",
     L"最终用户许可协议",
@@ -281,6 +281,10 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"同意",
     L"拒绝",
     L"安装及使用本软件即视为同意上述协议",
+
+    // 悬浮选中（通用设置）
+    L"悬浮选中",
+    L"鼠标悬浮在列表项上即自动选中",
 };
 
 static const wchar_t *kStringsEn[STR_COUNT] = {
@@ -391,7 +395,7 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Credits",
     L"Thanks to those who helped this project",
     L"Thanks to everyone who supports SmartClip:\n北一, Sulla vetta la Saovia, "
-    L"Lion, 陈随易",
+    L"Lion, 陈随易，Liu Hao",
     L"Agreement",
     L"End user license agreement and privacy policy",
     L"End User License Agreement",
@@ -573,6 +577,10 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Decline",
     L"Installing and using this software constitutes acceptance of the above "
     L"agreement",
+
+    // Hover select (General settings)
+    L"Hover select",
+    L"Hover over a list item to select it automatically",
 };
 
 // StringId 名称到枚举值的映射（用于解析 ini 文件）
@@ -787,6 +795,8 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_AGREEMENT_DIALOG_ACCEPT", STR_AGREEMENT_DIALOG_ACCEPT},
     {"STR_AGREEMENT_DIALOG_DECLINE", STR_AGREEMENT_DIALOG_DECLINE},
     {"STR_AGREEMENT_DIALOG_REMIND", STR_AGREEMENT_DIALOG_REMIND},
+    {"STR_ROW_HOVER_SELECT", STR_ROW_HOVER_SELECT},
+    {"STR_ROW_HOVER_SELECT_DESC", STR_ROW_HOVER_SELECT_DESC},
     {NULL, STR_COUNT},
 };
 

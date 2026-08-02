@@ -650,12 +650,194 @@ static bool HasMarkdownFormatting(const std::wstring &text) {
   return false;
 }
 
+// 剥离 markdown 行内标记：图片/链接/代码/粗体/斜体/删除线
+static std::wstring StripInlineMarkdown(const std::wstring &s) {
+  std::wstring out;
+  out.reserve(s.size());
+  size_t i = 0;
+  while (i < s.size()) {
+    wchar_t c = s[i];
+
+    // 行内代码 `code`
+    if (c == L'`') {
+      size_t end = s.find(L'`', i + 1);
+      if (end != std::wstring::npos) {
+        out += s.substr(i + 1, end - i - 1);
+        i = end + 1;
+        continue;
+      }
+    }
+    // 图片 ![alt](url) -> alt
+    if (c == L'!' && i + 1 < s.size() && s[i + 1] == L'[') {
+      size_t cb = s.find(L']', i + 2);
+      if (cb != std::wstring::npos && cb + 1 < s.size() && s[cb + 1] == L'(') {
+        size_t rp = s.find(L')', cb + 2);
+        if (rp != std::wstring::npos) {
+          out += s.substr(i + 2, cb - (i + 2));
+          i = rp + 1;
+          continue;
+        }
+      }
+    }
+    // 链接 [text](url) -> text
+    if (c == L'[') {
+      size_t cb = s.find(L']', i + 1);
+      if (cb != std::wstring::npos && cb + 1 < s.size() && s[cb + 1] == L'(') {
+        size_t rp = s.find(L')', cb + 2);
+        if (rp != std::wstring::npos) {
+          out += s.substr(i + 1, cb - (i + 1));
+          i = rp + 1;
+          continue;
+        }
+      }
+    }
+    // 删除线 ~~text~~
+    if (c == L'~' && i + 1 < s.size() && s[i + 1] == L'~') {
+      size_t end = s.find(L"~~", i + 2);
+      if (end != std::wstring::npos) {
+        out += s.substr(i + 2, end - (i + 2));
+        i = end + 2;
+        continue;
+      }
+    }
+    // 粗体 **text** 或 __text__
+    if ((c == L'*' && i + 1 < s.size() && s[i + 1] == L'*') ||
+        (c == L'_' && i + 1 < s.size() && s[i + 1] == L'_')) {
+      std::wstring delim(2, c);
+      size_t end = s.find(delim, i + 2);
+      if (end != std::wstring::npos) {
+        out += s.substr(i + 2, end - (i + 2));
+        i = end + 2;
+        continue;
+      }
+    }
+    // 斜体 *text* 或 _text_：要求紧邻非空白字符，避免误伤 "5 * 3"
+    if ((c == L'*' || c == L'_') && i + 1 < s.size() && s[i + 1] != L' ' &&
+        s[i + 1] != L'\t') {
+      size_t end = s.find(c, i + 1);
+      if (end != std::wstring::npos && end > i + 1 && end < s.size() &&
+          s[end - 1] != L' ' && s[end - 1] != L'\t') {
+        out += s.substr(i + 1, end - (i + 1));
+        i = end + 1;
+        continue;
+      }
+    }
+
+    out += c;
+    ++i;
+  }
+  return out;
+}
+
+// 剥离 markdown 语法标记，返回纯文本（仅剥离语法，不渲染富文本）。
+// 用于 md 双记录：原 md 入一条，剥离后纯文本入另一条。
+static std::wstring StripMarkdownToPlainText(const std::wstring &md) {
+  std::wstring result;
+  result.reserve(md.size());
+  bool inFence = false;
+  size_t lineStart = 0;
+  while (lineStart <= md.size()) {
+    size_t nl = md.find(L'\n', lineStart);
+    std::wstring line = (nl == std::wstring::npos)
+                            ? md.substr(lineStart)
+                            : md.substr(lineStart, nl - lineStart);
+    if (!line.empty() && line.back() == L'\r')
+      line.pop_back();
+
+    size_t lead = line.find_first_not_of(L" \t");
+    std::wstring head = (lead == std::wstring::npos) ? L"" : line.substr(lead);
+    std::wstring body = head;
+    bool dropLine = false;
+
+    // 代码围栏 ``` / ~~~
+    if (head.size() >= 3 &&
+        (head.compare(0, 3, L"```") == 0 || head.compare(0, 3, L"~~~") == 0)) {
+      inFence = !inFence;
+      dropLine = true; // 围栏行本身不保留
+    } else if (inFence) {
+      body = line; // 围栏内原样保留
+    } else {
+      // 标题 # / ## ...
+      if (!body.empty() && body[0] == L'#') {
+        size_t k = 0;
+        while (k < body.size() && body[k] == L'#')
+          ++k;
+        if (k <= 6 && k < body.size() && (body[k] == L' ' || body[k] == L'\t'))
+          body = body.substr(k + 1);
+      }
+      // 引用 >
+      if (!body.empty() && body[0] == L'>') {
+        size_t k = 0;
+        while (k < body.size() && (body[k] == L'>' || body[k] == L' '))
+          ++k;
+        body = body.substr(k);
+      }
+      // 任务列表 - [ ] / - [x]
+      if (body.size() >= 3 &&
+          (body[0] == L'-' || body[0] == L'*' || body[0] == L'+') &&
+          body[1] == L' ' && body[2] == L'[') {
+        size_t cb = body.find(L']', 2);
+        if (cb != std::wstring::npos && cb + 1 < body.size() &&
+            body[cb + 1] == L' ')
+          body = body.substr(cb + 2);
+      }
+      // 无序列表 - / * / +
+      else if (body.size() >= 2 &&
+               (body[0] == L'-' || body[0] == L'*' || body[0] == L'+') &&
+               body[1] == L' ') {
+        body = body.substr(2);
+      }
+      // 有序列表 1.
+      else {
+        size_t k = 0;
+        while (k < body.size() && body[k] >= L'0' && body[k] <= L'9')
+          ++k;
+        if (k > 0 && k + 1 < body.size() && body[k] == L'.' &&
+            body[k + 1] == L' ')
+          body = body.substr(k + 2);
+      }
+      // 水平线
+      if (body == L"---" || body == L"***" || body == L"___" ||
+          body == L"- - -")
+        dropLine = true;
+
+      body = StripInlineMarkdown(body);
+    }
+
+    std::wstring out =
+        dropLine
+            ? std::wstring()
+            : std::wstring(lead == std::wstring::npos ? 0 : lead, L' ') + body;
+    if (!result.empty())
+      result += L"\n";
+    result += out;
+
+    if (nl == std::wstring::npos)
+      break;
+    lineStart = nl + 1;
+  }
+  return result;
+}
+
 // 立即提交挂起的剪贴板文本（用于非文本格式到来时强制刷新）
 static void FlushPendingClipboardText() {
   if (g_clipboardTextPending) {
     g_clipboardTextPending = false;
     if (!g_pendingClipboardText.empty()) {
-      AddToHistory(g_pendingClipboardText);
+      const std::wstring &text = g_pendingClipboardText;
+      // md 双记录：复制 md 内容时，先生成剥离 md 的纯文本（在下），
+      // 再生成 md 原文（在上），便于用户按场景粘贴。
+      if (HasMarkdownFormatting(text)) {
+        std::wstring plain = StripMarkdownToPlainText(text);
+        if (plain != text && !plain.empty()) {
+          AddToHistory(plain); // 先入：旧、在下
+          AddToHistory(text);  // 后入：新、在上（带 md 格式）
+        } else {
+          AddToHistory(text);
+        }
+      } else {
+        AddToHistory(text);
+      }
     }
     g_pendingClipboardText.clear();
   }
@@ -1129,8 +1311,8 @@ static int CollectVisibleShortcutDisplayIndices(int *outIds, int maxCount) {
 }
 
 static bool AreModifierKeysDown() {
-  const int keys[] = {VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL,
-                      VK_LSHIFT, VK_RSHIFT};
+  const int keys[] = {VK_LMENU,    VK_RMENU,  VK_LCONTROL,
+                      VK_RCONTROL, VK_LSHIFT, VK_RSHIFT};
   for (int key : keys) {
     if ((GetAsyncKeyState(key) & 0x8000) != 0)
       return true;
@@ -1139,8 +1321,8 @@ static bool AreModifierKeysDown() {
 }
 
 static void ReleaseAllModifierKeys() {
-  const int keys[] = {VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL,
-                      VK_LSHIFT, VK_RSHIFT};
+  const int keys[] = {VK_LMENU,    VK_RMENU,  VK_LCONTROL,
+                      VK_RCONTROL, VK_LSHIFT, VK_RSHIFT};
   for (int key : keys) {
     if ((GetAsyncKeyState(key) & 0x8000) != 0)
       keybd_event((BYTE)key, 0, KEYEVENTF_KEYUP, 0);
@@ -2895,6 +3077,20 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
 
     if (HIWORD(index) == 0) {
       index = LOWORD(index);
+
+      // 悬浮选中：鼠标悬浮在列表项上即自动选中（可在 通用设置 中开关）
+      if (g_isHoverSelectEnabled && index >= 0 &&
+          index < (int)g_displayIndexMap.size() &&
+          IsSelectableDisplayIndex(index)) {
+        int curSel = (int)SendMessageW(hwnd, LB_GETCURSEL, 0, 0);
+        if (curSel != index) {
+          // 禁用重绘避免 LB_SETCURSEL 同步绘制造成闪烁
+          SendMessageW(hwnd, WM_SETREDRAW, FALSE, 0);
+          SendMessageW(hwnd, LB_SETCURSEL, index, 0);
+          SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
+          InvalidateRect(hwnd, NULL, FALSE);
+        }
+      }
 
       bool iconFound = false;
       if (index >= 0 && index < (int)g_displayIndexMap.size()) {
@@ -7505,8 +7701,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       g_deferredPasteSimulate = false;
       g_deferredPasteWaitForModifierRelease = false;
       IncrementPasteCount();
-      if ((g_isTopmost && !g_deferredPasteKeepsTopmostVisible) ||
-          (!g_isTopmost && g_restoreMainWindowAfterPaste))
+      // 双击粘贴后保持主窗体隐藏；只有快捷粘贴前窗体原本可见时才恢复它。
+      if (g_restoreMainWindowAfterPaste && !g_deferredPasteKeepsTopmostVisible)
         SetTimer(hwnd, ID_RESTORE_TOPMOST_AFTER_PASTE, 180, NULL);
       if (g_deferredPasteKeepsTopmostVisible) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
@@ -8408,7 +8604,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (pasteOffset >= 0 && pasteOffset < visibleCount) {
         if (PasteHistoryItemByDisplayIndex(hwnd, visibleIds[pasteOffset]) &&
             g_isNotificationEnabled) {
-          ShowTrayBalloon(hwnd, T(STR_TRAY_QUICK_PASTE_TITLE), T(STR_TRAY_PASTED));
+          ShowTrayBalloon(hwnd, T(STR_TRAY_QUICK_PASTE_TITLE),
+                          T(STR_TRAY_PASTED));
         }
       }
     } else if (wParam >= ID_HOTKEY_FAVORITE_1 &&

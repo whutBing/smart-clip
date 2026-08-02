@@ -60,6 +60,7 @@ bool g_isCustomScrollbarEnabled = true;
 bool g_isColorDotEnabled = true;
 bool g_isTaskbarVisible = true;
 bool g_isStartupEnabled = false;
+bool g_isHoverSelectEnabled = true; // 悬浮选中（默认开启）
 ImagePreviewQuality g_imagePreviewQuality = PREVIEW_HD;
 int g_customScrollbarHideDelayMs = 1500;
 int g_maxTextSizeKB = 50; // 默认50KB，超过此大小的文本不记录
@@ -102,6 +103,7 @@ static HWND g_hwndToggleScrollbar = NULL;
 static HWND g_hwndToggleColorDot = NULL;
 static HWND g_hwndToggleTaskbar = NULL;
 static HWND g_hwndToggleStartup = NULL;
+static HWND g_hwndToggleHoverSelect = NULL;
 static HWND g_hwndThemeCombo = NULL;
 static HWND g_hwndThemeStyleCombo = NULL;
 static HWND g_hwndLanguageCombo = NULL;
@@ -679,6 +681,8 @@ static void SwitchSettingsTab(int tab) {
     ShowWindow(g_hwndToggleTaskbar, showGen);
   if (g_hwndToggleStartup)
     ShowWindow(g_hwndToggleStartup, showGen);
+  if (g_hwndToggleHoverSelect)
+    ShowWindow(g_hwndToggleHoverSelect, showGen);
   if (g_hwndScrollbarTimeoutEdit)
     ShowWindow(g_hwndScrollbarTimeoutEdit, showGen);
   if (g_hwndThemeCombo)
@@ -758,6 +762,7 @@ static const SettingRowInfo g_generalRows[] = {
     {STR_ROW_IMAGE_PREVIEW, STR_ROW_IMAGE_PREVIEW_DESC},
     {STR_ROW_TASKBAR, STR_ROW_TASKBAR_DESC},
     {STR_ROW_STARTUP, STR_ROW_STARTUP_DESC},
+    {STR_ROW_HOVER_SELECT, STR_ROW_HOVER_SELECT_DESC},
 };
 static const SettingRowInfo g_hotkeyRows[] = {
     {STR_ROW_HOTKEY_TOGGLE, STR_ROW_HOTKEY_TOGGLE_DESC},
@@ -785,10 +790,8 @@ static const SettingRowInfo g_aboutRows[] = {
 
 // 致谢名单（扩展时只需在此数组添加即可）
 static const wchar_t *g_creditsNames[] = {
-    L"\u5317\u4e00",
-    L"Sulla vetta la Saovia",
-    L"Lion",
-    L"\u9648\u968f\u6613",
+    L"\u5317\u4e00", L"Sulla vetta la Saovia", L"Lion",
+    L"Liu Hao",      L"\u9648\u968f\u6613",
 };
 static const int g_creditsCount = _countof(g_creditsNames);
 
@@ -812,7 +815,7 @@ struct CategoryHeader {
   int rowCount;
 };
 static const CategoryHeader g_categories[] = {
-    {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 9},
+    {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 10},
     {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 4},
     {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 9},
     {STR_SETTINGS_ABOUT, STR_SETTINGS_ABOUT_DESC, g_aboutRows, 4},
@@ -1025,7 +1028,8 @@ static bool RunStartupTaskViaPowerShell(const std::wstring &action,
   CreatePipe(&hReadPipe, &hWritePipe, &sa, 0);
   SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-  STARTUPINFOW si = {sizeof(si)};
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdOutput = hWritePipe;
   si.hStdError = hWritePipe;
@@ -2041,7 +2045,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         lpDIS->CtlID == IDC_SCROLLBAR_CHECK ||
         lpDIS->CtlID == IDC_COLOR_DOT_CHECK ||
         lpDIS->CtlID == IDC_TASKBAR_CHECK ||
-        lpDIS->CtlID == IDC_STARTUP_CHECK) {
+        lpDIS->CtlID == IDC_STARTUP_CHECK ||
+        lpDIS->CtlID == IDC_HOVER_SELECT_CHECK) {
 
       // 先填充背景
       HBRUSH hBgBr = CreateSolidBrush(GetSettingsBgColor());
@@ -2067,6 +2072,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         break;
       case IDC_STARTUP_CHECK:
         isOn = g_isStartupEnabled;
+        break;
+      case IDC_HOVER_SELECT_CHECK:
+        isOn = g_isHoverSelectEnabled;
         break;
       }
       DrawToggleSwitch(lpDIS->hDC, rc, isOn);
@@ -2420,6 +2428,12 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         g_isStartupEnabled = !g_isStartupEnabled;
         ApplyStartupPreference(g_isStartupEnabled);
         InvalidateRect(g_hwndToggleStartup, NULL, TRUE);
+        return 0;
+      }
+      if (wID == IDC_HOVER_SELECT_CHECK) {
+        g_isHoverSelectEnabled = !g_isHoverSelectEnabled;
+        InvalidateRect(g_hwndToggleHoverSelect, NULL, TRUE);
+        SaveHotkeySettings();
         return 0;
       }
       if (wID == IDC_SET_DATA_DIR) {
@@ -3128,6 +3142,7 @@ void ShowSettingsDialog(HWND hwndParent) {
       (HMENU)IDC_COLOR_DOT_CHECK, GetModuleHandleW(NULL), NULL);
   g_hwndToggleTaskbar = CreateToggle(hwndDlg, 7, IDC_TASKBAR_CHECK);
   g_hwndToggleStartup = CreateToggle(hwndDlg, 8, IDC_STARTUP_CHECK);
+  g_hwndToggleHoverSelect = CreateToggle(hwndDlg, 9, IDC_HOVER_SELECT_CHECK);
   // 启动项状态从系统读取
   g_isStartupEnabled = IsStartupEnabled();
 
@@ -3256,9 +3271,10 @@ void ShowSettingsDialog(HWND hwndParent) {
       CreateSettingsCombo(hwndDlg, 3, IDC_FAVORITE_HOTKEY_COMBO, 180);
 
   // 初始显示最后一次使用的分类
-  int initialTab = (g_currentSettingsTab >= 0 && g_currentSettingsTab < SIDEBAR_COUNT)
-                       ? g_currentSettingsTab
-                       : 0;
+  int initialTab =
+      (g_currentSettingsTab >= 0 && g_currentSettingsTab < SIDEBAR_COUNT)
+          ? g_currentSettingsTab
+          : 0;
   g_currentSettingsTab = initialTab;
   SwitchSettingsTab(initialTab);
 

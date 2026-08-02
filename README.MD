@@ -38,6 +38,8 @@
 24. 🖐️ **拖拽多文件到外部**：可将多文件记录直接拖拽到资源管理器或其他窗口进行粘贴，所有文件一并传递
 25. ♻️ **重启应用**：右键托盘菜单"退出"上方提供"重启应用"选项，一键重启
 26. 📝 **Markdown 防抖**：VSCode 等 markdown 复制时分多步写入剪贴板，300ms 内的多次写入合并为一条记录并优先保留带 markdown 格式的内容
+27. 📝 **Markdown 双记录**：复制 markdown 内容时自动生成两条记录——上方为带 md 原始语法的文本，下方为剥离语法的纯文本，便于按场景粘贴
+28. 🖱️ **悬浮选中**：鼠标悬浮在列表项上即自动选中（通用设置中可开关，默认开启）
 
 ### 📜 用户协议与免责声明
 - 本软件仅供合法用途使用，用户须妥善保管剪贴板数据
@@ -106,6 +108,8 @@ Pull Requests and creative ideas are always welcomed!
 24. 🖐️ **Drag multi-file out**: Drag a multi-file record directly to File Explorer or other windows to paste all files together
 25. ♻️ **Restart app**: A "Restart" option is provided above "Exit" in the tray context menu
 26. 📝 **Markdown debounce**: Multi-step clipboard writes from VSCode markdown copy are merged within 300ms into a single record, preferring the markdown-formatted content
+27. 📝 **Markdown dual records**: Copying markdown content auto-generates two records — the markdown source on top and the syntax-stripped plain text below, so you can paste either as needed
+28. 🖱️ **Hover select**: Hovering over a list item auto-selects it (toggle in General settings, on by default)
 
 ### 📜 User Agreement & Disclaimer
 - This software is for legitimate use only; users must safeguard their clipboard data

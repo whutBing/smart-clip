@@ -40,13 +40,13 @@ void SaveHotkeySettings() {
   DbSetSettingInt("language", (int)g_appLanguage);
   DbSetSettingInt("quick_paste_modifiers", (int)g_quickPasteModifiers);
   DbSetSettingInt("taskbar_visible", g_isTaskbarVisible ? 1 : 0);
-  DbSetSettingInt("favorite_hotkey_modifiers",
-                  (int)g_favoriteHotkeyModifiers);
+  DbSetSettingInt("favorite_hotkey_modifiers", (int)g_favoriteHotkeyModifiers);
   DbSetSettingInt("max_text_size_kb", g_maxTextSizeKB);
   DbSetSettingInt("quick_paste_enabled", g_isQuickPasteEnabled ? 1 : 0);
   DbSetSettingInt("all_hotkeys_enabled", g_allHotkeysEnabled ? 1 : 0);
   DbSetSettingInt("window_topmost", g_isTopmost ? 1 : 0);
   DbSetSettingInt("settings_last_tab", g_currentSettingsTab);
+  DbSetSettingInt("hover_select", g_isHoverSelectEnabled ? 1 : 0);
 
   RefreshTrayTooltip();
 }
@@ -133,7 +133,10 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
 
       wchar_t *pLine = &unicodeContent[0];
       wchar_t *pNextLine = wcsstr(pLine, L"\n");
-      if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+      if (pNextLine) {
+        *pNextLine = L'\0';
+        pNextLine++;
+      }
 
       // 第一行：enabled|modifiers|virtualKey
       wchar_t *pDelim = wcsstr(pLine, L"|");
@@ -160,7 +163,10 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         pNextLine = wcsstr(pLine, L"\n");
-        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+        if (pNextLine) {
+          *pNextLine = L'\0';
+          pNextLine++;
+        }
         pDelim = wcsstr(pLine, L"|");
         if (pDelim) {
           *pDelim = L'\0';
@@ -180,25 +186,41 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         pNextLine = wcsstr(pLine, L"\n");
-        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
+        if (pNextLine) {
+          *pNextLine = L'\0';
+          pNextLine++;
+        }
       }
 
       // 第四行：themeMode
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int tv = (int)wcstol(pLine, NULL, 10);
-        if (tv >= 0 && tv <= 2) g_themeMode = (ThemeMode)tv;
+        if (tv >= 0 && tv <= 2)
+          g_themeMode = (ThemeMode)tv;
       }
 
       // 第五行：smoothScrollEnabled
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         g_isSmoothScrollEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
 
@@ -206,28 +228,48 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int qv = (int)wcstol(pLine, NULL, 10);
-        if (qv >= 0 && qv <= 3) g_imagePreviewQuality = (ImagePreviewQuality)qv;
+        if (qv >= 0 && qv <= 3)
+          g_imagePreviewQuality = (ImagePreviewQuality)qv;
       }
 
       // 第七行：maxHistoryCount
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int hc = (int)wcstol(pLine, NULL, 10);
-        if (hc >= 10 && hc <= 10000) g_maxHistoryCount = hc;
+        if (hc >= 10 && hc <= 10000)
+          g_maxHistoryCount = hc;
       }
 
       // 第八行：customScrollbarEnabled
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         g_isCustomScrollbarEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
 
@@ -235,18 +277,31 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int hd = (int)wcstol(pLine, NULL, 10);
-        if (hd >= 600 && hd <= 2000) g_customScrollbarHideDelayMs = hd;
+        if (hd >= 600 && hd <= 2000)
+          g_customScrollbarHideDelayMs = hd;
       }
 
       // 第十行：colorDotEnabled
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         g_isColorDotEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
 
@@ -254,18 +309,31 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int tid = (int)wcstol(pLine, NULL, 10);
-        if (tid >= 0 && tid <= 3) g_themeId = (ThemeId)tid;
+        if (tid >= 0 && tid <= 3)
+          g_themeId = (ThemeId)tid;
       }
 
       // 第十二行：language
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int lv = (int)wcstol(pLine, NULL, 10);
         if (lv >= 0 && lv < (int)LANG_COUNT) {
           g_appLanguage = (AppLanguage)lv;
@@ -277,18 +345,30 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         UINT mv = (UINT)wcstol(pLine, NULL, 10);
-        if (mv != 0) g_quickPasteModifiers = mv;
+        if (mv != 0)
+          g_quickPasteModifiers = mv;
       }
 
       // 第十四行：taskbarVisible
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         pNextLine = wcsstr(pLine, L"\n");
-        if (pNextLine) { *pNextLine = L'\0'; pNextLine++; }
-        wchar_t *pCR = wcsstr(pLine, L"\r"); if (pCR) *pCR = L'\0';
+        if (pNextLine) {
+          *pNextLine = L'\0';
+          pNextLine++;
+        }
+        wchar_t *pCR = wcsstr(pLine, L"\r");
+        if (pCR)
+          *pCR = L'\0';
         if (wcsstr(pLine, L"|") == NULL)
           g_isTaskbarVisible = (wcstol(pLine, NULL, 10) != 0);
       }
@@ -297,28 +377,48 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         UINT fv = (UINT)wcstol(pLine, NULL, 10);
-        if (fv != 0) g_favoriteHotkeyModifiers = fv;
+        if (fv != 0)
+          g_favoriteHotkeyModifiers = fv;
       }
 
       // 第十六行：maxTextSizeKB
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         int sk = (int)wcstol(pLine, NULL, 10);
-        if (sk >= 1 && sk <= 10240) g_maxTextSizeKB = sk;
+        if (sk >= 1 && sk <= 10240)
+          g_maxTextSizeKB = sk;
       }
 
       // 第十七行：isQuickPasteEnabled
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         g_isQuickPasteEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
 
@@ -326,8 +426,14 @@ static bool MigrateHotkeyFromTxt(bool &languageLoaded) {
       if (pNextLine && *pNextLine) {
         pLine = pNextLine;
         wchar_t *pEnd = wcsstr(pLine, L"\n");
-        if (pEnd) { *pEnd = L'\0'; pNextLine = pEnd + 1; } else pNextLine = NULL;
-        pEnd = wcsstr(pLine, L"\r"); if (pEnd) *pEnd = L'\0';
+        if (pEnd) {
+          *pEnd = L'\0';
+          pNextLine = pEnd + 1;
+        } else
+          pNextLine = NULL;
+        pEnd = wcsstr(pLine, L"\r");
+        if (pEnd)
+          *pEnd = L'\0';
         g_allHotkeysEnabled = (wcstol(pLine, NULL, 10) != 0);
       }
     }
@@ -415,8 +521,7 @@ void LoadHotkeySettings() {
       (UINT)DbGetSettingInt("quick_paste_modifiers", MOD_ALT);
   g_isTaskbarVisible = DbGetSettingInt("taskbar_visible", 1) != 0;
   g_favoriteHotkeyModifiers =
-      (UINT)DbGetSettingInt("favorite_hotkey_modifiers",
-                            MOD_CONTROL | MOD_ALT);
+      (UINT)DbGetSettingInt("favorite_hotkey_modifiers", MOD_CONTROL | MOD_ALT);
   g_maxTextSizeKB = DbGetSettingInt("max_text_size_kb", 50);
   g_isQuickPasteEnabled = DbGetSettingInt("quick_paste_enabled", 1) != 0;
   g_allHotkeysEnabled = DbGetSettingInt("all_hotkeys_enabled", 1) != 0;
@@ -425,6 +530,7 @@ void LoadHotkeySettings() {
   int savedSettingsTab = DbGetSettingInt("settings_last_tab", 0);
   if (savedSettingsTab >= 0 && savedSettingsTab < 4)
     g_currentSettingsTab = savedSettingsTab;
+  g_isHoverSelectEnabled = DbGetSettingInt("hover_select", 1) != 0;
 }
 
 // 注册快捷键
