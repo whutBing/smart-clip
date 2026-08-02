@@ -64,7 +64,7 @@ OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SRCS)) $(SQLITE_OBJ)
 DEPS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.d,$(SRCS))
 
 # ---- 编译 / 链接选项 ----
-CPPFLAGS := -DUNICODE -D_UNICODE -D_WIN32_IE=0x0500 -I$(INCDIR) -I$(SQLITE_DIR)
+CPPFLAGS := -DUNICODE -D_UNICODE -D_WIN32_IE=0x0500 -I$(INCDIR) -I$(SRCDIR) -I$(SQLITE_DIR)
 CXXFLAGS := -std=c++11 -Wall -Wextra -MMD -MP -municode
 # SQLite 编译选项：线程安全、禁用扩展加载、禁用内存统计以减小体积
 SQLITE_CFLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION \
