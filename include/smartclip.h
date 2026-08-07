@@ -51,3 +51,6 @@ void RefreshListBox();
 // 颜色相关
 COLORREF GetWhiteColor();
 COLORREF GetAccentStrongColor();
+
+// 文本选中复制：列表刷新后清除选中状态（显示索引失效）
+void ClearTextSelectionAfterRefresh();

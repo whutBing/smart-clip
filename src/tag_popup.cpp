@@ -14,6 +14,7 @@ extern HWND g_hwndFilterImage;
 extern HWND g_hwndFilterFile;
 extern HWND g_hwndFilterFavorite;
 extern HWND g_hwndMain;
+extern HWND g_hwndSearchBox;
 extern int g_currentTab;
 
 #define IDC_TAG_POPUP_LIST 4010
@@ -201,6 +202,7 @@ static void DeleteTagPopupEditWithConfirm(HWND hwnd, int arrowHeight, int paddin
 
   if (g_currentFilterTagId == tagId) {
     g_currentFilterTagId = 0;
+    InvalidateRect(g_hwndSearchBox, NULL, TRUE); // 分类药丸同步移除
     UpdateListBox();
   }
 }
@@ -796,6 +798,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
       InvalidateRect(g_hwndFilterImage, NULL, FALSE);
       InvalidateRect(g_hwndFilterFile, NULL, FALSE);
       InvalidateRect(g_hwndFilterFavorite, NULL, FALSE);
+      InvalidateRect(g_hwndSearchBox, NULL, TRUE); // 分类药丸同步刷新
       UpdateListBox();
       DestroyWindow(hwnd);
       // 销毁弹窗后确保主窗体保持前台
@@ -822,6 +825,7 @@ static LRESULT CALLBACK TagPopupProc(HWND hwnd, UINT message, WPARAM wParam,
           InvalidateRect(g_hwndFilterImage, NULL, FALSE);
           InvalidateRect(g_hwndFilterFile, NULL, FALSE);
           InvalidateRect(g_hwndFilterFavorite, NULL, FALSE);
+          InvalidateRect(g_hwndSearchBox, NULL, TRUE); // 分类药丸同步刷新
           UpdateListBox();
           DestroyWindow(hwnd);
           // 销毁弹窗后确保主窗体保持前台，避免被其他窗口覆盖

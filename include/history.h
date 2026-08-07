@@ -77,9 +77,12 @@ void AddToHistory(const std::wstring& content);
 void AddImageToHistory(const std::vector<BYTE>& imageData, int width, int height);
 void AddImageFileToHistory(const std::wstring& filePath, const std::vector<BYTE>& imageData, int width, int height);  // 添加图片文件（只保存缩略图和路径）
 void AddFileToHistory(const std::wstring& filePath);
-// 添加多文件记录：filePaths 用 L'\n' 连接成一个字符串存储。
-// 显示时取第一个路径作为主名 + " 等 N 个文件"；粘贴时拆分重组 CF_HDROP。
-void AddFilesToHistory(const std::wstring& joinedFilePaths);
+// 添加多文件记录：filePaths 用 L'\n' 连接。
+// n>=2 时拆成 n 条独立 TYPE_FILE 记录（共享时间戳/来源），连续插入头部；
+// n==1 时仍存为单条记录（content=单路径）。
+// outNewIndices（可选）返回新插入记录在 g_history 中的索引，供调用方做自动全选。
+void AddFilesToHistory(const std::wstring& joinedFilePaths,
+                       std::vector<int>* outNewIndices = nullptr);
 void UpdateListBox();
 void ApplyImagePreviewQualityChange();
 void ClearIconCache();  // 清理图标缓存

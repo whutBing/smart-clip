@@ -18,6 +18,11 @@
 #include "version.h"
 #include <algorithm> // 用于std::remove_if
 #include <cmath>     // 用于sin函数
+
+// 部分 MinGW 头文件未定义 DT_CLIP（值 0x4：文本裁剪到矩形内）
+#ifndef DT_CLIP
+#define DT_CLIP 0x4
+#endif
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
@@ -196,22 +201,32 @@ struct QuickFilterPill {
   std::wstring text;
   RECT rect;      // 药丸完整区域
   RECT closeRect; // 关闭按钮区域（右上角）
-  int type;       // 1=日期, 2=应用
+  int type;       // 1=日期, 2=应用, 3=收藏分类
+  COLORREF color; // 药丸底色（日期/应用=默认蓝；分类=分类色块颜色）
 };
-static QuickFilterPill g_pills[2]; // 最多2个药丸（日期+应用）
+static QuickFilterPill g_pills[3]; // 最多3个药丸（日期+应用+收藏分类）
 static int g_pillCount = 0;
 static int g_hoveredPill = -1;          // 当前悬浮的药丸索引
 static bool g_pillCloseHovered = false; // 关闭按钮是否被悬浮
 
-// 快速筛选是否激活（有日期或应用筛选）
+// ===== 文本选中复制状态（鼠标拖选文本内容 + Ctrl+C 复制） =====
+static int g_textSelItem = -1;         // 选中文本项的显示索引（-1=无）
+static int g_textSelAnchor = -1;       // 选中锚点（内容字符位置）
+static int g_textSelEnd = -1;          // 选中末端（内容字符位置）
+static bool g_textSelDragging = false; // 是否正在拖选（超过阈值后置 true）
+static POINT g_textSelDownPt = {};     // 按下点（用于拖选阈值判断）
+
+// 快速筛选是否激活（有日期、应用或分类筛选）
 static bool IsQuickFilterActive() {
-  return !g_quickFilterApp.empty() || !g_quickFilterDate.empty();
+  return !g_quickFilterApp.empty() || !g_quickFilterDate.empty() ||
+         g_currentFilterTagId > 0;
 }
 
 // 清除所有快速筛选
 static void ClearQuickFilter() {
   g_quickFilterApp.clear();
   g_quickFilterDate.clear();
+  g_currentFilterTagId = 0;
 }
 
 // 计算搜索框内药丸布局，返回药丸占据的总宽度
@@ -274,6 +289,27 @@ static int UpdateSearchPillLayout(HWND hwndSearch, HDC hdc) {
         pillX + pillW - padX, pillY + (pillH + closeBtnSize) / 2};
     startX += pillW + pillGap;
     g_pillCount++;
+  }
+  // 药丸3：收藏分类 #分类名（底色=分类色块颜色）
+  if (g_currentFilterTagId > 0) {
+    Tag *favTag = GetTagById(g_currentFilterTagId);
+    if (favTag) {
+      g_pills[g_pillCount].text = L"#" + favTag->name;
+      g_pills[g_pillCount].type = 3;
+      g_pills[g_pillCount].color = favTag->color;
+      SIZE sz = {0, 0};
+      GetTextExtentPoint32W(hdc, g_pills[g_pillCount].text.c_str(),
+                            (int)g_pills[g_pillCount].text.length(), &sz);
+      int pillW = padX + sz.cx + gap + closeBtnSize + padX;
+      int pillX = startX;
+      g_pills[g_pillCount].rect = {pillX, pillY, pillX + pillW, pillY + pillH};
+      g_pills[g_pillCount].closeRect = {pillX + pillW - padX - closeBtnSize,
+                                        pillY + (pillH - closeBtnSize) / 2,
+                                        pillX + pillW - padX,
+                                        pillY + (pillH + closeBtnSize) / 2};
+      startX += pillW + pillGap;
+      g_pillCount++;
+    }
   }
 
   SelectObject(hdc, hOldFont);
@@ -536,6 +572,9 @@ bool g_isBatchEditBtnHover = false;
 bool g_isBatchEditMode = false;                  // 批量编辑模式状态
 std::vector<int> g_selectedItems;                // 批量编辑模式下选中的记录索引
 int g_batchSelectionAnchorDisplayIndex = LB_ERR; // Shift 范围选择锚点
+// 最近一次键盘选中(↑/↓/j/k/Home/End 等)的时间戳。
+// 悬浮选中在快捷键后短时间内不抢占，避免鼠标微动覆盖键盘选中。
+DWORD g_lastKeyboardSelectTick = 0;
 WNDPROC g_oldFilterFavoriteProc = NULL;
 HWND g_hwndMainTooltip = NULL;
 bool g_isFavoriteTooltipVisible = false;
@@ -1511,6 +1550,11 @@ static bool PasteHistoryItemByDisplayIndex(HWND hwnd, int displayIndex) {
   return PasteHistoryItemByActualIndex(hwnd, actualIndex);
 }
 
+// 前置声明（长文本展开相关，定义在下方）
+static int GetListBoxContentWidth();
+static int ComputeTextItemExpandedHeight(const ClipboardItem &item,
+                                         int actualIndex, int listBoxWidth);
+
 // 计算单个项目的高度（基于显示索引）
 int GetItemDisplayHeight(int displayIndex) {
   if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size()) {
@@ -1549,6 +1593,10 @@ int GetItemDisplayHeight(int displayIndex) {
     int displayHeight = (int)(item.imageHeight * scale);
     // 标题(25) + 图片高度 + 尺寸信息(20) + 底部边距(10)
     return MScale(25) + displayHeight + MScale(20) + MScale(10);
+  } else if (item.type == TYPE_TEXT && g_expandedItems[actualIndex]) {
+    // 展开的文本项：按内容换行行数计算高度
+    return ComputeTextItemExpandedHeight(item, actualIndex,
+                                         GetListBoxContentWidth());
   } else {
     // 文本或文件类型：固定高度
     return MScale(57);
@@ -1936,6 +1984,101 @@ static void ApplyBatchSelectionFromDisplayIndex(int displayIndex,
   AddBatchSelectionItem(itemIndex);
 }
 
+// 退出批量编辑模式：清空选中集合并刷新批量按钮/列表 UI
+static void ExitBatchMode() {
+  g_isBatchEditMode = false;
+  g_selectedItems.clear();
+  g_batchSelectionAnchorDisplayIndex = LB_ERR;
+  if (g_hwndListBox)
+    InvalidateRect(g_hwndListBox, NULL, FALSE);
+  if (g_hwndBatchEditBtn)
+    InvalidateRect(g_hwndBatchEditBtn, NULL, TRUE);
+}
+
+// 批量模式下粘贴选中的文件（反选的自动排除）。
+// 收集 g_selectedItems 中 TYPE_FILE 记录的单路径，按列表显示顺序构造 CF_HDROP。
+// 粘贴成功后自动退出批量模式。返回是否粘贴成功。
+static bool PasteSelectedFilesBatch(HWND hwnd) {
+  if (g_selectedItems.empty() || !g_hwndListBox)
+    return false;
+
+  // 按显示顺序收集选中 TYPE_FILE 记录的路径（反选的即不在 g_selectedItems）
+  std::vector<std::wstring> paths;
+  for (size_t disp = 0; disp < g_displayIndexMap.size(); ++disp) {
+    int actual = g_displayIndexMap[disp];
+    if (actual < 0 || actual >= (int)g_history.size())
+      continue;
+    if (std::find(g_selectedItems.begin(), g_selectedItems.end(), actual) ==
+        g_selectedItems.end())
+      continue;
+    const ClipboardItem &it = g_history[actual];
+    if (it.type != TYPE_FILE)
+      continue;
+    // 新记录为单路径；旧合并记录(content 含\n)拆分兼容
+    if (it.content.find(L'\n') != std::wstring::npos) {
+      size_t s = 0;
+      while (s <= it.content.size()) {
+        size_t e = it.content.find(L'\n', s);
+        if (e == std::wstring::npos)
+          e = it.content.size();
+        if (e > s)
+          paths.push_back(it.content.substr(s, e - s));
+        if (e == it.content.size())
+          break;
+        s = e + 1;
+      }
+    } else {
+      paths.push_back(it.content);
+    }
+  }
+  if (paths.empty())
+    return false;
+
+  if (!OpenClipboard(NULL))
+    return false;
+  EmptyClipboard();
+  size_t totalLen = 0;
+  for (const auto &p : paths)
+    totalLen += (p.size() + 1) * sizeof(wchar_t);
+  totalLen += sizeof(wchar_t);  // 结尾双 \0
+  HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + totalLen);
+  bool ok = false;
+  if (hGlobal != NULL) {
+    DROPFILES *pDrop = (DROPFILES *)GlobalLock(hGlobal);
+    if (pDrop != NULL) {
+      pDrop->pFiles = sizeof(DROPFILES);
+      pDrop->pt.x = 0;
+      pDrop->pt.y = 0;
+      pDrop->fNC = FALSE;
+      pDrop->fWide = TRUE;
+      wchar_t *pStr = (wchar_t *)((BYTE *)pDrop + sizeof(DROPFILES));
+      for (const auto &p : paths) {
+        wcscpy_s(pStr, p.size() + 1, p.c_str());
+        pStr += p.size() + 1;
+      }
+      *pStr = L'\0';
+      GlobalUnlock(hGlobal);
+      SetClipboardData(CF_HDROP, hGlobal);
+      g_isRestoringClipboard = true;
+      ok = true;
+    } else {
+      GlobalFree(hGlobal);
+    }
+  }
+  CloseClipboard();
+
+  if (ok) {
+    RememberPasteTarget(hwnd);
+    RestoreFocusAndPaste(hwnd);
+    if (g_isNotificationEnabled) {
+      ShowTrayBalloon(hwnd, T(STR_TRAY_HINT), T(STR_TRAY_PASTED));
+    }
+    // 粘贴后自动退出批量模式
+    ExitBatchMode();
+  }
+  return ok;
+}
+
 void EnsureListSelectionVisible(int index) {
   if (!g_hwndListBox || index < 0)
     return;
@@ -1995,6 +2138,8 @@ bool SelectListDisplayIndex(int index) {
   }
   EnsureListSelectionVisible(index);
   InvalidateRect(g_hwndListBox, NULL, FALSE);
+  // 标记键盘选中时刻，悬浮选中在接下来短时间内不抢占，避免鼠标微动覆盖
+  g_lastKeyboardSelectTick = GetTickCount();
   return true;
 }
 
@@ -2654,6 +2799,634 @@ static void HideNativeListBoxScrollbar(HWND hwnd) {
 
 // ==================== 中转站核心功能函数 ====================
 
+// 绘制带搜索关键词高亮的单行文本：
+// 匹配到的关键词片段用金黄色绘制，其余用正常颜色；空格/换行已由调用方替换。
+// 超宽时逐字符截断并在末尾绘制省略号（行为与 DT_END_ELLIPSIS 一致）。
+static void DrawHighlightedText(HDC hdc, const std::wstring &text,
+                                const std::wstring &keyword, const RECT &rcText,
+                                COLORREF normalColor, COLORREF highlightColor) {
+  if (text.empty() || rcText.right <= rcText.left)
+    return;
+
+  std::wstring lowerText = text;
+  std::wstring lowerKeyword = keyword;
+  if (!keyword.empty()) {
+    std::transform(lowerText.begin(), lowerText.end(), lowerText.begin(),
+                   ::towlower);
+    std::transform(lowerKeyword.begin(), lowerKeyword.end(),
+                   lowerKeyword.begin(), ::towlower);
+  }
+  bool hasMatch = !lowerKeyword.empty() &&
+                  lowerText.find(lowerKeyword) != std::wstring::npos;
+
+  // 无匹配时走普通绘制，保持原路径外观与性能
+  if (!hasMatch) {
+    SetTextColor(hdc, normalColor);
+    RECT rcDrawLocal = rcText; // DrawTextW 需要非 const LPRECT
+    DrawTextW(hdc, text.c_str(), -1, &rcDrawLocal,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_CLIP);
+    return;
+  }
+
+  // 省略号已由展开箭头（三角形）取代：超长文本直接硬截断，不再画 "..."
+  int availWidth = rcText.right - rcText.left;
+  if (availWidth <= 0)
+    return;
+
+  // 判断是否超宽，并取能放下的字符数
+  int fittedChars = 0;
+  SIZE szWhole = {};
+  BOOL fitted = GetTextExtentExPointW(hdc, text.c_str(), (int)text.length(),
+                                      availWidth, &fittedChars, NULL, &szWhole);
+  bool truncated =
+      !fitted || fittedChars < (int)text.length() || fittedChars <= 0;
+
+  size_t visibleLen =
+      truncated ? (size_t)std::max(0, fittedChars) : text.length();
+  if (visibleLen == 0)
+    return;
+
+  // 逐段绘制：普通段用 normalColor，匹配段用 highlightColor
+  auto drawSegment = [&](const std::wstring &seg, COLORREF color,
+                         int curX) -> int {
+    if (seg.empty())
+      return curX;
+    SIZE szSeg = {};
+    GetTextExtentPoint32W(hdc, seg.c_str(), (int)seg.length(), &szSeg);
+    if (curX + szSeg.cx > rcText.right)
+      return curX;
+    RECT rcSeg = rcText;
+    rcSeg.left = curX;
+    SetTextColor(hdc, color);
+    DrawTextW(hdc, seg.c_str(), -1, &rcSeg,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    return curX + szSeg.cx;
+  };
+
+  std::wstring visibleText = text.substr(0, visibleLen);
+  std::wstring visibleLower = lowerText.substr(0, visibleLen);
+  size_t kwLen = lowerKeyword.length();
+  size_t pos = 0;
+  int x = rcText.left;
+  while (pos < visibleLen) {
+    size_t matchStart = visibleLower.find(lowerKeyword, pos);
+    if (matchStart == std::wstring::npos) {
+      // 剩余普通段
+      x = drawSegment(visibleText.substr(pos), normalColor, x);
+      break;
+    }
+    if (matchStart > pos) {
+      x = drawSegment(visibleText.substr(pos, matchStart - pos), normalColor,
+                      x);
+    }
+    size_t segLen = std::min(kwLen, visibleLen - matchStart);
+    x = drawSegment(visibleText.substr(matchStart, segLen), highlightColor, x);
+    pos = matchStart + segLen;
+  }
+}
+
+// ==================== 文本选中复制（鼠标拖选 + Ctrl+C） ====================
+
+// 文本内容是否支持拖选（含 emoji 的复杂彩色排版暂不支持选中）
+static bool IsTextSelectableContent(const std::wstring &content) {
+  return !TextContainsEmoji(content.c_str(), (int)content.length());
+}
+
+// 列表刷新后调用：文本选中状态随显示索引失效，直接清除
+void ClearTextSelectionAfterRefresh() {
+  g_textSelItem = -1;
+  g_textSelAnchor = -1;
+  g_textSelEnd = -1;
+  g_textSelDragging = false;
+}
+
+// 获取当前选中范围（min/max，内容字符坐标），返回是否有效（非空）
+static bool GetTextSelRange(int *selStart, int *selEnd) {
+  if (g_textSelItem < 0 || g_textSelAnchor < 0 || g_textSelEnd < 0)
+    return false;
+  int a = std::min(g_textSelAnchor, g_textSelEnd);
+  int b = std::max(g_textSelAnchor, g_textSelEnd);
+  if (b <= a)
+    return false;
+  if (selStart)
+    *selStart = a;
+  if (selEnd)
+    *selEnd = b;
+  return true;
+}
+
+// 折叠视图文本的可见字符数（与绘制一致：按可用宽度硬截断）
+static int TextSelCollapsedCharCount(HDC hdc, const std::wstring &text,
+                                     int maxW) {
+  if (text.empty() || maxW <= 0)
+    return 0;
+  SIZE sz = {};
+  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(), &sz);
+  if (sz.cx <= maxW)
+    return (int)text.length();
+  int fitted = 0;
+  GetTextExtentExPointW(hdc, text.c_str(), (int)text.length(), maxW, &fitted,
+                        NULL, &sz);
+  if (fitted < 0)
+    fitted = 0;
+  return fitted;
+}
+
+// 单行文本：由 X 坐标求字符位置（返回 [0, maxChars] 区间）
+static int TextSelCharFromX(HDC hdc, const std::wstring &text, int startX,
+                            int maxChars, int x) {
+  if (maxChars <= 0)
+    return 0;
+  int cum = 0;
+  for (int i = 0; i < maxChars; i++) {
+    SIZE sc = {};
+    GetTextExtentPoint32W(hdc, &text[i], 1, &sc);
+    if (x < startX + cum + sc.cx / 2)
+      return i;
+    cum += sc.cx;
+  }
+  return maxChars;
+}
+
+// 折行布局：把文本按指定宽度拆成显示行（与 DrawTextW DT_WORDBREAK 近似）
+struct TextSelLine {
+  int start; // 行首字符位置
+  int end;   // 行尾字符位置（不含）
+};
+static void TextSelLayoutLines(HDC hdc, const std::wstring &text, int maxW,
+                               std::vector<TextSelLine> &lines) {
+  if (text.empty())
+    return;
+  if (maxW <= 0)
+    maxW = 1;
+  size_t pos = 0;
+  const size_t len = text.length();
+  while (pos < len) {
+    // 跳过显式换行符（\r\n 或 \n）
+    if (text[pos] == L'\r' || text[pos] == L'\n') {
+      pos++;
+      continue;
+    }
+    size_t i = pos;
+    size_t lastSpace = (size_t)-1;
+    int cumW = 0;
+    bool overflow = false;
+    while (i < len) {
+      wchar_t c = text[i];
+      if (c == L'\r' || c == L'\n')
+        break;
+      SIZE sc = {};
+      GetTextExtentPoint32W(hdc, &text[i], 1, &sc);
+      cumW += sc.cx;
+      if (cumW > maxW) {
+        overflow = true;
+        break;
+      }
+      if (c == L' ')
+        lastSpace = i;
+      i++;
+    }
+    if (!overflow && i >= len) {
+      lines.push_back({(int)pos, (int)len});
+      break;
+    }
+    if (!overflow) { // 在显式换行处断行
+      lines.push_back({(int)pos, (int)i});
+      if (text[i] == L'\r' && i + 1 < len && text[i + 1] == L'\n')
+        i++;
+      pos = i + 1;
+      continue;
+    }
+    // 超宽断行：优先在最近空格处断，否则从当前字符断（单词超宽中段截断）
+    if (lastSpace != (size_t)-1 && lastSpace > pos) {
+      lines.push_back({(int)pos, (int)(lastSpace + 1)});
+      pos = lastSpace + 1;
+    } else if (i > pos) {
+      lines.push_back({(int)pos, (int)i});
+      pos = i;
+    } else {
+      // 单个字符即超宽：强制包含一个字符，避免死循环
+      lines.push_back({(int)pos, (int)(pos + 1)});
+      pos = pos + 1;
+    }
+  }
+}
+
+// 多行布局的行高（与 DrawTextW DT_WORDBREAK 行距一致）
+static int TextSelLineHeight(HDC hdc) {
+  TEXTMETRICW tm = {};
+  GetTextMetricsW(hdc, &tm);
+  return tm.tmHeight + tm.tmExternalLeading;
+}
+
+// 多行文本：由坐标求字符位置（rc 为内容区域，lineH 为行高）
+static int TextSelCharFromXY(HDC hdc, const std::wstring &text, const RECT &rc,
+                             int lineH, int x, int y) {
+  std::vector<TextSelLine> lines;
+  TextSelLayoutLines(hdc, text, rc.right - rc.left, lines);
+  if (lines.empty())
+    return 0;
+  int lineIndex = 0;
+  if (y > rc.top) {
+    lineIndex = (y - rc.top) / (lineH > 0 ? lineH : 1);
+    if (lineIndex >= (int)lines.size())
+      lineIndex = (int)lines.size() - 1;
+  }
+  const TextSelLine &ln = lines[lineIndex];
+  int lineW = 0;
+  for (int i = ln.start; i < ln.end; i++) {
+    SIZE sc = {};
+    GetTextExtentPoint32W(hdc, &text[i], 1, &sc);
+    if (x < rc.left + lineW + sc.cx / 2)
+      return i;
+    lineW += sc.cx;
+  }
+  return ln.end;
+}
+
+// 计算点击/拖选位置对应的内容字符位置（折叠单行或展开多行）
+static int TextSelCharFromPoint(HWND hwnd, int displayIndex, POINT pt) {
+  if (displayIndex < 0 || displayIndex >= (int)g_displayIndexMap.size())
+    return 0;
+  int actualIndex = g_displayIndexMap[displayIndex];
+  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
+    return 0;
+  const ClipboardItem &item = g_history[actualIndex];
+  if (item.type != TYPE_TEXT)
+    return 0;
+
+  RECT rcItem;
+  if (SendMessageW(hwnd, LB_GETITEMRECT, displayIndex, (LPARAM)&rcItem) ==
+      LB_ERR)
+    return 0;
+  RECT rcContent = rcItem;
+  rcContent.left += MScale(10);
+  rcContent.right -= MScale(6);
+  rcContent.top += MScale(2);
+  rcContent.right -= GetCustomScrollbarReservedWidth();
+  if (rcContent.right < rcContent.left + MScale(80))
+    rcContent.right = rcContent.left + MScale(80);
+  rcContent.top += MScale(20); // 标题区
+  RECT rcText = rcContent;
+  rcText.bottom = rcText.top + MScale(22);
+  rcText.left += MScale(22); // 类型图标占位
+
+  bool expanded = g_expandedItems[actualIndex];
+  int arrowSize = MScale(14);
+
+  HDC hdc = GetDC(hwnd);
+  HFONT hOldFont = (HFONT)SelectObject(hdc, GetListMainFont());
+  int result = 0;
+
+  if (expanded) {
+    // 展开视图：按内容折行布局
+    std::wstring content = item.content;
+    while (!content.empty() &&
+           (content.back() == L'\r' || content.back() == L'\n' ||
+            content.back() == L' ' || content.back() == L'\t'))
+      content.pop_back();
+    RECT rcFull = rcText;
+    rcFull.right -= arrowSize;
+    rcFull.bottom = rcItem.bottom - MScale(13);
+    int lineH = TextSelLineHeight(hdc);
+    result = TextSelCharFromXY(hdc, content, rcFull, lineH, pt.x, pt.y);
+  } else {
+    // 折叠视图：单行显示（从列表框取显示文本，与绘制一致）
+    int textLen = (int)SendMessageW(hwnd, LB_GETTEXTLEN, displayIndex, 0);
+    std::wstring text;
+    if (textLen > 0) {
+      std::vector<wchar_t> buffer(textLen + 1);
+      SendMessageW(hwnd, LB_GETTEXT, displayIndex, (LPARAM)&buffer[0]);
+      text = &buffer[0];
+      size_t pos = text.find(L"\r\n");
+      if (pos != std::wstring::npos)
+        text = text.substr(pos + 2);
+      for (size_t i = 0; i < text.length(); i++)
+        if (text[i] == L'\r' || text[i] == L'\n')
+          text[i] = L' ';
+    }
+    int maxW = (rcText.right - rcText.left) - arrowSize;
+    if (maxW < 0)
+      maxW = 0;
+    int cnt = TextSelCollapsedCharCount(hdc, text, maxW);
+    result = TextSelCharFromX(hdc, text, rcText.left, cnt, pt.x);
+  }
+
+  SelectObject(hdc, hOldFont);
+  ReleaseDC(hwnd, hdc);
+  return result;
+}
+
+// 清除文本选中状态并重绘原项
+static void ClearTextSelectionForClick(HWND hwnd) {
+  int oldItem = g_textSelItem;
+  g_textSelItem = -1;
+  g_textSelAnchor = -1;
+  g_textSelEnd = -1;
+  g_textSelDragging = false;
+  if (hwnd && IsWindow(hwnd) && oldItem >= 0) {
+    RECT rc;
+    if (SendMessageW(hwnd, LB_GETITEMRECT, oldItem, (LPARAM)&rc) != LB_ERR)
+      InvalidateRect(hwnd, &rc, FALSE);
+  }
+}
+
+// 重绘选中文本项（拖选过程中更新高亮）
+static void InvalidateTextSelItem(HWND hwnd) {
+  if (!hwnd || g_textSelItem < 0)
+    return;
+  RECT rc;
+  if (SendMessageW(hwnd, LB_GETITEMRECT, g_textSelItem, (LPARAM)&rc) != LB_ERR)
+    InvalidateRect(hwnd, &rc, FALSE);
+}
+
+// Ctrl+C：复制选中的文本片段到剪贴板
+static void CopyTextSelectionToClipboard() {
+  int selStart = 0, selEnd = 0;
+  if (!GetTextSelRange(&selStart, &selEnd))
+    return;
+  if (g_textSelItem < 0 || g_textSelItem >= (int)g_displayIndexMap.size())
+    return;
+  int actualIndex = g_displayIndexMap[g_textSelItem];
+  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
+    return;
+  const ClipboardItem &item = g_history[actualIndex];
+  if (item.type != TYPE_TEXT)
+    return;
+  if (selEnd > (int)item.content.length())
+    selEnd = (int)item.content.length();
+  if (selStart >= selEnd)
+    return;
+  std::wstring sel = item.content.substr(selStart, selEnd - selStart);
+  if (sel.empty())
+    return;
+  if (!OpenClipboard(g_hwndMain))
+    return;
+  EmptyClipboard();
+  HGLOBAL hGlobal =
+      GlobalAlloc(GMEM_MOVEABLE, (sel.length() + 1) * sizeof(wchar_t));
+  if (hGlobal) {
+    wchar_t *pData = (wchar_t *)GlobalLock(hGlobal);
+    if (pData) {
+      wcscpy_s(pData, sel.length() + 1, sel.c_str());
+      GlobalUnlock(hGlobal);
+      SetClipboardData(CF_UNICODETEXT, hGlobal);
+    } else {
+      GlobalFree(hGlobal);
+    }
+  }
+  CloseClipboard();
+}
+
+// 绘制带选中高亮 + 搜索高亮的文本（单行或多行）
+// rc: 文本区域；selStart/selEnd: 内容选中范围（含 start 不含 end）；
+// multiLine: 多行折行；verticalCenter: 单行垂直居中；超长直接硬截断。
+static void DrawTextSelectionContent(HDC hdc, const std::wstring &text,
+                                     const std::wstring &keyword,
+                                     const RECT &rc, bool multiLine,
+                                     bool verticalCenter, int selStart,
+                                     int selEnd, COLORREF normalColor,
+                                     COLORREF highlightColor) {
+  if (text.empty() || rc.right <= rc.left)
+    return;
+
+  // 选中背景色（浅色模式浅蓝 / 深色模式深蓝）
+  COLORREF selBg = g_isDarkMode ? RGB(38, 79, 120) : RGB(173, 214, 255);
+  HBRUSH hSelBrush = CreateSolidBrush(selBg);
+
+  // 搜索关键词预处理（不区分大小写）
+  std::wstring lowerText, lowerKeyword;
+  bool hasMatch = false;
+  if (!keyword.empty()) {
+    lowerText = text;
+    lowerKeyword = keyword;
+    std::transform(lowerText.begin(), lowerText.end(), lowerText.begin(),
+                   ::towlower);
+    std::transform(lowerKeyword.begin(), lowerKeyword.end(),
+                   lowerKeyword.begin(), ::towlower);
+    hasMatch = lowerText.find(lowerKeyword) != std::wstring::npos;
+  }
+
+  auto drawLine = [&](int lineStart, int lineEnd, const RECT &rcLine) {
+    // 该行可见字符范围（多行=整行；单行=按宽度截断）
+    int visibleEndLocal = lineEnd;
+    if (!multiLine) {
+      int cnt = TextSelCollapsedCharCount(
+          hdc, text.substr(lineStart, lineEnd - lineStart),
+          rcLine.right - rcLine.left);
+      visibleEndLocal = lineStart + cnt;
+    }
+    if (visibleEndLocal <= lineStart)
+      return;
+
+    // 垂直居中时按字体度量对齐（与 DT_VCENTER 一致）
+    RECT rcTextLine = rcLine;
+    if (verticalCenter) {
+      TEXTMETRICW tm = {};
+      GetTextMetricsW(hdc, &tm);
+      int th = tm.tmHeight;
+      int top = rcLine.top + (rcLine.bottom - rcLine.top - th) / 2;
+      if (top < rcLine.top)
+        top = rcLine.top;
+      rcTextLine.top = top;
+      rcTextLine.bottom = top + th;
+    }
+
+    // 逐字符状态：0=普通 1=搜索命中 2=选中 3=选中+命中
+    int n = visibleEndLocal - lineStart;
+    std::vector<int> state(n, 0);
+    if (hasMatch) {
+      size_t pos = lineStart;
+      while (true) {
+        size_t m = lowerText.find(lowerKeyword, pos);
+        if (m == (size_t)-1 || (int)m >= visibleEndLocal)
+          break;
+        size_t kwEnd = m + lowerKeyword.length();
+        if (kwEnd > (size_t)visibleEndLocal)
+          kwEnd = visibleEndLocal;
+        for (size_t k = m; k < kwEnd; k++)
+          state[k - lineStart] |= 1;
+        pos = kwEnd;
+      }
+    }
+    for (int i = lineStart; i < visibleEndLocal; i++) {
+      if (i >= selStart && i < selEnd)
+        state[i - lineStart] |= 2;
+    }
+
+    int x = rcLine.left;
+    int yTop = rcTextLine.top;
+    int h = rcTextLine.bottom - rcTextLine.top;
+    int i = 0;
+    while (i < n) {
+      int curState = state[i];
+      int j = i + 1;
+      while (j < n && state[j] == curState)
+        j++;
+      SIZE sc = {};
+      GetTextExtentPoint32W(hdc, text.c_str() + lineStart + i, j - i, &sc);
+      int segW = sc.cx;
+      // 选中背景
+      if (curState & 2) {
+        RECT rcSelBg = {x, rcLine.top, x + segW, rcLine.bottom};
+        FillRect(hdc, &rcSelBg, hSelBrush);
+      }
+      // 文本（命中段金黄色，其余正常色）
+      SetTextColor(hdc, (curState & 1) ? highlightColor : normalColor);
+      RECT rcSeg = {x, yTop, x + segW, yTop + h};
+      DrawTextW(hdc, text.c_str() + lineStart + i, j - i, &rcSeg,
+                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_CLIP);
+      x += segW;
+      i = j;
+    }
+  };
+
+  if (multiLine) {
+    std::vector<TextSelLine> lines;
+    TextSelLayoutLines(hdc, text, rc.right - rc.left, lines);
+    int lineH = TextSelLineHeight(hdc);
+    int y = rc.top;
+    for (size_t li = 0; li < lines.size(); li++) {
+      RECT rcLine = rc;
+      rcLine.top = y;
+      rcLine.bottom = y + lineH;
+      if (li + 1 == lines.size())
+        rcLine.bottom = rc.bottom; // 末行延伸到底部
+      drawLine(lines[li].start, lines[li].end, rcLine);
+      y += lineH;
+    }
+  } else {
+    drawLine(0, (int)text.length(), rc);
+  }
+
+  DeleteObject(hSelBrush);
+}
+
+// ==================== 长文本展开/收起 ====================
+
+// 获取列表框内容可用宽度（与 WM_MEASUREITEM 一致）
+static int GetListBoxContentWidth() {
+  RECT rcListBox;
+  GetClientRect(g_hwndListBox, &rcListBox);
+  int w = rcListBox.right - rcListBox.left - MScale(20);
+  if (w < MScale(100))
+    w = MScale(560);
+  return w;
+}
+
+// 计算文本项展开后的显示高度（按内容实际换行行数计算）
+static int ComputeTextItemExpandedHeight(const ClipboardItem &item,
+                                         int actualIndex, int listBoxWidth) {
+  if (!g_expandedItems[actualIndex])
+    return MScale(57);
+  HWND hwnd = g_hwndListBox ? g_hwndListBox : g_hwndMain;
+  HDC hdc = GetDC(hwnd);
+  HFONT hOldFont = (HFONT)SelectObject(hdc, GetListMainFont());
+  // 与绘制一致的可用宽度：左右边距 + 类型图标 + 箭头
+  int availWidth =
+      listBoxWidth - MScale(10) - MScale(22) - MScale(6) - MScale(14);
+  if (availWidth < MScale(30))
+    availWidth = MScale(30);
+  // 去除尾部空白（\r\n/空格/制表符），避免多出一个空行
+  std::wstring content = item.content;
+  while (!content.empty() &&
+         (content.back() == L'\r' || content.back() == L'\n' ||
+          content.back() == L' ' || content.back() == L'\t'))
+    content.pop_back();
+  RECT rcCalc = {0, 0, availWidth, 0};
+  DrawTextW(hdc, content.c_str(), -1, &rcCalc,
+            DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+  int contentHeight = rcCalc.bottom - rcCalc.top;
+  SelectObject(hdc, hOldFont);
+  ReleaseDC(hwnd, hdc);
+  // 顶部边距(2) + 标题(20) + 内容 + 底部边距(13)
+  int height = MScale(2) + MScale(20) + contentHeight + MScale(13);
+  return height < MScale(57) ? MScale(57) : height;
+}
+
+// 绘制展开/收起箭头（Segoe MDL2 ChevronDown/ChevronUp）
+static void DrawExpandArrow(HDC hdc, const RECT &rcText, bool expanded) {
+  int arrowSize = MScale(14);
+  RECT rcArrow = {rcText.right - MScale(2) - arrowSize,
+                  rcText.top + (rcText.bottom - rcText.top - arrowSize) / 2,
+                  rcText.right - MScale(2),
+                  rcText.top + (rcText.bottom - rcText.top + arrowSize) / 2};
+  HFONT hArrowFont = CreateFontW(
+      MScale(10), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+      DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
+  HFONT hOldFont = (HFONT)SelectObject(hdc, hArrowFont);
+  SetTextColor(hdc, GetThemeTextSecondaryColor());
+  DrawTextW(hdc, expanded ? L"\uE70E" : L"\uE70D", -1, &rcArrow,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  SelectObject(hdc, hOldFont);
+  DeleteObject(hArrowFont);
+}
+
+// 计算文本项的展开箭头矩形；返回 false 表示该项不可展开（非文本或文本未超长）。
+// 布局与 WM_DRAWITEM 绘制完全一致，用于点击命中检测。
+static bool GetExpandArrowRect(int displayIndex, RECT *outArrow) {
+  if (!outArrow || displayIndex < 0 ||
+      displayIndex >= (int)g_displayIndexMap.size())
+    return false;
+  int actualIndex = g_displayIndexMap[displayIndex];
+  if (actualIndex < 0 || actualIndex >= (int)g_history.size())
+    return false;
+  const ClipboardItem &item = g_history[actualIndex];
+  if (item.type != TYPE_TEXT)
+    return false;
+
+  HWND hwnd = g_hwndListBox;
+  RECT rcItem;
+  if (SendMessageW(hwnd, LB_GETITEMRECT, displayIndex, (LPARAM)&rcItem) ==
+      LB_ERR)
+    return false;
+
+  RECT rcContent = rcItem;
+  rcContent.left += MScale(10);
+  rcContent.right -= MScale(6);
+  rcContent.top += MScale(2);
+  rcContent.right -= GetCustomScrollbarReservedWidth();
+  if (rcContent.right < rcContent.left + MScale(80))
+    rcContent.right = rcContent.left + MScale(80);
+  rcContent.top += MScale(20); // 标题区
+  RECT rcText = rcContent;
+  rcText.bottom = rcText.top + MScale(22);
+  rcText.left += MScale(22); // 类型图标占位
+
+  int arrowSize = MScale(14);
+
+  // 从列表框取显示文本并测量（与绘制一致：去掉标题行、换行转空格）
+  int textLen = (int)SendMessageW(hwnd, LB_GETTEXTLEN, displayIndex, 0);
+  if (textLen <= 0)
+    return false;
+  std::vector<wchar_t> buffer(textLen + 1);
+  SendMessageW(hwnd, LB_GETTEXT, displayIndex, (LPARAM)&buffer[0]);
+  std::wstring text = &buffer[0];
+  size_t pos = text.find(L"\r\n");
+  if (pos != std::wstring::npos)
+    text = text.substr(pos + 2);
+  for (size_t i = 0; i < text.length(); i++)
+    if (text[i] == L'\r' || text[i] == L'\n')
+      text[i] = L' ';
+
+  HDC hdc = GetDC(hwnd);
+  HFONT hOldFont = (HFONT)SelectObject(hdc, GetListMainFont());
+  SIZE szText = {};
+  GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(), &szText);
+  bool truncated = szText.cx > (rcText.right - rcText.left) - arrowSize;
+  SelectObject(hdc, hOldFont);
+  ReleaseDC(hwnd, hdc);
+  if (!truncated)
+    return false;
+
+  outArrow->top = rcText.top + (rcText.bottom - rcText.top - arrowSize) / 2;
+  outArrow->bottom = outArrow->top + arrowSize;
+  outArrow->right = rcText.right - MScale(2);
+  outArrow->left = outArrow->right - arrowSize;
+  return true;
+}
+
 // 列表框子类化窗口过程 - 处理自绘滚动条
 LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
                              LPARAM lParam) {
@@ -2664,6 +3437,24 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
   // 若在此处填充屏幕 DC，会在 BitBlt 前短暂擦除选中框等高对比元素，造成闪烁。
   if (message == WM_ERASEBKGND) {
     return 1;
+  }
+
+  // 文本选中复制：Ctrl+C 复制选中片段；Esc 取消选中
+  if (message == WM_KEYDOWN) {
+    if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) &&
+        g_textSelItem >= 0) {
+      CopyTextSelectionToClipboard();
+      ClearTextSelectionForClick(hwnd);
+      return 0;
+    }
+    if (wParam == VK_ESCAPE && g_textSelItem >= 0) {
+      ClearTextSelectionForClick(hwnd);
+      return 0;
+    }
+  }
+  // 吞掉 Ctrl+C 产生的 WM_CHAR，避免默认过程蜂鸣
+  if (message == WM_CHAR && wParam == 0x03 && g_textSelItem >= 0) {
+    return 0;
   }
 
   // 处理鼠标滚轮 - 在边界时阻止消息传递以避免闪烁
@@ -3079,15 +3870,26 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       index = LOWORD(index);
 
       // 悬浮选中：鼠标悬浮在列表项上即自动选中（可在 通用设置 中开关）
+      // 快捷键选中后 400ms 内不抢占，避免鼠标微动覆盖键盘选中且刷新不一致
       if (g_isHoverSelectEnabled && index >= 0 &&
           index < (int)g_displayIndexMap.size() &&
-          IsSelectableDisplayIndex(index)) {
+          IsSelectableDisplayIndex(index) &&
+          GetTickCount() - g_lastKeyboardSelectTick >= 400) {
         int curSel = (int)SendMessageW(hwnd, LB_GETCURSEL, 0, 0);
         if (curSel != index) {
+          int topBefore = (int)SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0);
           // 禁用重绘避免 LB_SETCURSEL 同步绘制造成闪烁
           SendMessageW(hwnd, WM_SETREDRAW, FALSE, 0);
           SendMessageW(hwnd, LB_SETCURSEL, index, 0);
           SendMessageW(hwnd, WM_SETREDRAW, TRUE, 0);
+          // 与 SelectListDisplayIndex 对齐：同步 topIndex/缓存脏标记，
+          // 并滚动到可见，否则悬浮选中状态错乱导致刷新不及时
+          int topAfter = (int)SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0);
+          if (topAfter != topBefore) {
+            g_listBoxTopIndex = topAfter;
+            g_shortcutCacheDirty = true;
+          }
+          EnsureListSelectionVisible(index);
           InvalidateRect(hwnd, NULL, FALSE);
         }
       }
@@ -3514,6 +4316,47 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             InvalidateRect(g_hwndSearchBox, NULL, FALSE);
             return 0;
           }
+          // 点击展开箭头 → 展开/收起长文本（下方记录随之移动）
+          {
+            RECT rcArrow;
+            if (GetExpandArrowRect(index, &rcArrow) && PtInRect(&rcArrow, pt)) {
+              g_expandedItems[actualIndex] = !g_expandedItems[actualIndex];
+              // LBS_OWNERDRAWVARIABLE：按项设置新高度（立即重排下方记录）
+              int newHeight =
+                  g_expandedItems[actualIndex]
+                      ? ComputeTextItemExpandedHeight(item, actualIndex,
+                                                      GetListBoxContentWidth())
+                      : MScale(57);
+              SendMessageW(hwnd, LB_SETITEMHEIGHT, index, newHeight);
+              g_shortcutCacheDirty = true;
+              // 项高度变化后 ListBox 内部滚动位置可能调整，同步顶部索引，
+              // 保证自定义滚动条 thumb 与翻页状态使用最新的滚动位置
+              g_listBoxTopIndex = (int)SendMessageW(hwnd, LB_GETTOPINDEX, 0, 0);
+              // 刷新自定义滚动条与翻页状态
+              ShowCustomScrollbar(hwnd);
+              RefreshScrollbarIfChanged(hwnd);
+              InvalidateRect(hwnd, NULL, FALSE);
+              InvalidateRect(g_hwndPageUpBtn, NULL, TRUE);
+              InvalidateRect(g_hwndPageDownBtn, NULL, TRUE);
+              return 0;
+            }
+          }
+
+          // ===== 文本选中复制：记录按下点与锚点 =====
+          // 点击任意处先清除旧选中；点击文本内容区则准备拖选
+          {
+            if (g_textSelItem >= 0)
+              ClearTextSelectionForClick(hwnd);
+            if (!g_isBatchEditMode && item.type == TYPE_TEXT &&
+                IsTextSelectableContent(item.content)) {
+              g_textSelItem = index;
+              g_textSelAnchor = TextSelCharFromPoint(hwnd, index, pt);
+              g_textSelEnd = g_textSelAnchor;
+              g_textSelDragging = false;
+              g_textSelDownPt = pt;
+              SetCapture(hwnd);
+            }
+          }
         }
       }
 
@@ -3818,6 +4661,29 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
     }
   }
 
+  // ===== 文本拖选：鼠标移动时更新选中范围 =====
+  if (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) && g_textSelItem >= 0) {
+    POINT pt;
+    pt.x = GET_X_LPARAM(lParam);
+    pt.y = GET_Y_LPARAM(lParam);
+    if (!g_textSelDragging) {
+      int dx = pt.x - g_textSelDownPt.x;
+      int dy = pt.y - g_textSelDownPt.y;
+      if (dx * dx + dy * dy >= 16) { // 4px 阈值后进入拖选
+        g_textSelDragging = true;
+        if (GetCapture() != hwnd)
+          SetCapture(hwnd);
+      }
+    }
+    if (g_textSelDragging) {
+      int newEnd = TextSelCharFromPoint(hwnd, g_textSelItem, pt);
+      if (newEnd != g_textSelEnd) {
+        g_textSelEnd = newEnd;
+        InvalidateTextSelItem(hwnd);
+      }
+    }
+  }
+
   // WM_MOUSEMOVE 已在上方完整处理（悬浮检测 + 拖拽），
   // 不再传递给默认列表框过程：默认过程会在屏幕 DC 上直接重绘项，
   // 绕过 WM_PAINT 的双缓冲，导致选中项在悬浮文件路径项时闪烁
@@ -3834,6 +4700,20 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       StartScrollbarHideTimer(hwnd);
       RefreshScrollbarIfChanged(hwnd);
       return 0;
+    }
+    // 文本拖选结束
+    if (g_textSelItem >= 0) {
+      if (g_textSelDragging) {
+        // 保持选中范围（供 Ctrl+C 复制）
+        g_textSelDragging = false;
+        if (GetCapture() == hwnd)
+          ReleaseCapture();
+        return 0;
+      }
+      // 简单点击（未拖选）：清除待定选中，继续原有逻辑
+      if (GetCapture() == hwnd)
+        ReleaseCapture();
+      ClearTextSelectionForClick(hwnd);
     }
     g_dragItemIndex = -1;
 
@@ -3881,6 +4761,10 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
       g_isScrollbarDragging = false;
       StartScrollbarHideTimer(hwnd);
       RefreshScrollbarIfChanged(hwnd);
+    }
+    // 文本拖选被系统打断时：保留选中范围（供 Ctrl+C），结束拖选状态
+    if (g_textSelDragging) {
+      g_textSelDragging = false;
     }
   }
 
@@ -4336,6 +5220,8 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             g_quickFilterDate.clear();
           else if (g_pills[i].type == 2)
             g_quickFilterApp.clear();
+          else if (g_pills[i].type == 3)
+            g_currentFilterTagId = 0;
           // 清除搜索框文本与关键词，避免关闭药丸后输入框残留
           SetWindowTextW(hwnd, L"");
           g_searchKeyword.clear();
@@ -4533,11 +5419,17 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         int pillH = pr.bottom - pr.top;
         bool closeHovered = (i == g_hoveredPill && g_pillCloseHovered);
 
-        // 圆角矩形背景（始终不透明，清晰显示）
-        // 始终保持高亮(蓝色)，悬浮关闭按钮时仅加深一点作为交互反馈
-        Gdiplus::Color pillColor = closeHovered
-                                       ? Gdiplus::Color(255, 70, 136, 220)
-                                       : Gdiplus::Color(255, 90, 156, 235);
+        // 药丸底色：日期/应用用默认蓝；分类药丸（3）用分类色块颜色。
+        // 悬浮关闭按钮时各分量 7/8 加深作为交互反馈（保持不透明清晰显示）。
+        COLORREF pillBase =
+            (g_pills[i].type == 3) ? g_pills[i].color : RGB(90, 156, 235);
+        Gdiplus::Color pillColor(255, GetRValue(pillBase), GetGValue(pillBase),
+                                 GetBValue(pillBase));
+        if (closeHovered) {
+          pillColor = Gdiplus::Color(255, GetRValue(pillBase) * 7 / 8,
+                                     GetGValue(pillBase) * 7 / 8,
+                                     GetBValue(pillBase) * 7 / 8);
+        }
         Gdiplus::SolidBrush brush(pillColor);
         int radius = pillH / 2;
         Gdiplus::GraphicsPath path;
@@ -4568,10 +5460,13 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
           int r = closeBtnSize / 2;
 
           if (closeHovered) {
-            // 悬浮：白色圆形背景 + 蓝色 ×
+            // 悬浮：白色圆形背景 + 药丸底色 ×
             Gdiplus::SolidBrush closeBg(Gdiplus::Color(255, 255, 255, 255));
             graphics.FillEllipse(&closeBg, cx - r, cy - r, r * 2, r * 2);
-            Gdiplus::Pen xPen(Gdiplus::Color(255, 90, 156, 235), 2.0f);
+            Gdiplus::Pen xPen(Gdiplus::Color(255, GetRValue(pillBase),
+                                             GetGValue(pillBase),
+                                             GetBValue(pillBase)),
+                              2.0f);
             int xr = closeBtnSize / 3;
             graphics.DrawLine(&xPen, cx - xr, cy - xr, cx + xr, cy + xr);
             graphics.DrawLine(&xPen, cx + xr, cy - xr, cx - xr, cy + xr);
@@ -5553,6 +6448,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               lpMIS->itemHeight =
                   MScale(25) + displayHeight + MScale(20) + MScale(10);
             }
+          } else if (item.type == TYPE_TEXT && g_expandedItems[actualIndex]) {
+            // 展开的文本：按内容换行行数计算高度
+            lpMIS->itemHeight =
+                ComputeTextItemExpandedHeight(item, actualIndex, listBoxWidth);
           } else {
             // 文本或文件类型：固定高度，一行显示
             // 顶部边距(2) + 标题(20) + 一行文本(22) + 底部边距(13)
@@ -6475,9 +7374,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                   folderTextColor = RGB(r, g, b);
                 }
                 SetTextColor(hdc, folderTextColor);
-                DrawTextW(hdc, text.c_str(), -1, &rcPathText,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                              DT_END_ELLIPSIS | DT_NOPREFIX);
+                if (!g_searchKeyword.empty()) {
+                  // 搜索激活时：文件夹路径匹配段用主题色高亮
+                  DrawHighlightedText(hdc, text, g_searchKeyword, rcPathText,
+                                      folderTextColor, GetAccentColor());
+                } else {
+                  DrawTextW(hdc, text.c_str(), -1, &rcPathText,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
                 DrawDetectedColorDot(hdc, rcPathText, text);
               } else {
                 // 普通文本或文件
@@ -6566,9 +7471,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                       RECT rcSeg = rcText;
                       rcSeg.left = mfX + mfIconSize + mfIconGap;
                       rcSeg.right = mfRight;
-                      DrawTextW(hdc, name.c_str(), -1, &rcSeg,
-                                DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                    DT_END_ELLIPSIS | DT_NOPREFIX);
+                      if (!g_searchKeyword.empty()) {
+                        // 搜索激活时：文件名匹配段用主题色高亮
+                        DrawHighlightedText(hdc, name, g_searchKeyword, rcSeg,
+                                            GetTextColor(), GetAccentColor());
+                      } else {
+                        DrawTextW(hdc, name.c_str(), -1, &rcSeg,
+                                  DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                      DT_END_ELLIPSIS | DT_NOPREFIX);
+                      }
                       mfX = mfRight; // 已无空间
                       break;
                     }
@@ -6583,9 +7494,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                     RECT rcSeg = rcText;
                     rcSeg.left = mfX + mfIconSize + mfIconGap;
                     rcSeg.right = rcSeg.left + segW;
-                    DrawTextW(hdc, seg.c_str(), -1, &rcSeg,
-                              DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                  DT_NOPREFIX);
+                    if (!g_searchKeyword.empty()) {
+                      // 搜索激活时：文件名匹配段用主题色高亮
+                      DrawHighlightedText(hdc, seg, g_searchKeyword, rcSeg,
+                                          GetTextColor(), GetAccentColor());
+                    } else {
+                      DrawTextW(hdc, seg.c_str(), -1, &rcSeg,
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                    DT_NOPREFIX);
+                    }
 
                     mfX += needW;
                   }
@@ -6645,17 +7562,77 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 // 缩到 0.9 倍，避免视觉上撑满行高。
                 if (!isMultiFileRecord) {
                   COLORREF mainTextColor = GetTextColor();
-                  if (TextContainsEmoji(text.c_str(), (int)text.length())) {
-                    DrawTextWithColorEmoji(
-                        hdc, text.c_str(), (int)text.length(), rcText,
-                        GetListMainFont(), L"Microsoft YaHei",
-                        /*fontWeight=*/400, mainTextColor,
-                        /*align=*/0, /*verticalCenter=*/true,
-                        /*endEllipsis=*/true, /*emojiScale=*/0.9f);
+                  int arrowSize = MScale(14);
+                  bool isExpandedText =
+                      (item.type == TYPE_TEXT && g_expandedItems[actualIndex]);
+                  // 文本选中复制：该文本项是否有非空选中范围
+                  int selStart = -1, selEnd = -1;
+                  bool hasTextSel = (item.type == TYPE_TEXT &&
+                                     (int)lpDIS->itemID == g_textSelItem &&
+                                     GetTextSelRange(&selStart, &selEnd));
+
+                  if (isExpandedText) {
+                    // 展开状态：绘制完整多行内容 + 收起箭头
+                    std::wstring fullContent = item.content;
+                    while (!fullContent.empty() &&
+                           (fullContent.back() == L'\r' ||
+                            fullContent.back() == L'\n' ||
+                            fullContent.back() == L' ' ||
+                            fullContent.back() == L'\t'))
+                      fullContent.pop_back();
+                    RECT rcFull = rcText;
+                    rcFull.right -= arrowSize;
+                    rcFull.bottom = rcItem.bottom - MScale(13);
+                    if (hasTextSel && IsTextSelectableContent(item.content)) {
+                      // 选中高亮绘制（多行折行）
+                      DrawTextSelectionContent(
+                          hdc, fullContent, L"", rcFull,
+                          /*multiLine=*/true, /*verticalCenter=*/false,
+                          selStart, selEnd, mainTextColor, GetAccentColor());
+                    } else {
+                      SetTextColor(hdc, mainTextColor);
+                      DrawTextW(hdc, fullContent.c_str(), -1, &rcFull,
+                                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+                    }
+                    DrawExpandArrow(hdc, rcText, true);
                   } else {
-                    DrawTextW(hdc, text.c_str(), -1, &rcText,
-                              DT_LEFT | DT_VCENTER | DT_SINGLELINE |
-                                  DT_END_ELLIPSIS | DT_NOPREFIX);
+                    // 判断文本是否超长（仅文本类型显示展开箭头）
+                    SIZE szText = {};
+                    GetTextExtentPoint32W(hdc, text.c_str(), (int)text.length(),
+                                          &szText);
+                    bool showArrow =
+                        (item.type == TYPE_TEXT &&
+                         szText.cx > (rcText.right - rcText.left) - arrowSize);
+                    RECT rcDraw = rcText;
+                    if (showArrow)
+                      rcDraw.right -= arrowSize;
+
+                    if (hasTextSel && IsTextSelectableContent(item.content)) {
+                      // 选中高亮绘制（单行硬截断，省略号由三角形箭头取代）
+                      DrawTextSelectionContent(
+                          hdc, text, g_searchKeyword, rcDraw,
+                          /*multiLine=*/false, /*verticalCenter=*/true,
+                          selStart, selEnd, mainTextColor, GetAccentColor());
+                    } else if (TextContainsEmoji(text.c_str(),
+                                                 (int)text.length())) {
+                      DrawTextWithColorEmoji(
+                          hdc, text.c_str(), (int)text.length(), rcDraw,
+                          GetListMainFont(), L"Microsoft YaHei",
+                          /*fontWeight=*/400, mainTextColor,
+                          /*align=*/0, /*verticalCenter=*/true,
+                          /*endEllipsis=*/!showArrow, /*emojiScale=*/0.9f);
+                    } else if (!g_searchKeyword.empty()) {
+                      // 搜索激活时：匹配关键词用金黄色高亮
+                      DrawHighlightedText(hdc, text, g_searchKeyword, rcDraw,
+                                          mainTextColor, GetAccentColor());
+                    } else {
+                      // 超长时硬截断（省略号已由三角形展开箭头取代）
+                      DrawTextW(hdc, text.c_str(), -1, &rcDraw,
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                                    DT_NOPREFIX | DT_CLIP);
+                    }
+                    if (showArrow)
+                      DrawExpandArrow(hdc, rcText, false);
                   }
                   DrawDetectedColorDot(hdc, rcText, text);
                 }
@@ -6794,6 +7771,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (index != LB_ERR && index < (int)g_displayIndexMap.size()) {
         // 批量编辑模式下，双击切换选择状态
         if (g_isBatchEditMode) {
+          // 批量选中多条文件时，双击=粘贴未反选的文件后自动退出批量模式
+          if (g_selectedItems.size() >= 2) {
+            bool allFile = true;
+            for (int ai : g_selectedItems) {
+              if (ai < 0 || ai >= (int)g_history.size() ||
+                  g_history[ai].type != TYPE_FILE) {
+                allFile = false;
+                break;
+              }
+            }
+            if (allFile && PasteSelectedFilesBatch(hwnd))
+              return 0;
+          }
           int actualIndex = g_displayIndexMap[index];
           if (std::find(g_selectedItems.begin(), g_selectedItems.end(),
                         actualIndex) != g_selectedItems.end()) {
@@ -7271,6 +8261,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         }
       }
     } else if (wID == IDM_PASTE) {
+      // 批量模式：粘贴选中的文件（排除反选）后自动退出批量模式
+      if (g_isBatchEditMode && g_selectedItems.size() >= 2) {
+        PasteSelectedFilesBatch(hwnd);
+        return 0;
+      }
       // 右键菜单：执行粘贴（模拟Ctrl+V）
       if (g_contextMenuIndex >= 0 &&
           g_contextMenuIndex < (int)g_displayIndexMap.size()) {
@@ -8299,7 +9294,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 }
               }
               if (!joinedPaths.empty()) {
-                AddFilesToHistory(joinedPaths);
+                std::vector<int> newIndices;
+                AddFilesToHistory(joinedPaths, &newIndices);
+                // 多文件（n>=2）拆成 n 条独立记录后，自动进入批量模式并全选，
+                // 便于 Ctrl 反选后选择性粘贴（反选的文件粘贴时排除）。
+                if (newIndices.size() >= 2 && g_hwndListBox) {
+                  g_isBatchEditMode = true;
+                  g_selectedItems.clear();
+                  g_batchSelectionAnchorDisplayIndex = 0;
+                  for (int idx : newIndices)
+                    AddBatchSelectionItem(idx);
+                  // 列表已由 UpdateListBox 重建，刷新批量高亮
+                  InvalidateRect(g_hwndListBox, NULL, FALSE);
+                  if (g_isNotificationEnabled) {
+                    ShowTrayBalloon(g_hwndMain, T(STR_TRAY_HINT),
+                                    L"批量编辑模式已开启");
+                  }
+                }
               }
             }
             GlobalUnlock(hGlobal);

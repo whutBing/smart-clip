@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <ctime>
 #include <set>
+#include <map>
 #include "sqlite3.h"
 #include "tray.h"
 #include "search.h"  // 添加这个头文件以访问 g_hwndTabControl
@@ -1158,6 +1159,9 @@ void UpdateListBox() {
     g_displayIndexMap.clear();  // 清空索引映射
     // g_expandedItems 不需要清空，因为它是用 actualIndex 作为 key 的 map
 
+    // 列表内容变化后，文本选中状态的显示索引已失效，清除避免误复制
+    ClearTextSelectionAfterRefresh();
+
     // 收藏按钮显示分类数（即标签数量），而非记录数；超过 99 显示 99+
     int categoryCount = (int)g_tags.size();
     if (g_hwndFilterFavorite != NULL) {
@@ -1252,7 +1256,13 @@ void UpdateListBox() {
                     }
                     displayText += displayNames;
                 } else {
-                    displayText += item.content;
+                    // 单路径：显示文件名（取最后分隔符后部分），
+                    // 与多文件记录显示风格一致，避免完整路径过长难读
+                    std::wstring name = item.content;
+                    size_t lastSep = name.find_last_of(L"\\/");
+                    if (lastSep != std::wstring::npos)
+                        name = name.substr(lastSep + 1);
+                    displayText += name;
                 }
                 break;
             }
@@ -1578,41 +1588,138 @@ void AddFileToHistory(const std::wstring& filePath) {
 
 // 添加多文件记录：joinedFilePaths 用 L'\n' 连接的多个文件路径。
 // 去重按整个连接字符串匹配；存储为一条 TYPE_FILE 记录。
-void AddFilesToHistory(const std::wstring& joinedFilePaths) {
+void AddFilesToHistory(const std::wstring& joinedFilePaths,
+                       std::vector<int>* outNewIndices) {
     if (joinedFilePaths.empty())
         return;
 
-    // 按完整字符串去重（保留收藏/标签状态）
-    bool wasFavorite = false;
-    std::set<int> oldTagIds;
-    auto it = std::find_if(g_history.begin(), g_history.end(),
-                           [&joinedFilePaths](const ClipboardItem& item) {
-                               return item.type == TYPE_FILE &&
-                                      item.content == joinedFilePaths;
-                           });
-    if (it != g_history.end()) {
-        wasFavorite = it->isFavorite;
-        oldTagIds = it->tagIds;
-        g_history.erase(it);
+    // 按 L'\n' 拆分为单路径列表（过滤空串）
+    std::vector<std::wstring> paths;
+    {
+        size_t start = 0;
+        while (start <= joinedFilePaths.size()) {
+            size_t end = joinedFilePaths.find(L'\n', start);
+            if (end == std::wstring::npos)
+                end = joinedFilePaths.size();
+            if (end > start) {
+                std::wstring p = joinedFilePaths.substr(start, end - start);
+                if (!p.empty())
+                    paths.push_back(p);
+            }
+            if (end == joinedFilePaths.size())
+                break;
+            start = end + 1;
+        }
+    }
+    if (paths.empty())
+        return;
+
+    // 单文件：保持原行为——存为一条记录（content=单路径），按完整字符串去重
+    if (paths.size() == 1) {
+        const std::wstring &single = paths[0];
+        bool wasFavorite = false;
+        std::set<int> oldTagIds;
+        auto it = std::find_if(g_history.begin(), g_history.end(),
+                               [&single](const ClipboardItem& item) {
+                                   return item.type == TYPE_FILE &&
+                                          item.content == single;
+                               });
+        if (it != g_history.end()) {
+            wasFavorite = it->isFavorite;
+            oldTagIds = it->tagIds;
+            g_history.erase(it);
+        }
+
+        ClipboardItem item;
+        item.type = TYPE_FILE;
+        item.content = single;
+        item.timestamp = GetCurrentTimeString();
+        item.sourceApp = GetActiveWindowProcessName();
+        item.sourceAppPath = GetActiveWindowProcessPath();
+        item.imageWidth = 0;
+        item.imageHeight = 0;
+        item.isFavorite = wasFavorite;
+        item.tagIds = oldTagIds;
+
+        int nonFavCount = 0;
+        for (const auto& h : g_history) {
+            if (!h.isFavorite) nonFavCount++;
+        }
+        while (nonFavCount >= g_maxHistoryCount) {
+            bool removed = false;
+            for (int i = (int)g_history.size() - 1; i >= 0; i--) {
+                if (!g_history[i].isFavorite) {
+                    g_history.erase(g_history.begin() + i);
+                    nonFavCount--;
+                    removed = true;
+                    break;
+                }
+            }
+            if (!removed) break;
+        }
+
+        g_history.insert(g_history.begin(), item);
+        if (outNewIndices)
+            outNewIndices->push_back(0);
+
+        UpdateListBox();
+        if (g_hwndMain != NULL && g_isNotificationEnabled) {
+            ShowTrayBalloon(g_hwndMain, T(STR_TRAY_COPY_TITLE), T(STR_TRAY_FILE_PATH_COPIED));
+        }
+        SaveHistory();
+        return;
     }
 
-    ClipboardItem item;
-    item.type = TYPE_FILE;
-    item.content = joinedFilePaths;
-    item.timestamp = GetCurrentTimeString();
-    item.sourceApp = GetActiveWindowProcessName();
-    item.sourceAppPath = GetActiveWindowProcessPath();
-    item.imageWidth = 0;
-    item.imageHeight = 0;
-    item.isFavorite = wasFavorite;
-    item.tagIds = oldTagIds;
+    // 多文件（>=2）：拆成 n 条独立记录，共享时间戳/来源，连续插入头部
+    std::wstring ts = GetCurrentTimeString();
+    std::wstring srcApp = GetActiveWindowProcessName();
+    std::wstring srcAppPath = GetActiveWindowProcessPath();
 
-    // 限制历史记录数量（收藏项不占名额）
+    // 先收集每个路径的旧收藏/标签状态（迁移到新记录），再统一删除旧记录
+    // 用 map 保存：path -> {isFavorite, tagIds}
+    std::map<std::wstring, std::pair<bool, std::set<int>>> oldState;
+    for (const auto& p : paths) {
+        auto it = std::find_if(g_history.begin(), g_history.end(),
+            [&p](const ClipboardItem& item) {
+                return item.type == TYPE_FILE && item.content == p;
+            });
+        if (it != g_history.end())
+            oldState[p] = {it->isFavorite, it->tagIds};
+    }
+    // 删除 g_history 中所有匹配 paths 的旧 TYPE_FILE 记录
+    g_history.erase(std::remove_if(g_history.begin(), g_history.end(),
+        [&paths](const ClipboardItem& item) {
+            if (item.type != TYPE_FILE)
+                return false;
+            return std::find(paths.begin(), paths.end(), item.content) != paths.end();
+        }), g_history.end());
+
+    // 构造 n 条新记录（按复制选择顺序，paths[0] 将位于列表最顶）
+    std::vector<ClipboardItem> newItems;
+    newItems.reserve(paths.size());
+    for (const auto& p : paths) {
+        ClipboardItem item;
+        item.type = TYPE_FILE;
+        item.content = p;
+        item.timestamp = ts;
+        item.sourceApp = srcApp;
+        item.sourceAppPath = srcAppPath;
+        item.imageWidth = 0;
+        item.imageHeight = 0;
+        auto st = oldState.find(p);
+        if (st != oldState.end()) {
+            item.isFavorite = st->second.first;
+            item.tagIds = st->second.second;
+        }
+        newItems.push_back(item);
+    }
+
+    // 容量限制：确保插入 n 条后不超 maxHistoryCount（裁剪尾部非收藏项）
     int nonFavCount = 0;
     for (const auto& h : g_history) {
         if (!h.isFavorite) nonFavCount++;
     }
-    while (nonFavCount >= g_maxHistoryCount) {
+    while (nonFavCount + (int)newItems.size() > g_maxHistoryCount) {
         bool removed = false;
         for (int i = (int)g_history.size() - 1; i >= 0; i--) {
             if (!g_history[i].isFavorite) {
@@ -1625,7 +1732,15 @@ void AddFilesToHistory(const std::wstring& joinedFilePaths) {
         if (!removed) break;
     }
 
-    g_history.insert(g_history.begin(), item);
+    // 连续插入到头部：insert(begin, first, last) 保持顺序
+    g_history.insert(g_history.begin(), newItems.begin(), newItems.end());
+
+    // 新插入的 n 条索引为 0..n-1
+    if (outNewIndices) {
+        for (int i = 0; i < (int)newItems.size(); i++)
+            outNewIndices->push_back(i);
+    }
+
     UpdateListBox();
 
     if (g_hwndMain != NULL && g_isNotificationEnabled) {

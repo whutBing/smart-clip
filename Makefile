@@ -120,7 +120,7 @@ RESOURCE_ASSETS := $(RESDIR)/clip.ico $(RESDIR)/app.manifest \
                    $(wildcard $(RESDIR)/images/*.png) \
                    $(wildcard $(RESDIR)/images/*.ico) \
                    $(wildcard $(RESDIR)/images/*.bmp)
-$(RES): $(RC) $(INCDIR)/resource.h $(RESOURCE_ASSETS) | $(BUILDDIR)
+$(RES): $(RC) $(INCDIR)/resource.h $(INCDIR)/version.h $(RESOURCE_ASSETS) | $(BUILDDIR)
 	@echo [RC]   $<
 	@$(WINDRES) --include-dir $(INCDIR) --include-dir $(RESDIR) -i $< -O coff -o $@
 

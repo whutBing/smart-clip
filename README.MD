@@ -29,7 +29,7 @@
 15. ⏸️ **托盘暂停/恢复**：右键托盘图标可快速暂停或恢复剪贴板监听
 16. ⚡ **滚动式快捷键**：窗体所见内容均可快捷粘贴，列表滚动时当前可见的每条记录都会被自动分配数字快捷键（1~0）
 17. 🔌 **快捷键一键开关**：右键托盘图标可快速启用或关闭本 app 所有快捷键，关闭后主窗体不再显示快捷键标签
-18. 📁 **多文件复制支持**：资源管理器中选中多个文件复制时自动合并为一条记录，顺序与资源管理器一致；粘贴时恢复为完整的 CF_HDROP 多文件格式，可直接粘贴回资源管理器
+18. 📁 **多文件拆行记录**：资源管理器中选中多个文件复制时自动拆分为 n 条独立记录（与文件数量一致，顺序与资源管理器一致），n≥2 时自动进入批量模式全部高亮选中；粘贴时仅粘贴未被反选的文件，恢复为完整的 CF_HDROP 多文件格式
 19. 🖼️ **空格预览图片**：选中图片记录按空格键全屏预览，再次按空格或 ESC 关闭
 20. 🗑️ **Del 删除记录**：按 Delete 键删除当前选中记录，行为与右键删除完全一致（收藏记录会弹窗确认）
 21. 🎨 **彩色 Emoji 渲染**：列表文本中的 emoji 自动以彩色显示（基于 DirectWrite + Segoe UI Emoji）
@@ -40,6 +40,11 @@
 26. 📝 **Markdown 防抖**：VSCode 等 markdown 复制时分多步写入剪贴板，300ms 内的多次写入合并为一条记录并优先保留带 markdown 格式的内容
 27. 📝 **Markdown 双记录**：复制 markdown 内容时自动生成两条记录——上方为带 md 原始语法的文本，下方为剥离语法的纯文本，便于按场景粘贴
 28. 🖱️ **悬浮选中**：鼠标悬浮在列表项上即自动选中（通用设置中可开关，默认开启）
+29. 🔍 **搜索关键词高亮**：搜索框匹配到的关键词以主题色蓝色高亮显示，文本、文件、文件夹及多文件记录均支持
+30. 📎 **收藏分类药丸**：点击收藏分类后自动在搜索框添加对应分类色药丸（收藏#xx），点击删除分类时同步移除
+31. 🔽 **长文本展开**：超长文本以三角形箭头显示（替代省略号），点击展开/收起全文，下方记录自动下移，滚动条同步刷新
+32. 🖱️ **文本选中复制**：鼠标拖选文本内容即高亮选中，按 Ctrl+C 复制选中片段，按 Esc 取消（含 emoji 文本暂不支持选中）
+33. ✅ **Ctrl 反选批量粘贴**：多文件记录进入批量模式后，Ctrl+点击某行可反选该行（去高亮），回车/双击粘贴时自动排除反选文件，粘贴完成自动退出批量模式；悬浮选中已修复——快捷键移动后选中状态刷新及时且不被鼠标微动覆盖
 
 ### 📜 用户协议与免责声明
 - 本软件仅供合法用途使用，用户须妥善保管剪贴板数据
@@ -62,6 +67,8 @@
 | `Shift + G` | 跳转到当页可见末项（与显示的快捷键 0 一致） |
 | `空格` | 选中图片记录时全屏预览/关闭预览 |
 | `Delete` | 删除当前选中记录（收藏项弹窗确认） |
+| `Ctrl + C` | 鼠标拖选文本后复制选中片段 |
+| `Esc` | 取消文本选中 |
 
 ### 📋 计划功能
 1. 🎨 优化设置界面
@@ -99,7 +106,7 @@ Pull Requests and creative ideas are always welcomed!
 15. ⏸️ **Tray pause/resume**: Right-click the tray icon to quickly pause or resume clipboard listening
 16. ⚡ **Scroll-aware hotkeys**: All visible items in the window can be quick-pasted; when the list scrolls, every visible record is automatically assigned a number hotkey (1~0)
 17. 🔌 **One-click hotkey toggle**: Right-click the tray icon to quickly enable or disable all hotkeys in this app; when disabled, the main window no longer shows hotkey labels
-18. 📁 **Multi-file copy support**: Selecting multiple files in File Explorer and copying auto-merges them into a single record, preserving Explorer's order; pasting restores the full CF_HDROP multi-file format that can be pasted back into File Explorer
+18. 📁 **Multi-file split records**: Selecting multiple files in File Explorer and copying auto-splits them into n independent records (one per file, preserving Explorer's order); when n≥2 the app enters batch mode with all rows highlighted; pasting only includes the non-deselected files, restoring the full CF_HDROP multi-file format
 19. 🖼️ **Space image preview**: Press Space on a selected image record for fullscreen preview; press Space or ESC again to close
 20. 🗑️ **Del to delete**: Press Delete to remove the selected record, identical to right-click delete (favorites prompt confirmation)
 21. 🎨 **Color emoji rendering**: Emoji in list text is rendered in color (via DirectWrite + Segoe UI Emoji)
@@ -110,6 +117,11 @@ Pull Requests and creative ideas are always welcomed!
 26. 📝 **Markdown debounce**: Multi-step clipboard writes from VSCode markdown copy are merged within 300ms into a single record, preferring the markdown-formatted content
 27. 📝 **Markdown dual records**: Copying markdown content auto-generates two records — the markdown source on top and the syntax-stripped plain text below, so you can paste either as needed
 28. 🖱️ **Hover select**: Hovering over a list item auto-selects it (toggle in General settings, on by default)
+29. 🔍 **Search highlight**: keywords matched in the search box are highlighted in the theme blue color; applies to text, files, folders and multi-file records
+30. 📎 **Favorite category pill**: clicking a favorite category adds a color-coded pill (favorite #xx) to the search box for one-click filtering; removed automatically when the category is deleted
+31. 🔽 **Long text expand**: oversized text shows a triangle arrow (replacing the ellipsis); click to expand/collapse the full content, reflowing items below with the scrollbar refreshed
+32. 🖱️ **Text selection & copy**: drag to select text content with highlight, press Ctrl+C to copy the selection, press Esc to cancel (text containing emoji is not selectable for now)
+33. ✅ **Ctrl-deselect batch paste**: in batch mode for multi-file records, Ctrl+click a row to deselect it (remove highlight); Enter/double-click paste auto-excludes deselected files and exits batch mode on success; hover-select bug fixed — selection now refreshes promptly after hotkey moves and is no longer overwritten by minor mouse movement
 
 ### 📜 User Agreement & Disclaimer
 - This software is for legitimate use only; users must safeguard their clipboard data
@@ -132,6 +144,8 @@ Pull Requests and creative ideas are always welcomed!
 | `Shift + G` | Jump to the last visible item of current page (consistent with hotkey 0) |
 | `Space` | Fullscreen preview / close preview for selected image record |
 | `Delete` | Delete selected record (favorites prompt confirmation) |
+| `Ctrl + C` | Copy the text selection made by mouse dragging |
+| `Esc` | Cancel text selection |
 
 ### 📋 Roadmap
 1. 🎨 Optimize settings UI
