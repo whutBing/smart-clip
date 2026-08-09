@@ -49,7 +49,6 @@ Welcome, and thank you for helping translate SmartClip! This guide explains how 
 | Arabic     | ar-SA  | العربية                 | true  | Available   |
 | Turkish    | tr-TR  | Türkçe                  | false | Available   |
 | Hindi      | hi-IN  | हिन्दी                   | false | Available   |
-| English (Singapore) | en-SG | English (Singapore) | false | Available   |
 | Bulgarian  | bg-BG  | Български               | false | Available   |
 | Spanish (Venezuela) | es-VE | Español (Venezuela) | false | Available   |
 | Thai       | th-TH  | ไทย                     | false | Available   |

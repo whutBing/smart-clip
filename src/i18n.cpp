@@ -82,7 +82,6 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"العربية",
     L"Türkçe",
     L"हिन्दी",
-    L"English (Singapore)",
     L"Български",
     L"Español (Venezuela)",
     L"ไทย",
@@ -361,7 +360,6 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"العربية",
     L"Türkçe",
     L"हिन्दी",
-    L"English (Singapore)",
     L"Български",
     L"Español (Venezuela)",
     L"ไทย",
@@ -671,7 +669,6 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_LANGUAGE_AR_SA", STR_LANGUAGE_AR_SA},
     {"STR_LANGUAGE_TR_TR", STR_LANGUAGE_TR_TR},
     {"STR_LANGUAGE_HI_IN", STR_LANGUAGE_HI_IN},
-    {"STR_LANGUAGE_EN_SG", STR_LANGUAGE_EN_SG},
     {"STR_LANGUAGE_BG_BG", STR_LANGUAGE_BG_BG},
     {"STR_LANGUAGE_ES_VE", STR_LANGUAGE_ES_VE},
     {"STR_LANGUAGE_TH_TH", STR_LANGUAGE_TH_TH},
@@ -1029,7 +1026,7 @@ void LoadExternalLanguages() {
       {LANG_JA_JP, L"ja-JP.ini"}, {LANG_KO_KR, L"ko-KR.ini"},
       {LANG_DE_DE, L"de-DE.ini"}, {LANG_AR_SA, L"ar-SA.ini"},
       {LANG_TR_TR, L"tr-TR.ini"}, {LANG_HI_IN, L"hi-IN.ini"},
-      {LANG_EN_SG, L"en-SG.ini"}, {LANG_BG_BG, L"bg-BG.ini"},
+      {LANG_BG_BG, L"bg-BG.ini"},
       {LANG_ES_VE, L"es-VE.ini"}, {LANG_TH_TH, L"th-TH.ini"},
   };
 
@@ -1094,8 +1091,6 @@ std::wstring GetLanguageCode(AppLanguage lang) {
     return L"tr-TR";
   case LANG_HI_IN:
     return L"hi-IN";
-  case LANG_EN_SG:
-    return L"en-SG";
   case LANG_BG_BG:
     return L"bg-BG";
   case LANG_ES_VE:
