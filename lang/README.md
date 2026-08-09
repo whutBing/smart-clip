@@ -41,13 +41,18 @@ Welcome, and thank you for helping translate SmartClip! This guide explains how 
 
 | Language   | Code   | Native Name | RTL   | Status      |
 |------------|--------|-------------|-------|-------------|
-| English    | en-US  | English     | false | Reference   |
-| Chinese    | zh-CN  | 简体中文     | false | Available   |
-| Japanese   | ja-JP  | 日本語       | false | Available   |
-| Korean     | ko-KR  | 한국어       | false | Available   |
-| German     | de-DE  | Deutsch     | false | Available   |
-| Arabic     | ar-SA  | العربية     | true  | Available   |
-| Turkish    | tr-TR  | Türkçe      | false | Available   |
+| English    | en-US  | English                 | false | Reference   |
+| Chinese    | zh-CN  | 简体中文                 | false | Available   |
+| Japanese   | ja-JP  | 日本語                   | false | Available   |
+| Korean     | ko-KR  | 한국어                   | false | Available   |
+| German     | de-DE  | Deutsch                 | false | Available   |
+| Arabic     | ar-SA  | العربية                 | true  | Available   |
+| Turkish    | tr-TR  | Türkçe                  | false | Available   |
+| Hindi      | hi-IN  | हिन्दी                   | false | Available   |
+| English (Singapore) | en-SG | English (Singapore) | false | Available   |
+| Bulgarian  | bg-BG  | Български               | false | Available   |
+| Spanish (Venezuela) | es-VE | Español (Venezuela) | false | Available   |
+| Thai       | th-TH  | ไทย                     | false | Available   |
 
 If your language is not listed above, that means it has not been contributed yet — we'd love for you to be the first!
 

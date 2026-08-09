@@ -47,7 +47,8 @@ extern HWND g_hwndListBox;
 extern std::wstring g_searchKeyword;
 extern int g_currentTab;  // 当前选中的标签页索引
 extern std::vector<int> g_displayIndexMap;  // 显示索引到实际历史记录索引的映射
-extern std::map<int, bool> g_expandedItems;  // 记录每个历史项的展开状态（key为g_history索引）
+extern std::vector<int> g_displaySubIndexMap;  // 展开态虚拟子行号（-1=普通, 0=头行, 1+=文件行）
+extern std::map<int, bool> g_expandedItems;  // 多文件记录的展开状态（key 为 g_history 索引）
 
 // 标签系统
 extern std::vector<Tag> g_tags;             // 全局标签列表
@@ -86,6 +87,12 @@ void AddFilesToHistory(const std::wstring& joinedFilePaths,
 void UpdateListBox();
 void ApplyImagePreviewQualityChange();
 void ClearIconCache();  // 清理图标缓存
+
+// 多文件记录展开/收起
+bool IsMultiFileExpanded(int historyIndex);           // 记录是否处于展开状态
+void ToggleMultiFileExpanded(int historyIndex);       // 切换展开/收起
+int GetMultiFilePathCount(const std::wstring& content); // 多文件路径数量（按 L'\n' 分隔）
+void SplitMultiFilePaths(const std::wstring& content, std::vector<std::wstring>& out); // 拆分多文件路径
 // 懒加载：按需从 images\thumbs 加载缩略图到 item.imageData
 // 仅在 imageData 为空且 imageFileName 非空时从文件加载，避免启动时全量加载占用内存
 // item 为 const 引用：imageData/thumbWidth/thumbHeight 声明为 mutable，允许缓存填充

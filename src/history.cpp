@@ -281,12 +281,58 @@ HWND g_hwndListBox;
 std::wstring g_searchKeyword;
 int g_currentTab = 0;  // 当前选中的标签页索引（0=全部，1=文本，2=图像，3=文件，4=收藏）
 std::vector<int> g_displayIndexMap;  // 显示索引到实际历史记录索引的映射
-std::map<int, bool> g_expandedItems;  // 记录每个历史项的展开状态（key为g_history索引）
+// 展开态虚拟子项：每个显示索引对应的子行号
+// -1 = 普通项（非多文件或未展开），0 = 头行，1+ = 文件子行
+std::vector<int> g_displaySubIndexMap;
 
 // 标签系统全局变量
 std::vector<Tag> g_tags;              // 全局标签列表
 int g_currentFilterTagId = 0;         // 当前筛选的标签ID（-1=全部收藏，0=未筛选）
 static int g_nextTagId = 1;           // 下一个标签ID
+
+// 多文件记录展开状态（key 为 g_history 索引）
+std::map<int, bool> g_expandedItems;
+
+bool IsMultiFileExpanded(int historyIndex) {
+    auto it = g_expandedItems.find(historyIndex);
+    return it != g_expandedItems.end() && it->second;
+}
+
+void ToggleMultiFileExpanded(int historyIndex) {
+    auto it = g_expandedItems.find(historyIndex);
+    if (it == g_expandedItems.end())
+        g_expandedItems[historyIndex] = true;
+    else
+        it->second = !it->second;
+}
+
+// 拆分多文件路径（content 用 L'\n' 分隔）
+void SplitMultiFilePaths(const std::wstring& content,
+                         std::vector<std::wstring>& out) {
+    out.clear();
+    size_t start = 0;
+    while (start <= content.size()) {
+        size_t end = content.find(L'\n', start);
+        if (end == std::wstring::npos)
+            end = content.size();
+        if (end > start)
+            out.push_back(content.substr(start, end - start));
+        if (end == content.size())
+            break;
+        start = end + 1;
+    }
+}
+
+int GetMultiFilePathCount(const std::wstring& content) {
+    if (content.empty())
+        return 0;
+    int count = 1;
+    for (size_t i = 0; i < content.size(); i++) {
+        if (content[i] == L'\n')
+            count++;
+    }
+    return count;
+}
 
 // 快速筛选全局变量
 std::wstring g_quickFilterApp;    // 来源应用名（空=不筛选）
@@ -1152,12 +1198,20 @@ std::wstring GetRelativeTimeString(const std::wstring& timeStr) {
 
 // 更新列表框
 void UpdateListBox() {
+    // 清理已删除记录的展开状态（g_history 索引越界的记录已不存在）
+    for (auto it = g_expandedItems.begin(); it != g_expandedItems.end();) {
+        if (it->first < 0 || it->first >= (int)g_history.size())
+            it = g_expandedItems.erase(it);
+        else
+            ++it;
+    }
+
     // 禁用重绘，避免闪烁
     SendMessageW(g_hwndListBox, WM_SETREDRAW, FALSE, 0);
 
     SendMessageW(g_hwndListBox, LB_RESETCONTENT, 0, 0);
     g_displayIndexMap.clear();  // 清空索引映射
-    // g_expandedItems 不需要清空，因为它是用 actualIndex 作为 key 的 map
+    g_displaySubIndexMap.clear();
 
     // 列表内容变化后，文本选中状态的显示索引已失效，清除避免误复制
     ClearTextSelectionAfterRefresh();
@@ -1194,17 +1248,42 @@ void UpdateListBox() {
 
         // 应用搜索过滤
         if (!g_searchKeyword.empty()) {
-            // 检查内容是否包含搜索关键词（不区分大小写）
-            std::wstring lowerContent = item.content;
-            std::wstring lowerKeyword = g_searchKeyword;
+            // 匹配文本与实际显示内容保持一致：
+            // - 文本记录：匹配完整文本
+            // - 文件记录：匹配文件名（显示即文件名），避免路径片段误匹配无关文件
+            std::wstring matchText = item.content;
+            if (item.type == TYPE_FILE) {
+                // 与显示逻辑一致：多文件用 L'\n' 分隔，各自取文件名再拼接
+                matchText.clear();
+                size_t start = 0;
+                while (start <= item.content.size()) {
+                    size_t end = item.content.find(L'\n', start);
+                    if (end == std::wstring::npos)
+                        end = item.content.size();
+                    if (end > start) {
+                        std::wstring path = item.content.substr(start, end - start);
+                        size_t lastSep = path.find_last_of(L"\\/");
+                        std::wstring name = (lastSep != std::wstring::npos)
+                            ? path.substr(lastSep + 1)
+                            : path;
+                        if (!matchText.empty())
+                            matchText += L'\n';
+                        matchText += name;
+                    }
+                    if (end == item.content.size())
+                        break;
+                    start = end + 1;
+                }
+            }
 
             // 转换为小写进行比较
+            std::wstring lowerContent = matchText;
+            std::wstring lowerKeyword = g_searchKeyword;
             std::transform(lowerContent.begin(), lowerContent.end(), lowerContent.begin(), ::towlower);
             std::transform(lowerKeyword.begin(), lowerKeyword.end(), lowerKeyword.begin(), ::towlower);
 
-            if (lowerContent.find(lowerKeyword) == std::wstring::npos) {
+            if (lowerContent.find(lowerKeyword) == std::wstring::npos)
                 continue; // 不匹配，跳过此项
-            }
         }
 
         // 应用快速筛选：来源应用
@@ -1215,8 +1294,23 @@ void UpdateListBox() {
         }
 
         // 记录显示索引到实际索引的映射
-        g_displayIndexMap.push_back(i);
-        // g_expandedItems[i] 会在需要时自动创建，默认为 false
+        // 展开的多文件记录：拆成 n 个虚拟子项（头行 + 各文件行），
+        // 支持逐行滚动、右键删除等操作
+        bool isMultiFile = (item.type == TYPE_FILE &&
+                            item.content.find(L'\n') != std::wstring::npos);
+        if (isMultiFile && IsMultiFileExpanded(i)) {
+            int fileCount = GetMultiFilePathCount(item.content);
+            for (int sub = 0; sub < fileCount; ++sub) {
+                g_displayIndexMap.push_back(i);
+                g_displaySubIndexMap.push_back(sub);
+                SendMessageW(g_hwndListBox, LB_ADDSTRING, 0,
+                             (LPARAM)L"");  // 占位字符串，实际由 WM_DRAWITEM 绘制
+            }
+        } else {
+            g_displayIndexMap.push_back(i);
+            g_displaySubIndexMap.push_back(-1);
+            // displayText 在下方构建
+        }
 
         std::wstring displayText = GetRelativeTimeString(item.timestamp) + L" - " + item.sourceApp + L"\r\n";
 
@@ -1268,7 +1362,9 @@ void UpdateListBox() {
             }
         }
 
-        SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
+        // 展开的多文件记录已在上方逐行 LB_ADDSTRING，跳过此处的统一添加
+        if (!(isMultiFile && IsMultiFileExpanded(i)))
+            SendMessageW(g_hwndListBox, LB_ADDSTRING, 0, (LPARAM)displayText.c_str());
     }
 
     // 重置列表滚动位置到顶部
@@ -1670,56 +1766,67 @@ void AddFilesToHistory(const std::wstring& joinedFilePaths,
         return;
     }
 
-    // 多文件（>=2）：拆成 n 条独立记录，共享时间戳/来源，连续插入头部
+    // 多文件（>=2）：存为一条记录（content 用 L'\n' 连接所有路径），
+    // 列表显示时用顿号分隔 + 下拉三角形展开/收起。
     std::wstring ts = GetCurrentTimeString();
     std::wstring srcApp = GetActiveWindowProcessName();
     std::wstring srcAppPath = GetActiveWindowProcessPath();
 
-    // 先收集每个路径的旧收藏/标签状态（迁移到新记录），再统一删除旧记录
-    // 用 map 保存：path -> {isFavorite, tagIds}
-    std::map<std::wstring, std::pair<bool, std::set<int>>> oldState;
-    for (const auto& p : paths) {
-        auto it = std::find_if(g_history.begin(), g_history.end(),
-            [&p](const ClipboardItem& item) {
-                return item.type == TYPE_FILE && item.content == p;
-            });
-        if (it != g_history.end())
-            oldState[p] = {it->isFavorite, it->tagIds};
-    }
-    // 删除 g_history 中所有匹配 paths 的旧 TYPE_FILE 记录
-    g_history.erase(std::remove_if(g_history.begin(), g_history.end(),
-        [&paths](const ClipboardItem& item) {
-            if (item.type != TYPE_FILE)
-                return false;
-            return std::find(paths.begin(), paths.end(), item.content) != paths.end();
-        }), g_history.end());
+    // 收集旧记录状态：先检查是否有完全相同的多文件记录，再检查各单文件记录
+    bool wasFavorite = false;
+    std::set<int> oldTagIds;
 
-    // 构造 n 条新记录（按复制选择顺序，paths[0] 将位于列表最顶）
-    std::vector<ClipboardItem> newItems;
-    newItems.reserve(paths.size());
-    for (const auto& p : paths) {
-        ClipboardItem item;
-        item.type = TYPE_FILE;
-        item.content = p;
-        item.timestamp = ts;
-        item.sourceApp = srcApp;
-        item.sourceAppPath = srcAppPath;
-        item.imageWidth = 0;
-        item.imageHeight = 0;
-        auto st = oldState.find(p);
-        if (st != oldState.end()) {
-            item.isFavorite = st->second.first;
-            item.tagIds = st->second.second;
+    // 1) 检查是否存在完全相同的多文件记录（content == joinedFilePaths）
+    auto itMulti = std::find_if(g_history.begin(), g_history.end(),
+        [&joinedFilePaths](const ClipboardItem& item) {
+            return item.type == TYPE_FILE && item.content == joinedFilePaths;
+        });
+    if (itMulti != g_history.end()) {
+        wasFavorite = itMulti->isFavorite;
+        oldTagIds = itMulti->tagIds;
+        g_history.erase(itMulti);
+    } else {
+        // 2) 检查是否有任一单文件记录匹配，迁移收藏/标签状态
+        for (const auto& p : paths) {
+            auto it = std::find_if(g_history.begin(), g_history.end(),
+                [&p](const ClipboardItem& item) {
+                    return item.type == TYPE_FILE && item.content == p;
+                });
+            if (it != g_history.end()) {
+                if (it->isFavorite) wasFavorite = true;
+                for (int t : it->tagIds) oldTagIds.insert(t);
+            }
         }
-        newItems.push_back(item);
+        // 删除所有匹配的单文件旧记录
+        g_history.erase(std::remove_if(g_history.begin(), g_history.end(),
+            [&paths](const ClipboardItem& item) {
+                if (item.type != TYPE_FILE)
+                    return false;
+                // 不删除多文件记录（content 含 L'\n'）
+                if (item.content.find(L'\n') != std::wstring::npos)
+                    return false;
+                return std::find(paths.begin(), paths.end(), item.content) != paths.end();
+            }), g_history.end());
     }
 
-    // 容量限制：确保插入 n 条后不超 maxHistoryCount（裁剪尾部非收藏项）
+    // 构造一条多文件记录
+    ClipboardItem item;
+    item.type = TYPE_FILE;
+    item.content = joinedFilePaths;
+    item.timestamp = ts;
+    item.sourceApp = srcApp;
+    item.sourceAppPath = srcAppPath;
+    item.imageWidth = 0;
+    item.imageHeight = 0;
+    item.isFavorite = wasFavorite;
+    item.tagIds = oldTagIds;
+
+    // 容量限制：确保插入后不超 maxHistoryCount（裁剪尾部非收藏项）
     int nonFavCount = 0;
     for (const auto& h : g_history) {
         if (!h.isFavorite) nonFavCount++;
     }
-    while (nonFavCount + (int)newItems.size() > g_maxHistoryCount) {
+    while (nonFavCount >= g_maxHistoryCount) {
         bool removed = false;
         for (int i = (int)g_history.size() - 1; i >= 0; i--) {
             if (!g_history[i].isFavorite) {
@@ -1732,14 +1839,9 @@ void AddFilesToHistory(const std::wstring& joinedFilePaths,
         if (!removed) break;
     }
 
-    // 连续插入到头部：insert(begin, first, last) 保持顺序
-    g_history.insert(g_history.begin(), newItems.begin(), newItems.end());
-
-    // 新插入的 n 条索引为 0..n-1
-    if (outNewIndices) {
-        for (int i = 0; i < (int)newItems.size(); i++)
-            outNewIndices->push_back(i);
-    }
+    g_history.insert(g_history.begin(), item);
+    if (outNewIndices)
+        outNewIndices->push_back(0);
 
     UpdateListBox();
 

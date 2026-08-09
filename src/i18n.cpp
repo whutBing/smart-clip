@@ -81,6 +81,11 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"Deutsch",
     L"العربية",
     L"Türkçe",
+    L"हिन्दी",
+    L"English (Singapore)",
+    L"Български",
+    L"Español (Venezuela)",
+    L"ไทย",
     L"关闭",
     L"模糊",
     L"标清",
@@ -111,6 +116,7 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"夜间模式",
     L"退出",
     L"重启应用",
+    L"查看用户协议",
     L"设置已更新",
     L"消息通知已启用",
     L"Smart Clip",
@@ -213,6 +219,7 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     // 右键菜单
     L"复制",
     L"执行粘贴",
+    L"编辑",
     L"标签",
     L"打开所在位置",
     L"删除",
@@ -249,6 +256,7 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"主窗口已取消置顶显示",
     L"等%d个文件",
     L"图像预览 - 点击或按ESC关闭",
+    L"文本预览 - 空格/Esc/点击关闭",
     L"在资源管理器中选中",
     L"快捷粘贴已执行",
     L"快捷键设置",
@@ -352,6 +360,11 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Deutsch",
     L"العربية",
     L"Türkçe",
+    L"हिन्दी",
+    L"English (Singapore)",
+    L"Български",
+    L"Español (Venezuela)",
+    L"ไทย",
     L"Off",
     L"Blur",
     L"SD",
@@ -382,6 +395,7 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Dark mode",
     L"Exit",
     L"Restart",
+    L"View User Agreement",
     L"Settings updated",
     L"Notifications enabled",
     L"Smart Clip",
@@ -506,6 +520,7 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     // Context menu
     L"Copy",
     L"Paste",
+    L"Edit",
     L"Tags",
     L"Open location",
     L"Delete",
@@ -542,6 +557,7 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Main window unpinned from top",
     L"and %d more files",
     L"Image Preview - Click or press ESC to close",
+    L"Text Preview - Space/ESC/Click to close",
     L"Select in File Explorer",
     L"Quick paste executed",
     L"Hotkey settings",
@@ -654,6 +670,11 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_LANGUAGE_DE_DE", STR_LANGUAGE_DE_DE},
     {"STR_LANGUAGE_AR_SA", STR_LANGUAGE_AR_SA},
     {"STR_LANGUAGE_TR_TR", STR_LANGUAGE_TR_TR},
+    {"STR_LANGUAGE_HI_IN", STR_LANGUAGE_HI_IN},
+    {"STR_LANGUAGE_EN_SG", STR_LANGUAGE_EN_SG},
+    {"STR_LANGUAGE_BG_BG", STR_LANGUAGE_BG_BG},
+    {"STR_LANGUAGE_ES_VE", STR_LANGUAGE_ES_VE},
+    {"STR_LANGUAGE_TH_TH", STR_LANGUAGE_TH_TH},
     {"STR_PREVIEW_OFF", STR_PREVIEW_OFF},
     {"STR_PREVIEW_BLUR", STR_PREVIEW_BLUR},
     {"STR_PREVIEW_SD", STR_PREVIEW_SD},
@@ -683,6 +704,8 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_TRAY_MENU_LIGHT", STR_TRAY_MENU_LIGHT},
     {"STR_TRAY_MENU_DARK", STR_TRAY_MENU_DARK},
     {"STR_TRAY_MENU_EXIT", STR_TRAY_MENU_EXIT},
+    {"STR_TRAY_MENU_RESTART", STR_TRAY_MENU_RESTART},
+    {"STR_TRAY_MENU_VIEW_AGREEMENT", STR_TRAY_MENU_VIEW_AGREEMENT},
     {"STR_TRAY_NOTIFY_UPDATED", STR_TRAY_NOTIFY_UPDATED},
     {"STR_TRAY_NOTIFICATIONS_ENABLED", STR_TRAY_NOTIFICATIONS_ENABLED},
     {"STR_TRAY_TIP", STR_TRAY_TIP},
@@ -746,6 +769,7 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_MOD_CTRL_ALT_SHIFT", STR_MOD_CTRL_ALT_SHIFT},
     {"STR_CTX_COPY", STR_CTX_COPY},
     {"STR_CTX_PASTE", STR_CTX_PASTE},
+    {"STR_CTX_EDIT", STR_CTX_EDIT},
     {"STR_CTX_TAG", STR_CTX_TAG},
     {"STR_CTX_OPEN_LOCATION", STR_CTX_OPEN_LOCATION},
     {"STR_CTX_DELETE", STR_CTX_DELETE},
@@ -772,6 +796,7 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_TRAY_UNPINNED", STR_TRAY_UNPINNED},
     {"STR_MULTI_FILES_FMT", STR_MULTI_FILES_FMT},
     {"STR_IMAGE_PREVIEW_TITLE", STR_IMAGE_PREVIEW_TITLE},
+    {"STR_TEXT_PREVIEW_TITLE", STR_TEXT_PREVIEW_TITLE},
     {"STR_CTX_SELECT_IN_EXPLORER", STR_CTX_SELECT_IN_EXPLORER},
     {"STR_TRAY_QUICK_PASTE_TITLE", STR_TRAY_QUICK_PASTE_TITLE},
     {"STR_TRAY_HOTKEY_SETTINGS", STR_TRAY_HOTKEY_SETTINGS},
@@ -1003,7 +1028,9 @@ void LoadExternalLanguages() {
   static const ExternalLangEntry externalLangs[] = {
       {LANG_JA_JP, L"ja-JP.ini"}, {LANG_KO_KR, L"ko-KR.ini"},
       {LANG_DE_DE, L"de-DE.ini"}, {LANG_AR_SA, L"ar-SA.ini"},
-      {LANG_TR_TR, L"tr-TR.ini"},
+      {LANG_TR_TR, L"tr-TR.ini"}, {LANG_HI_IN, L"hi-IN.ini"},
+      {LANG_EN_SG, L"en-SG.ini"}, {LANG_BG_BG, L"bg-BG.ini"},
+      {LANG_ES_VE, L"es-VE.ini"}, {LANG_TH_TH, L"th-TH.ini"},
   };
 
   std::wstring langDir = GetExeDirectory() + L"\\lang";
@@ -1065,6 +1092,16 @@ std::wstring GetLanguageCode(AppLanguage lang) {
     return L"ar-SA";
   case LANG_TR_TR:
     return L"tr-TR";
+  case LANG_HI_IN:
+    return L"hi-IN";
+  case LANG_EN_SG:
+    return L"en-SG";
+  case LANG_BG_BG:
+    return L"bg-BG";
+  case LANG_ES_VE:
+    return L"es-VE";
+  case LANG_TH_TH:
+    return L"th-TH";
   default:
     return L"en-US";
   }

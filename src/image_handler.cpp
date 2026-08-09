@@ -255,10 +255,13 @@ void ShowImagePreview(HWND hwndParent, const ClipboardItem& item) {
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-    HWND hwndPreview = CreateWindowW(L"ImagePreviewClass", T(STR_IMAGE_PREVIEW_TITLE),
-                                     WS_POPUP | WS_VISIBLE,
-                                     0, 0, screenWidth, screenHeight,
-                                     hwndParent, NULL, GetModuleHandle(NULL), (LPVOID)&item);
+    HWND hwndPreview = CreateWindowExW(
+        WS_EX_TOPMOST, L"ImagePreviewClass", T(STR_IMAGE_PREVIEW_TITLE),
+        WS_POPUP | WS_VISIBLE, 0, 0, screenWidth, screenHeight, hwndParent,
+        NULL, GetModuleHandle(NULL), (LPVOID)&item);
+    if (hwndPreview)
+      SetWindowPos(hwndPreview, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     SetForegroundWindow(hwndPreview);
 }
