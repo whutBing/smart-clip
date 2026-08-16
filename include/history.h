@@ -28,8 +28,8 @@ struct ClipboardItem {
     // mutable: 允许在 const 实例上修改，用于懒加载缩略图缓存
     // 启动时不再预加载所有缩略图，按需从文件加载到此字段
     mutable std::vector<BYTE> imageData;  // 缩略图数据（内存中只保留缩略图）
-    int imageWidth;            // 原图宽度
-    int imageHeight;           // 原图高度
+    mutable int imageWidth;            // 原图宽度
+    mutable int imageHeight;           // 原图高度
     mutable int thumbWidth;            // 缩略图宽度
     mutable int thumbHeight;           // 缩略图高度
     std::wstring imageFileName; // 图片文件名（不含路径，如 "a1b2c3.png"）- 截图用

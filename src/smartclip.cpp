@@ -11,6 +11,7 @@
 #include "search.h"
 #include "settings.h"
 #include "tag_popup.h"
+#include "text_editor.h"
 #include "text_utils.h"
 #include "theme.h"
 #include "themed_dialog.h"
@@ -2455,289 +2456,9 @@ static bool IsMainNavigationEditFocus(HWND hwndFocus) {
   return wcscmp(className, L"Edit") == 0;
 }
 
-// ==================== 文本预览窗口（空格键打开） ====================
-// 文本预览：支持编辑、主题配色、自动换行、垂直滚动；Esc/Ctrl+S 关闭。
-static const wchar_t kTextPreviewPropName[] = L"SmartClipTextPreviewData";
-
-struct TextPreviewData {
-  std::wstring content;
-  std::wstring originalContent; // 原始内容（用于判断是否修改）
-  std::wstring header;          // 相对时间（来源以图标展示，不显示程序名）
-  std::wstring appPath;         // 来源应用路径（用于获取应用图标）
-  int historyIndex = -1;        // 历史记录索引（用于保存编辑）
-  HWND hwndEdit = NULL;         // 编辑控件
-  bool modified = false;
-};
-
-// 编辑控件子类化：处理 Ctrl+S 保存、Esc 关闭
-static WNDPROC g_oldPreviewEditProc = NULL;
-static LRESULT CALLBACK PreviewEditProc(HWND hwnd, UINT message, WPARAM wParam,
-                                        LPARAM lParam) {
-  if (message == WM_GETDLGCODE)
-    return DLGC_WANTALLKEYS;
-  if (message == WM_KEYDOWN) {
-    if (wParam == VK_ESCAPE) {
-      HWND hwndParent = GetParent(hwnd);
-      if (hwndParent)
-        PostMessageW(hwndParent, WM_CLOSE, 0, 0);
-      return 0;
-    }
-    if (wParam == 'S' && (GetKeyState(VK_CONTROL) & 0x8000)) {
-      HWND hwndParent = GetParent(hwnd);
-      if (hwndParent)
-        PostMessageW(hwndParent, WM_COMMAND, MAKEWPARAM(1, 0), 0);
-      return 0;
-    }
-  }
-  return CallWindowProcW(g_oldPreviewEditProc, hwnd, message, wParam, lParam);
-}
-
-static LRESULT CALLBACK TextPreviewProc(HWND hwnd, UINT message, WPARAM wParam,
-                                        LPARAM lParam) {
-  switch (message) {
-  case WM_CREATE: {
-    CREATESTRUCTW *pCs = (CREATESTRUCTW *)lParam;
-    TextPreviewData *d = (TextPreviewData *)pCs->lpCreateParams;
-    SetPropW(hwnd, kTextPreviewPropName, (HANDLE)d);
-
-    // 创建多行编辑控件
-    d->hwndEdit = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", d->content.c_str(),
-        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN |
-            WS_VSCROLL,
-        0, 0, 0, 0, hwnd, (HMENU)1, GetModuleHandleW(NULL), NULL);
-    if (d->hwndEdit) {
-      SendMessageW(d->hwndEdit, WM_SETFONT, (WPARAM)GetListMainFont(), TRUE);
-      // 设置编辑控件的主题配色
-      SendMessageW(d->hwndEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                   MAKELPARAM(MScale(12), MScale(12)));
-      g_oldPreviewEditProc = (WNDPROC)SetWindowLongPtrW(
-          d->hwndEdit, GWLP_WNDPROC, (LONG_PTR)PreviewEditProc);
-    }
-    return 0;
-  }
-  case WM_COMMAND: {
-    // Ctrl+S 触发保存（仅 HIWORD==0 的显式命令；编辑框的 EN_* 通知
-    // 也会以 LOWORD==1 到达，必须过滤，否则一获得焦点就误关窗口）
-    if (LOWORD(wParam) == 1 && HIWORD(wParam) == 0) {
-      TextPreviewData *d =
-          (TextPreviewData *)GetPropW(hwnd, kTextPreviewPropName);
-      if (d && d->hwndEdit) {
-        int len = GetWindowTextLengthW(d->hwndEdit);
-        std::wstring newText(len + 1, L'\0');
-        GetWindowTextW(d->hwndEdit, &newText[0], len + 1);
-        newText.resize(len);
-        if (newText != d->originalContent) {
-          d->content = newText;
-          d->modified = true;
-        }
-      }
-      PostMessageW(hwnd, WM_CLOSE, 0, 0);
-      return 0;
-    }
-    break;
-  }
-  case WM_CTLCOLOREDIT: {
-    TextPreviewData *d =
-        (TextPreviewData *)GetPropW(hwnd, kTextPreviewPropName);
-    if (d) {
-      HDC hdc = (HDC)wParam;
-      SetTextColor(hdc, GetThemeTextPrimaryColor());
-      SetBkColor(hdc, GetThemeWindowBgColor());
-      static HBRUSH sBrush = NULL;
-      if (sBrush)
-        DeleteObject(sBrush);
-      sBrush = CreateSolidBrush(GetThemeWindowBgColor());
-      return (LRESULT)sBrush;
-    }
-    break;
-  }
-  case WM_DESTROY: {
-    TextPreviewData *d =
-        (TextPreviewData *)GetPropW(hwnd, kTextPreviewPropName);
-    if (d) {
-      // 保存编辑内容到历史记录
-      if (d->hwndEdit) {
-        int len = GetWindowTextLengthW(d->hwndEdit);
-        std::wstring newText(len + 1, L'\0');
-        GetWindowTextW(d->hwndEdit, &newText[0], len + 1);
-        newText.resize(len);
-        if (newText != d->originalContent && d->historyIndex >= 0 &&
-            d->historyIndex < (int)g_history.size()) {
-          g_history[d->historyIndex].content = newText;
-          SaveHistory();
-          if (g_hwndListBox)
-            InvalidateRect(g_hwndListBox, NULL, FALSE);
-        }
-      }
-      delete d;
-      RemovePropW(hwnd, kTextPreviewPropName);
-    }
-    return 0;
-  }
-  case WM_KEYDOWN:
-    if (wParam == VK_ESCAPE)
-      DestroyWindow(hwnd);
-    return 0;
-  case WM_LBUTTONDOWN:
-  case WM_RBUTTONDOWN:
-    // 仅在标题区点击关闭（编辑控件区域不关闭）
-    {
-      POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-      if (pt.y < MScale(50))
-        DestroyWindow(hwnd);
-    }
-    return 0;
-  case WM_ERASEBKGND:
-    return 1;
-  case WM_SIZE: {
-    TextPreviewData *d =
-        (TextPreviewData *)GetPropW(hwnd, kTextPreviewPropName);
-    if (!d || !d->hwndEdit)
-      return 0;
-    int pad = MScale(20);
-    RECT rcClient;
-    GetClientRect(hwnd, &rcClient);
-    int contentTop = MScale(50);
-    int editX = pad;
-    int editY = contentTop;
-    int editW = rcClient.right - rcClient.left - pad * 2;
-    int editH = rcClient.bottom - rcClient.top - contentTop - pad;
-    if (editW < 1)
-      editW = 1;
-    if (editH < 1)
-      editH = 1;
-    MoveWindow(d->hwndEdit, editX, editY, editW, editH, TRUE);
-    return 0;
-  }
-  case WM_PAINT: {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-    TextPreviewData *d =
-        (TextPreviewData *)GetPropW(hwnd, kTextPreviewPropName);
-    RECT rcClient;
-    GetClientRect(hwnd, &rcClient);
-    HBRUSH hBg = CreateSolidBrush(GetThemeWindowBgColor());
-    FillRect(hdc, &rcClient, hBg);
-    DeleteObject(hBg);
-    if (d) {
-      int pad = MScale(20);
-      HFONT hOldFont = (HFONT)SelectObject(hdc, GetListHeaderFont());
-      SetBkMode(hdc, TRANSPARENT);
-      // 标题区：来源应用图标 + 相对时间
-      SetTextColor(hdc, GetThemeTextSecondaryColor());
-      int iconX = pad;
-      int iconSize = MScale(16);
-      HICON hAppIcon = GetAppIcon(d->appPath);
-      if (hAppIcon) {
-        int iconY = MScale(14) + (MScale(26) - iconSize) / 2;
-        DrawIconEx(hdc, iconX, iconY, hAppIcon, iconSize, iconSize, 0, NULL,
-                   DI_NORMAL);
-        iconX += iconSize + MScale(6);
-      }
-      RECT rcHeader = {iconX, MScale(14), rcClient.right - pad,
-                       MScale(14) + MScale(26)};
-      DrawTextW(hdc, d->header.c_str(), -1, &rcHeader,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
-                    DT_END_ELLIPSIS);
-      // 右侧提示：Esc 关闭 / Ctrl+S 保存关闭
-      const wchar_t *hint = L"Esc \x5173\x95ed Ctrl+S \x4fdd\x5b58";
-      int hintW = MScale(200);
-      RECT rcHint = {rcClient.right - pad - hintW, MScale(14),
-                     rcClient.right - pad, MScale(14) + MScale(26)};
-      SetTextColor(hdc, GetThemeTextSecondaryColor());
-      DrawTextW(hdc, hint, -1, &rcHint,
-                DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
-                    DT_END_ELLIPSIS);
-      // 分隔线
-      HPEN hPen = CreatePen(PS_SOLID, 1, GetThemeSeparatorColor());
-      HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-      int sepY = MScale(50) - MScale(5);
-      MoveToEx(hdc, pad, sepY, NULL);
-      LineTo(hdc, rcClient.right - pad, sepY);
-      SelectObject(hdc, hOldPen);
-      DeleteObject(hPen);
-      SelectObject(hdc, hOldFont);
-    }
-    EndPaint(hwnd, &ps);
-    return 0;
-  }
-  default:
-    return DefWindowProcW(hwnd, message, wParam, lParam);
-  }
-  return DefWindowProcW(hwnd, message, wParam, lParam);
-}
-
-static void ShowTextPreview(HWND hwndParent, const ClipboardItem &item,
-                            int historyIndex) {
-  static bool classRegistered = false;
-  if (!classRegistered) {
-    WNDCLASSW wc = {};
-    wc.lpfnWndProc = TextPreviewProc;
-    wc.hInstance = GetModuleHandleW(NULL);
-    wc.lpszClassName = L"SmartClipTextPreviewClass";
-    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
-    wc.hbrBackground = NULL;
-    RegisterClassW(&wc);
-    classRegistered = true;
-  }
-
-  // Toggle 切换：若已有预览窗口存在则关闭（空格键在打开/关闭间切换）
-  HWND existing = FindWindowW(L"SmartClipTextPreviewClass", NULL);
-  if (existing && IsWindow(existing)) {
-    PostMessageW(existing, WM_CLOSE, 0, 0);
-    return;
-  }
-
-  TextPreviewData *pData = new TextPreviewData();
-  pData->content = item.content;
-  pData->originalContent = item.content;
-  pData->header = GetRelativeTimeString(item.timestamp);
-  pData->appPath = item.sourceAppPath;
-  pData->historyIndex = historyIndex;
-
-  // 窗口尺寸与位置：与主窗体等宽，内置于主窗体（高度占主窗体 85%）；
-  // 主窗体不可用时回退到屏幕工作区
-  RECT rcAnchor = {};
-  bool anchorOk =
-      hwndParent && IsWindow(hwndParent) && IsWindowVisible(hwndParent);
-  if (anchorOk)
-    GetWindowRect(hwndParent, &rcAnchor);
-  else
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcAnchor, 0);
-
-  int anchorW = rcAnchor.right - rcAnchor.left;
-  int anchorH = rcAnchor.bottom - rcAnchor.top;
-  int winW = anchorW; // 与主窗体等宽
-  int winH = (int)(anchorH * 0.85);
-  if (winH < MScale(320))
-    winH = MScale(320);
-  if (winH > anchorH)
-    winH = anchorH;
-  int x = rcAnchor.left;
-  int y = rcAnchor.top + (anchorH - winH) / 2;
-
-  // 必须 WS_EX_TOPMOST：主窗口可能处于置顶（g_isTopmost 或悬浮失焦路径
-  // 均会 SetWindowPos(HWND_TOPMOST)），非置顶弹窗会被置顶主窗口盖住，
-  // 导致预览"创建成功却看不到"。
-  HWND hwndPreview = CreateWindowExW(
-      WS_EX_TOPMOST, L"SmartClipTextPreviewClass", T(STR_TEXT_PREVIEW_TITLE),
-      WS_POPUP | WS_VISIBLE, x, y, winW, winH, hwndParent, NULL,
-      GetModuleHandleW(NULL), pData);
-  if (!hwndPreview) {
-    delete pData;
-    return;
-  }
-  // 确保弹窗位于所有置顶窗口之上
-  SetWindowPos(hwndPreview, HWND_TOPMOST, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  SetForegroundWindow(hwndPreview);
-  // 焦点给编辑控件，立即可输入
-  TextPreviewData *d =
-      (TextPreviewData *)GetPropW(hwndPreview, kTextPreviewPropName);
-  if (d && d->hwndEdit)
-    SetFocus(d->hwndEdit);
-}
+// ==================== 文本编辑弹窗（空格键打开，实现见 text_editor.cpp）
+// ==================== 调用模式与 PRO
+// 一致：由列表项矩形动画展开，支持编辑、保存关闭。
 
 static bool HandleMainNavigationKey(const MSG &msg) {
   if (msg.message != WM_KEYDOWN || !g_hwndMain || !IsWindowVisible(g_hwndMain))
@@ -2746,9 +2467,9 @@ static bool HandleMainNavigationKey(const MSG &msg) {
     return false;
 
   // 预览/编辑窗口已打开且持有焦点时，不拦截任何按键——让按键送达编辑控件。
-  // 否则空格会被 ShowTextPreview 的 toggle 逻辑关闭预览，无法在编辑框输入空格；
-  // 方向键等也会被主窗体导航抢走。
-  HWND existingPreview = FindWindowW(L"SmartClipTextPreviewClass", NULL);
+  // 否则空格会被 ShowTextEditorPopup 的 toggle
+  // 逻辑关闭预览，无法在编辑框输入空格； 方向键等也会被主窗体导航抢走。
+  HWND existingPreview = FindWindowW(L"SmartClipTextEditorPopup", NULL);
   if (existingPreview && IsWindow(existingPreview)) {
     HWND f = GetFocus();
     if (f == existingPreview || IsChild(existingPreview, f))
@@ -2772,7 +2493,16 @@ static bool HandleMainNavigationKey(const MSG &msg) {
         if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
           const ClipboardItem &item = g_history[actualIndex];
           if (item.type == TYPE_TEXT) {
-            ShowTextPreview(g_hwndMain, item, actualIndex);
+            RECT rcItem;
+            if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, sel,
+                             (LPARAM)&rcItem) != LB_ERR) {
+              POINT tl = {rcItem.left, rcItem.top};
+              POINT br = {rcItem.right, rcItem.bottom};
+              ClientToScreen(g_hwndListBox, &tl);
+              ClientToScreen(g_hwndListBox, &br);
+              RECT rcScreen = {tl.x, tl.y, br.x, br.y};
+              ShowTextEditorPopup(g_hwndMain, actualIndex, rcScreen);
+            }
             return true;
           } else if (item.type == TYPE_IMAGE) {
             ShowImagePreview(g_hwndMain, item);
@@ -2906,7 +2636,16 @@ static bool HandleMainNavigationKey(const MSG &msg) {
         if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
           const ClipboardItem &item = g_history[actualIndex];
           if (item.type == TYPE_TEXT) {
-            ShowTextPreview(g_hwndMain, item, actualIndex);
+            RECT rcItem;
+            if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, sel,
+                             (LPARAM)&rcItem) != LB_ERR) {
+              POINT tl = {rcItem.left, rcItem.top};
+              POINT br = {rcItem.right, rcItem.bottom};
+              ClientToScreen(g_hwndListBox, &tl);
+              ClientToScreen(g_hwndListBox, &br);
+              RECT rcScreen = {tl.x, tl.y, br.x, br.y};
+              ShowTextEditorPopup(g_hwndMain, actualIndex, rcScreen);
+            }
             handled = true;
           } else if (item.type == TYPE_IMAGE) {
             ShowImagePreview(g_hwndMain, item);
@@ -5323,24 +5062,19 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
         int upHit =
             SendMessageW(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(ptUp.x, ptUp.y));
         if (HIWORD(upHit) == 0 && LOWORD(upHit) == pasteIndex) {
-          // 文件夹/文件/网址/IP：上方已 ShellExecute 打开，不重复粘贴
-          bool isOpenedAbove = false;
-          int actIdx = g_displayIndexMap[pasteIndex];
-          if (actIdx >= 0 && actIdx < (int)g_history.size()) {
-            const ClipboardItem &i2 = g_history[actIdx];
-            if (i2.type == TYPE_FILE || i2.type == TYPE_TEXT) {
-              DWORD attrs = GetFileAttributesW(i2.content.c_str());
-              if (attrs != INVALID_FILE_ATTRIBUTES || IsUrl(i2.content) ||
-                  IsIPv4Address(i2.content)) {
-                isOpenedAbove = true;
-              }
-            }
-          }
+          // 文件夹/文件/网址/IP：点击文字区域时上方已 ShellExecute 打开，
+          // 不重复粘贴；点击非文字区域（g_isHoveringFolder=false）走单击粘贴，
+          // 与快捷键行为保持一致。
+          bool isOpenedAbove = g_isHoveringFolder &&
+                               g_hoverFolderIndex == pasteIndex;
           if (!isOpenedAbove) {
             int actualIndex = g_displayIndexMap[pasteIndex];
             if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
               const ClipboardItem &item = g_history[actualIndex];
-              if (item.type == TYPE_TEXT || item.type == TYPE_FILE) {
+              // 与快捷键行为保持一致：文本/文件/图片均支持单击粘贴
+              // （图片双击仍为预览，单击粘贴为图片路径）
+              if (item.type == TYPE_TEXT || item.type == TYPE_FILE ||
+                  item.type == TYPE_IMAGE) {
                 if (SetClipboardFromItem(item)) {
                   HWND hwndMain = GetParent(hwnd);
                   if (!hwndMain || !IsWindow(hwndMain))
@@ -6876,6 +6610,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   }
   // 添加WM_SIZE消息处理
   case WM_SIZE: {
+    // 最大化时确保置顶状态仅由置顶按钮控制
+    if (wParam == SIZE_MAXIMIZED && !g_isTopmost) {
+      SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     // 窗口恢复时移除临时添加的 WS_CAPTION（最小化时添加的）
     if (wParam == SIZE_RESTORED) {
       LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -9137,14 +8876,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         }
       }
     } else if (wID == IDM_EDIT) {
-      // 编辑文本记录：打开预览/编辑窗口
+      // 编辑文本记录：打开文本编辑弹窗（由原记录位置浮出）
       if (g_contextMenuIndex >= 0 &&
           g_contextMenuIndex < (int)g_displayIndexMap.size()) {
         int actualIndex = g_displayIndexMap[g_contextMenuIndex];
-        if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
-          const ClipboardItem &item = g_history[actualIndex];
-          if (item.type == TYPE_TEXT) {
-            ShowTextPreview(hwnd, item, actualIndex);
+        if (actualIndex >= 0 && actualIndex < (int)g_history.size() &&
+            g_history[actualIndex].type == TYPE_TEXT) {
+          RECT rcItem;
+          if (SendMessageW(g_hwndListBox, LB_GETITEMRECT, g_contextMenuIndex,
+                           (LPARAM)&rcItem) != LB_ERR) {
+            POINT tl = {rcItem.left, rcItem.top};
+            POINT br = {rcItem.right, rcItem.bottom};
+            ClientToScreen(g_hwndListBox, &tl);
+            ClientToScreen(g_hwndListBox, &br);
+            RECT rcScreen = {tl.x, tl.y, br.x, br.y};
+            ShowTextEditorPopup(hwnd, actualIndex, rcScreen);
           }
         }
       }
@@ -10223,8 +9969,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                     // 使用新函数：只保存缩略图和原始路径，不复制原图
                     AddImageFileToHistory(filePath, imageData, width, height);
                   } else {
-                    // 加载失败，保存文件路径
-                    AddFileToHistory(filePath);
+                    // 加载失败，仍存为 TYPE_IMAGE（无缩略图数据），
+                    // 绘制时由 EnsureItemImageLoaded 从 imageFilePath 按需加载
+                    AddImageFileToHistory(filePath, std::vector<BYTE>(), 0, 0);
                   }
                 } else {
                   // 非图像文件，保存文件路径
@@ -10232,23 +9979,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                 }
               }
             } else if (fileCount > 1) {
-              // 多文件：按 DragQueryFileW 索引顺序（即资源管理器传入顺序）
-              // 用 L'\n' 连接所有路径，存为一条 TYPE_FILE 记录。
-              // 顺序与资源管理器选中顺序一致（资源管理器按名称排序，
-              // DragQueryFileW 返回的顺序就是 HDROP 中的顺序）。
+              // 多文件：按 DragQueryFileW 索引顺序逐个处理。
+              // 图片文件单独存为 TYPE_IMAGE（显示缩略图），
+              // 非图片文件用 L'\n' 连接后存为 TYPE_FILE 记录。
               std::wstring joinedPaths;
               joinedPaths.reserve(fileCount * MAX_PATH);
               for (UINT i = 0; i < fileCount; ++i) {
                 WCHAR filePath[MAX_PATH];
                 if (DragQueryFileW(hDrop, i, filePath, MAX_PATH) > 0) {
-                  if (i > 0)
-                    joinedPaths.push_back(L'\n');
-                  joinedPaths += filePath;
+                  DWORD attrs = GetFileAttributesW(filePath);
+                  bool isDir = (attrs != INVALID_FILE_ATTRIBUTES &&
+                                (attrs & FILE_ATTRIBUTE_DIRECTORY));
+                  if (!isDir && IsImageFile(filePath)) {
+                    // 图片文件：加载并存为 TYPE_IMAGE
+                    std::vector<BYTE> imageData;
+                    int imgW = 0, imgH = 0;
+                    if (LoadImageFile(filePath, imageData, imgW, imgH)) {
+                      AddImageFileToHistory(filePath, imageData, imgW, imgH);
+                    } else {
+                      // 加载失败，仍存为 TYPE_IMAGE，绘制时按需加载
+                      AddImageFileToHistory(filePath, std::vector<BYTE>(), 0, 0);
+                    }
+                  } else {
+                    if (!joinedPaths.empty())
+                      joinedPaths.push_back(L'\n');
+                    joinedPaths += filePath;
+                  }
                 }
               }
               if (!joinedPaths.empty()) {
-                // 多文件存为一条记录（content 用 L'\n' 连接），
-                // 列表显示时用顿号分隔 + 下拉三角形展开/收起
                 AddFilesToHistory(joinedPaths, nullptr);
               }
             }
@@ -10482,7 +10241,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                                pt.x, pt.y, 0, hwnd, NULL);
       PostMessage(hwnd, WM_NULL, 0, 0);
       if (cmd) {
-        SendMessageW(hwnd, WM_COMMAND, cmd, 0);
+        // 使用 PostMessageW 异步派发，确保 WM_NULL 先被处理以释放菜单前台锁，
+        // 避免 ShowSettingsDialog 中 SetForegroundWindow 失败导致窗体打不开
+        PostMessageW(hwnd, WM_COMMAND, cmd, 0);
       }
 
       // 释放菜单资源和位图

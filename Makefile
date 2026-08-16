@@ -52,7 +52,10 @@ SRCS := \
     $(SRCDIR)/scrollbar.cpp         \
     $(SRCDIR)/drag_drop.cpp         \
     $(SRCDIR)/listbox_handler.cpp   \
-    $(SRCDIR)/ui_state.cpp
+    $(SRCDIR)/ui_state.cpp          \
+    $(SRCDIR)/custom_scrollbar.cpp  \
+    $(SRCDIR)/text_editor.cpp       \
+    $(SRCDIR)/machine_info.cpp
 
 # SQLite amalgamation（C 源码，单独编译）
 SQLITE_SRC := $(SQLITE_DIR)/sqlite3.c

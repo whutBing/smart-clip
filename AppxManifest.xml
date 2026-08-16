@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  IgnorableNamespaces="uap rescap desktop4 desktop">
+
+<Identity
+  Name="whutBing.SmartClipFree"
+  Publisher="CN=EC2F4F24-9E8C-4CA8-A9F0-C5BF1424B17A"
+  Version="0.1.16.0" />
+<Properties>
+  <DisplayName>SmartClip Free</DisplayName>
+  <PublisherDisplayName>whutBing</PublisherDisplayName>
+  <Logo>assets\StoreLogo.png</Logo>
+</Properties>
+
+  <Resources>
+    <Resource Language="zh-cn" />
+    <Resource Language="en-us" />
+    <Resource Language="ar-sa" />
+    <Resource Language="de-de" />
+    <Resource Language="ja-jp" />
+    <Resource Language="ko-kr" />
+    <Resource Language="tr-tr" />
+    <Resource Language="hi-in" />
+    <Resource Language="bg-bg" />
+    <Resource Language="es-ve" />
+    <Resource Language="th-th" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Applications>
+    <Application
+      Id="SmartClip"
+      Executable="SmartClip_Native.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="SmartClip Free"
+        Description="SmartClip - Windows Clipboard Manager"
+        BackgroundColor="#FFFFFF"
+        Square150x150Logo="assets\Square150x150Logo.png"
+        Square44x44Logo="assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="SmartClip_Native.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="SmartClipFreeStartup"
+            Enabled="false"
+            DisplayName="SmartClip Free" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

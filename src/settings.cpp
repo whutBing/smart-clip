@@ -3,6 +3,7 @@
 #include "history.h"
 #include "hotkey.h"
 #include "i18n.h"
+#include "machine_info.h"
 #include "resource.h"
 #include "theme.h"
 #include "themed_dialog.h"
@@ -78,6 +79,10 @@ int g_currentSettingsTab = 0;
 static int g_settingsHoverSidebar = -1;
 static bool g_isRecordingHotkey = false;
 static bool g_isRecordingSearchHotkey = false;
+// 录制快捷键前保存旧值，用于用户取消时恢复
+static UINT g_savedHotkeyMod = 0;
+static UINT g_savedHotkeyVk = 0;
+static bool g_savedHotkeyEnabled = false;
 static WNDPROC g_oldEditProc = NULL;
 static WNDPROC g_oldSearchEditProc = NULL;
 static WNDPROC g_oldIosEditProc = NULL;
@@ -160,6 +165,10 @@ static int GetRowY(int rowIndex) {
   // data 标签页：导出/导入行（i >= 7）上方有"数据备份"分组标题
   if (g_currentSettingsTab == 2 && rowIndex >= 7)
     y += SDpi(BACKUP_HEADER_H);
+  // 关于页：鸣谢行（第4行）有"标题+描述+名单"三行内容，
+  // 其下的行下移，避免名单文字与分隔线/下行标题重叠
+  if (g_currentSettingsTab == 3 && rowIndex >= 5)
+    y += SDpi(28);
   return y;
 }
 
@@ -235,6 +244,14 @@ static bool IsOverAboutLink(POINT pt) {
   SelectObject(hdc, oldFont);
   ReleaseDC(g_hwndSettingsDlg, hdc);
   return false;
+}
+
+// 关于页机器码行（第3行）整行可点击区域，用于显示手型光标
+static bool IsOverMachineInfoRow(POINT pt) {
+  if (g_currentSettingsTab != 3)
+    return false;
+  int rowY = GetRowY(3);
+  return (pt.y >= rowY && pt.y <= rowY + RowHeight());
 }
 
 static std::wstring BuildDataSizeText() {
@@ -569,6 +586,45 @@ LRESULT CALLBACK HotkeyEditProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       std::wstring text = FormatHotkeyText(mod, vk, L"?");
       SetWindowTextW(hwnd, text.c_str());
       g_isHotkeyEnabled = true;
+      // 检查是否为常用系统快捷键（Ctrl+C/V/X/Z/A/S 等）
+      static const struct { UINT mod; UINT vk; const wchar_t *desc; } kSysShortcuts[] = {
+        {MOD_CONTROL, 'C', L"复制"}, {MOD_CONTROL, 'V', L"粘贴"},
+        {MOD_CONTROL, 'X', L"剪切"}, {MOD_CONTROL, 'Z', L"撤销"},
+        {MOD_CONTROL, 'Y', L"重做"}, {MOD_CONTROL, 'A', L"全选"},
+        {MOD_CONTROL, 'S', L"保存"}, {MOD_CONTROL, 'P', L"打印"},
+        {MOD_CONTROL, 'F', L"查找"}, {MOD_CONTROL, 'N', L"新建"},
+        {MOD_CONTROL, 'O', L"打开"}, {MOD_CONTROL, 'W', L"关闭"},
+        {MOD_CONTROL, 'T', L"新建标签"}, {MOD_CONTROL, 'R', L"刷新"},
+      };
+      bool isSysShortcut = false;
+      const wchar_t *sysDesc = NULL;
+      if (mod == MOD_CONTROL) {
+        for (const auto &s : kSysShortcuts) {
+          if (s.vk == vk) { isSysShortcut = true; sysDesc = s.desc; break; }
+        }
+      }
+      if (isSysShortcut) {
+        wchar_t msg[256];
+        wsprintfW(msg,
+            L"该快捷键（Ctrl+%c）是系统「%s」快捷键，\n"
+            L"设置后将导致系统「%s」功能失效。\n\n"
+            L"确定要继续设置吗？", vk, sysDesc, sysDesc);
+        if (MessageBoxW(g_hwndSettingsDlg, msg, L"快捷键冲突警告",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+          // 用户取消，恢复原设置
+          g_hotkeyModifiers = g_savedHotkeyMod;
+          g_hotkeyVirtualKey = g_savedHotkeyVk;
+          g_isHotkeyEnabled = g_savedHotkeyEnabled;
+          std::wstring oldText = FormatHotkeyText(g_savedHotkeyMod,
+                                                   g_savedHotkeyVk, L"?");
+          SetWindowTextW(hwnd, oldText.c_str());
+          if (g_isHotkeyEnabled)
+            RegisterHotkey(g_hwndMain);
+          g_isRecordingHotkey = false;
+          InvalidateRect(hwnd, NULL, TRUE);
+          return 0;
+        }
+      }
       // 先注销旧快捷键，再保存和注册新快捷键
       UnregisterHotkey(g_hwndMain);
       SaveHotkeySettings();
@@ -785,6 +841,7 @@ static const SettingRowInfo g_aboutRows[] = {
     {STR_ROW_VERSION, STR_ROW_VERSION_DESC},
     {STR_ROW_AGREEMENT, STR_COUNT},
     {STR_GITHUB_REPO, STR_COUNT},
+    {STR_ROW_MACHINE_INFO, STR_ROW_MACHINE_INFO_DESC},
     {STR_ROW_CREDITS, STR_ROW_CREDITS_DESC},
 };
 
@@ -818,7 +875,7 @@ static const CategoryHeader g_categories[] = {
     {STR_SETTINGS_GENERAL, STR_SETTINGS_GENERAL_DESC, g_generalRows, 10},
     {STR_SETTINGS_HOTKEY, STR_SETTINGS_HOTKEY_DESC, g_hotkeyRows, 4},
     {STR_SETTINGS_DATA, STR_COUNT, g_dataRows, 9},
-    {STR_SETTINGS_ABOUT, STR_SETTINGS_ABOUT_DESC, g_aboutRows, 4},
+    {STR_SETTINGS_ABOUT, STR_SETTINGS_ABOUT_DESC, g_aboutRows, 5},
 };
 
 // ==================== 绘制辅助 ====================
@@ -1741,7 +1798,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
       COLORREF textCol = GetSettingsTextColor();
       if (selected) {
-        textCol = g_isDarkMode ? RGB(18, 20, 24) : RGB(48, 56, 68);
+        textCol = RGB(255, 255, 255);
       }
       SetTextColor(hdc, textCol);
 
@@ -1825,7 +1882,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
 
       // 描述
       SelectObject(hdc, g_hDescFont);
-      SetTextColor(hdc, GetDescTextColor());
+      // 关于页机器码行（i == 3）：描述文字用蓝色（可点击链接样式）
+      if (g_currentSettingsTab == 3 && i == 3)
+        SetTextColor(hdc, COLOR_ACCENT);
+      else
+        SetTextColor(hdc, GetDescTextColor());
       RECT rcRowDesc = {contentLeft, rowY + SDpi(32), contentRight - SDpi(190),
                         rowY + SDpi(48)};
       DrawTextW(
@@ -1835,10 +1896,15 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       // 分隔线
       bool skipSeparator = (g_currentSettingsTab == 0 && i == 2);
       if (i < cat.rowCount - 1 && !skipSeparator) {
+        int sepY = rowY + RowHeight() - 1;
+        // 关于页鸣谢行（i == 4）：内容有三行（标题+描述+名单），
+        // 分隔线下移与下一行对齐，避免穿过名单文字
+        if (g_currentSettingsTab == 3 && i == 4)
+          sepY += SDpi(28);
         HPEN hPen = CreatePen(PS_SOLID, 1, GetSeparatorColor());
         HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-        MoveToEx(hdc, contentLeft, rowY + RowHeight() - 1, NULL);
-        LineTo(hdc, contentRight, rowY + RowHeight() - 1);
+        MoveToEx(hdc, contentLeft, sepY, NULL);
+        LineTo(hdc, contentRight, sepY);
         SelectObject(hdc, hOldPen);
         DeleteObject(hPen);
       }
@@ -1994,14 +2060,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
       }
 
-      // 第3行：鸣谢——在描述"感谢为本项目提供帮助的人"下方另起一行显示名单
-      int row3Y = GetRowY(3);
+      // 第4行：鸣谢——在描述"感谢为本项目提供帮助的人"下方另起一行显示名单
+      int row4Y = GetRowY(4);
       std::wstring creditsText = BuildCreditsText();
       SelectObject(hdc, g_hDescFont);
       SetBkMode(hdc, TRANSPARENT);
       SetTextColor(hdc, COLOR_ACCENT);
-      RECT rcCredits = {contentLeft, row3Y + SDpi(50), contentRight,
-                        row3Y + SDpi(70)};
+      RECT rcCredits = {contentLeft, row4Y + SDpi(52), contentRight,
+                        row4Y + SDpi(78)};
       DrawTextW(hdc, creditsText.c_str(), -1, &rcCredits,
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
@@ -2149,7 +2215,8 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       POINT pt = {};
       if (GetCursorPos(&pt)) {
         ScreenToClient(hwnd, &pt);
-        if (IsOverDataDirPath(pt) || IsOverAboutLink(pt)) {
+        if (IsOverDataDirPath(pt) || IsOverAboutLink(pt) ||
+            IsOverMachineInfoRow(pt)) {
           SetCursor(LoadCursorW(NULL, IDC_HAND));
           return TRUE;
         }
@@ -2335,6 +2402,11 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
       if (pt.y >= row2Y + SDpi(32) && pt.y <= row2Y + SDpi(50)) {
         ShellExecuteW(NULL, L"open", L"https://github.com/whutBing/smart-clip",
                       NULL, NULL, SW_SHOWNORMAL);
+      }
+      // 机器码行（第3行）：点击打开机器码弹窗
+      int row3Y = GetRowY(3);
+      if (pt.y >= row3Y && pt.y <= row3Y + RowHeight()) {
+        ShowMachineInfoDialog(hwnd);
       }
     }
     break;
@@ -2721,6 +2793,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
     if (wID == IDC_HOTKEY_EDIT) {
       if (wNotify == EN_SETFOCUS) {
         UnregisterHotkey(g_hwndMain);
+        g_savedHotkeyMod = g_hotkeyModifiers;
+        g_savedHotkeyVk = g_hotkeyVirtualKey;
+        g_savedHotkeyEnabled = g_isHotkeyEnabled;
         g_isRecordingHotkey = true;
         SetWindowTextW(g_hwndHotkeyEdit, L"请按下快捷键...");
       }
@@ -3133,6 +3208,11 @@ void ShowSettingsDialog(HWND hwndParent) {
       g_hwndSettingsClose, GWLP_WNDPROC, (LONG_PTR)SettingsCloseBtnProc);
 
   // ===== 通用分类控件 =====
+  // GetRowY 会根据 g_currentSettingsTab 加页面对应偏移（tab==2/3），
+  // 而通用控件按 tab==0 布局。若进入时停留在他页（如上次停在关于页），
+  // 会导致通用控件（尤其 row>=4 的 toggle）被错误下移。故临时锁定 tab==0。
+  int savedGeneralTab = g_currentSettingsTab;
+  g_currentSettingsTab = 0;
   g_hwndToggleNotification = CreateToggle(hwndDlg, 0, IDC_NOTIFICATION_CHECK);
   g_hwndToggleSmoothScroll = CreateToggle(hwndDlg, 1, IDC_SMOOTH_SCROLL_CHECK);
   g_hwndToggleScrollbar = CreateToggle(hwndDlg, 2, IDC_SCROLLBAR_CHECK);
@@ -3193,6 +3273,8 @@ void ShowSettingsDialog(HWND hwndParent) {
     SyncSettingsNumberEditTextRect(g_hwndHistoryLimitEdit);
   }
   UpdateScrollbarSettingsControls();
+  // 恢复进入时的分类，后续数据控件块会自行临时切换
+  g_currentSettingsTab = savedGeneralTab;
 
   // ===== 数据分类控件 =====
   // 按钮宽度与历史记录数量输入框(SDpi(80))保持一致

@@ -292,6 +292,20 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     // 悬浮选中（通用设置）
     L"悬浮选中",
     L"鼠标悬浮在列表项上即自动选中",
+
+    // 本机信息（关于页）
+    L"查看机器码",
+    L"点击查看本机机器码",
+    L"本机信息",
+    L"机器码",
+    L"复制机器码",
+    L"已复制",
+    L"硬件信息",
+    L"电脑名称",
+    L"系统版本",
+    L"处理器",
+    L"内存",
+    L"系统盘序列号",
 };
 
 static const wchar_t *kStringsEn[STR_COUNT] = {
@@ -595,6 +609,20 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     // Hover select (General settings)
     L"Hover select",
     L"Hover over a list item to select it automatically",
+
+    // Machine info (About page)
+    L"View Machine Code",
+    L"Click to view machine code",
+    L"Machine Info",
+    L"Machine code",
+    L"Copy Machine Code",
+    L"Copied",
+    L"Hardware Info",
+    L"Computer Name",
+    L"OS Version",
+    L"Processor",
+    L"Memory",
+    L"System Disk Serial",
 };
 
 // StringId 名称到枚举值的映射（用于解析 ini 文件）
@@ -819,6 +847,18 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_AGREEMENT_DIALOG_REMIND", STR_AGREEMENT_DIALOG_REMIND},
     {"STR_ROW_HOVER_SELECT", STR_ROW_HOVER_SELECT},
     {"STR_ROW_HOVER_SELECT_DESC", STR_ROW_HOVER_SELECT_DESC},
+    {"STR_ROW_MACHINE_INFO", STR_ROW_MACHINE_INFO},
+    {"STR_ROW_MACHINE_INFO_DESC", STR_ROW_MACHINE_INFO_DESC},
+    {"STR_MACHINE_INFO_TITLE", STR_MACHINE_INFO_TITLE},
+    {"STR_MACHINE_INFO_CODE_LABEL", STR_MACHINE_INFO_CODE_LABEL},
+    {"STR_MACHINE_INFO_COPY", STR_MACHINE_INFO_COPY},
+    {"STR_MACHINE_INFO_COPIED", STR_MACHINE_INFO_COPIED},
+    {"STR_MACHINE_INFO_HW_LABEL", STR_MACHINE_INFO_HW_LABEL},
+    {"STR_MACHINE_INFO_COMPUTER", STR_MACHINE_INFO_COMPUTER},
+    {"STR_MACHINE_INFO_OS", STR_MACHINE_INFO_OS},
+    {"STR_MACHINE_INFO_CPU", STR_MACHINE_INFO_CPU},
+    {"STR_MACHINE_INFO_RAM", STR_MACHINE_INFO_RAM},
+    {"STR_MACHINE_INFO_DISK", STR_MACHINE_INFO_DISK},
     {NULL, STR_COUNT},
 };
 

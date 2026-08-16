@@ -555,26 +555,63 @@ void LoadHistory() {
     UpdateListBox();
 }
 
-// 懒加载缩略图：仅在 imageData 为空且 imageFileName 非空时从文件加载
+// 懒加载缩略图：仅在 imageData 为空时按需加载
+// 优先从 imageFileName（截图缩略图文件）加载，其次从 imageFilePath（图片文件原始路径）加载
 // 用于绘制、复制到剪贴板、拖拽等场景，避免启动时全量加载占用内存
 // item 为 const 引用：imageData/thumbWidth/thumbHeight 声明为 mutable，允许缓存填充
 bool EnsureItemImageLoaded(const ClipboardItem& item) {
     if (!item.imageData.empty())
         return true;
-    if (item.imageFileName.empty())
-        return false;
 
-    std::wstring thumbFilePath =
-        GetThumbsPath() + L"\\" + item.imageFileName;
-    std::vector<BYTE> fileData;
-    int fileW = 0, fileH = 0;
-    if (!LoadImageFile(thumbFilePath.c_str(), fileData, fileW, fileH))
-        return false;
+    // 1. 优先从缩略图文件加载（截图类型）
+    if (!item.imageFileName.empty()) {
+        std::wstring thumbFilePath =
+            GetThumbsPath() + L"\\" + item.imageFileName;
+        std::vector<BYTE> fileData;
+        int fileW = 0, fileH = 0;
+        if (LoadImageFile(thumbFilePath.c_str(), fileData, fileW, fileH)) {
+            item.imageData = std::move(fileData);
+            if (fileW > 0) item.thumbWidth = fileW;
+            if (fileH > 0) item.thumbHeight = fileH;
+            return true;
+        }
+    }
 
-    item.imageData = std::move(fileData);
-    if (fileW > 0) item.thumbWidth = fileW;
-    if (fileH > 0) item.thumbHeight = fileH;
-    return true;
+    // 2. 从原始图片文件路径加载（复制图片文件类型）
+    if (!item.imageFilePath.empty()) {
+        std::vector<BYTE> fileData;
+        int fileW = 0, fileH = 0;
+        if (LoadImageFile(item.imageFilePath.c_str(), fileData, fileW, fileH)) {
+            // 生成缩略图以节省内存
+            int thumbMaxSize = 256;
+            switch (g_imagePreviewQuality) {
+                case PREVIEW_OFF:
+                case PREVIEW_BLUR:
+                    thumbMaxSize = 64; break;
+                case PREVIEW_SD:
+                    thumbMaxSize = 128; break;
+                case PREVIEW_HD:
+                    thumbMaxSize = 256; break;
+            }
+            std::vector<BYTE> thumbData;
+            int thumbW = 0, thumbH = 0;
+            if (GenerateThumbnail(fileData, fileW, fileH, thumbData,
+                                  thumbW, thumbH, thumbMaxSize)) {
+                item.imageData = std::move(thumbData);
+                item.thumbWidth = thumbW;
+                item.thumbHeight = thumbH;
+            } else {
+                item.imageData = std::move(fileData);
+                item.thumbWidth = fileW;
+                item.thumbHeight = fileH;
+            }
+            if (item.imageWidth <= 0) item.imageWidth = fileW;
+            if (item.imageHeight <= 0) item.imageHeight = fileH;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // 获取当前活动窗口的进程名
