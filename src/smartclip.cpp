@@ -3588,6 +3588,29 @@ static void DrawMultiFileTriangle(HDC hdc, const RECT &rcTri, COLORREF color,
   DeleteObject(hPen);
 }
 
+// 退出"不抢焦点(悬浮置顶)"模式：
+// 1) 清除 WS_EX_NOACTIVATE，恢复窗口可被激活；
+// 2) 按置顶开关（g_isTopmost）归一化 z-order，清除悬浮置顶残留的
+//    WS_EX_TOPMOST——此前退出时只清 WS_EX_NOACTIVATE 而残留 TOPMOST，
+//    导致"最大化后主窗体意外置顶"。
+// 注意：用 SetWindowPos(HWND_TOP) 归一化而非直接改 WS_EX_TOPMOST 位，
+// 避免扩展样式变化导致最大化窗口重新布局/还原。
+static void ExitNoActivateMode(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd))
+    hwnd = g_hwndMain;
+  g_isNoActivateMode = false;
+  LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  if (ex & WS_EX_NOACTIVATE) {
+    ex &= ~WS_EX_NOACTIVATE;
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+  }
+  bool wantTopmost = g_isTopmost;
+  if (wantTopmost != ((ex & WS_EX_TOPMOST) != 0)) {
+    SetWindowPos(hwnd, wantTopmost ? HWND_TOPMOST : HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  }
+}
+
 // 列表框子类化窗口过程 - 处理自绘滚动条
 LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
                              LPARAM lParam) {
@@ -5080,10 +5103,7 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
                   if (!hwndMain || !IsWindow(hwndMain))
                     hwndMain = g_hwndMain;
                   if (hwndMain && IsWindow(hwndMain)) {
-                    g_isNoActivateMode = false;
-                    LONG_PTR ex = GetWindowLongPtrW(hwndMain, GWL_EXSTYLE);
-                    ex &= ~WS_EX_NOACTIVATE;
-                    SetWindowLongPtrW(hwndMain, GWL_EXSTYLE, ex);
+                    ExitNoActivateMode(hwndMain);
                   }
                   Sleep(100);
                   RestoreFocusAndPaste(hwndMain);
@@ -5547,10 +5567,7 @@ LRESULT CALLBACK SearchBoxProc(HWND hwnd, UINT message, WPARAM wParam,
   case WM_LBUTTONDOWN: {
     // 点击搜索框时退出不抢焦点模式，允许正常输入
     if (g_isNoActivateMode) {
-      g_isNoActivateMode = false;
-      LONG_PTR ex = GetWindowLongPtrW(g_hwndMain, GWL_EXSTYLE);
-      ex &= ~WS_EX_NOACTIVATE;
-      SetWindowLongPtrW(g_hwndMain, GWL_EXSTYLE, ex);
+      ExitNoActivateMode(g_hwndMain);
       SetForegroundWindow(g_hwndMain);
     }
     POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -6039,7 +6056,7 @@ static void SetMainWindowTaskbarStyle(HWND hwnd, bool forceTaskbarButton) {
 // 返回 true 表示已处理（调用方应跳过默认最小化），false 表示交给系统。
 static bool HideInsteadOfMinimizeWhenNoTaskbar(HWND hwnd) {
   CloseTagPopup();
-  g_isNoActivateMode = false;
+  ExitNoActivateMode(hwnd);
   if (!g_isTaskbarVisible) {
     SetMainWindowTaskbarStyle(hwnd, false);
     ShowWindow(hwnd, SW_HIDE);
@@ -6512,6 +6529,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         return 0;
     } else if ((wParam & 0xFFF0) == SC_MAXIMIZE) {
       CloseTagPopup();
+      // 最大化前归一化 z-order，确保非置顶状态下最大化后不会意外置顶
+      // （清除悬浮置顶残留的 WS_EX_TOPMOST）
+      ExitNoActivateMode(hwnd);
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
   }
@@ -6574,10 +6594,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         if (HIWORD(hit) == 0)
           return MA_NOACTIVATE;
       }
-      g_isNoActivateMode = false;
-      LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-      ex &= ~WS_EX_NOACTIVATE;
-      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+      ExitNoActivateMode(hwnd);
       // 返回 MA_ACTIVATE 以激活窗口并接收键盘输入
       return MA_ACTIVATE;
     }
@@ -6610,11 +6627,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
   }
   // 添加WM_SIZE消息处理
   case WM_SIZE: {
-    // 最大化时确保置顶状态仅由置顶按钮控制
-    if (wParam == SIZE_MAXIMIZED && !g_isTopmost) {
-      SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
     // 窗口恢复时移除临时添加的 WS_CAPTION（最小化时添加的）
     if (wParam == SIZE_RESTORED) {
       LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -8389,10 +8401,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         if (item.type == TYPE_TEXT) {
           if (!g_isTopmost) {
             CloseTagPopup();
-            g_isNoActivateMode = false;
-            LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            ex &= ~WS_EX_NOACTIVATE;
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+            ExitNoActivateMode(hwnd);
           }
 
           if (SetClipboardFromItem(item)) {
@@ -8654,6 +8663,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (IsZoomed(hwnd)) {
         ShowWindow(hwnd, SW_RESTORE);
       } else {
+        // 最大化前归一化 z-order，确保非置顶状态下最大化后不会意外置顶
+        ExitNoActivateMode(hwnd);
         ShowWindow(hwnd, SW_MAXIMIZE);
       }
       InvalidateRect(g_hwndTitleMaximize, NULL, TRUE);
@@ -8661,10 +8672,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       // 标题栏关闭按钮 - 隐藏窗口而不是退出
       CloseTagPopup();
       // 清除不抢焦点模式
-      g_isNoActivateMode = false;
-      LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-      ex &= ~WS_EX_NOACTIVATE;
-      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+      ExitNoActivateMode(hwnd);
       ShowWindow(hwnd, SW_HIDE);
     } else if (wID == IDM_EXIT) {
       DestroyWindow(hwnd);
@@ -8864,10 +8872,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         int actualIndex = g_displayIndexMap[g_contextMenuIndex];
         const ClipboardItem &item = g_history[actualIndex];
         if (SetClipboardFromItem(item)) {
-          g_isNoActivateMode = false;
-          LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-          ex &= ~WS_EX_NOACTIVATE;
-          SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+          ExitNoActivateMode(hwnd);
           RememberPasteTarget(hwnd);
           RestoreFocusAndPaste(hwnd);
           if (g_isNotificationEnabled) {
@@ -9363,13 +9368,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       g_deferredPasteKeepsTopmostVisible = false;
     } else if (wParam == ID_RESTORE_TOPMOST_AFTER_PASTE) {
       KillTimer(hwnd, ID_RESTORE_TOPMOST_AFTER_PASTE);
+      ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       if (g_isTopmost) {
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
       } else {
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
       }
     } else if (wParam == 2) {
@@ -9894,10 +9898,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     HideFavoriteFilterTooltip();
     CloseTagPopup();
     // 清除不抢焦点模式
-    g_isNoActivateMode = false;
-    LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    ex &= ~WS_EX_NOACTIVATE;
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+    ExitNoActivateMode(hwnd);
     ShowWindow(hwnd, SW_HIDE); // 窗口关闭时只隐藏，不退出程序
     return 0;
   }
@@ -9960,51 +9961,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                   // 是文件夹，保存路径
                   AddFileToHistory(filePath);
                 }
-                // 检查是否为图像文件
-                else if (IsImageFile(filePath)) {
-                  // 加载图像文件
-                  std::vector<BYTE> imageData;
-                  int width = 0, height = 0;
-                  if (LoadImageFile(filePath, imageData, width, height)) {
-                    // 使用新函数：只保存缩略图和原始路径，不复制原图
-                    AddImageFileToHistory(filePath, imageData, width, height);
-                  } else {
-                    // 加载失败，仍存为 TYPE_IMAGE（无缩略图数据），
-                    // 绘制时由 EnsureItemImageLoaded 从 imageFilePath 按需加载
-                    AddImageFileToHistory(filePath, std::vector<BYTE>(), 0, 0);
-                  }
-                } else {
-                  // 非图像文件，保存文件路径
+                // 图片文件和其他文件统一存为 TYPE_FILE
+                else {
                   AddFileToHistory(filePath);
                 }
               }
             } else if (fileCount > 1) {
-              // 多文件：按 DragQueryFileW 索引顺序逐个处理。
-              // 图片文件单独存为 TYPE_IMAGE（显示缩略图），
-              // 非图片文件用 L'\n' 连接后存为 TYPE_FILE 记录。
+              // 多文件：所有文件统一用 L'\n' 连接后存为 TYPE_FILE 记录
               std::wstring joinedPaths;
               joinedPaths.reserve(fileCount * MAX_PATH);
               for (UINT i = 0; i < fileCount; ++i) {
                 WCHAR filePath[MAX_PATH];
                 if (DragQueryFileW(hDrop, i, filePath, MAX_PATH) > 0) {
-                  DWORD attrs = GetFileAttributesW(filePath);
-                  bool isDir = (attrs != INVALID_FILE_ATTRIBUTES &&
-                                (attrs & FILE_ATTRIBUTE_DIRECTORY));
-                  if (!isDir && IsImageFile(filePath)) {
-                    // 图片文件：加载并存为 TYPE_IMAGE
-                    std::vector<BYTE> imageData;
-                    int imgW = 0, imgH = 0;
-                    if (LoadImageFile(filePath, imageData, imgW, imgH)) {
-                      AddImageFileToHistory(filePath, imageData, imgW, imgH);
-                    } else {
-                      // 加载失败，仍存为 TYPE_IMAGE，绘制时按需加载
-                      AddImageFileToHistory(filePath, std::vector<BYTE>(), 0, 0);
-                    }
-                  } else {
-                    if (!joinedPaths.empty())
-                      joinedPaths.push_back(L'\n');
-                    joinedPaths += filePath;
-                  }
+                  if (!joinedPaths.empty())
+                    joinedPaths.push_back(L'\n');
+                  joinedPaths += filePath;
                 }
               }
               if (!joinedPaths.empty()) {
@@ -10125,14 +10096,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (IsWindowVisible(hwnd)) {
         CloseTagPopup();
         // 清除不抢焦点模式
-        g_isNoActivateMode = false;
-        LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        ex &= ~WS_EX_NOACTIVATE;
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+        ExitNoActivateMode(hwnd);
         ShowWindow(hwnd, SW_HIDE);
       } else {
         // 托盘点击使用正常激活模式
-        g_isNoActivateMode = false;
+        ExitNoActivateMode(hwnd);
         SetMainWindowTaskbarStyle(hwnd, false);
         // SW_SHOWNORMAL 确保从最小化状态恢复正常显示
         ShowWindow(hwnd, SW_SHOWNORMAL);
@@ -10269,10 +10237,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
         CloseTagPopup();
         // 隐藏时清除不抢焦点模式
-        g_isNoActivateMode = false;
-        LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        ex &= ~WS_EX_NOACTIVATE;
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+        ExitNoActivateMode(hwnd);
         ShowWindow(hwnd, SW_HIDE);
       } else {
         // 记录当前活动窗口（呼出剪贴板前的窗口）
@@ -10297,11 +10262,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         SetMainWindowTaskbarStyle(hwnd, false);
         // 显示并激活窗口
         ShowWindow(hwnd, SW_SHOWNORMAL);
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-        if (!g_isTopmost) {
-          SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        // 根据置顶状态设置 z-order，避免 TOPMOST→NOTOPMOST 技巧导致
+        // 最大化后窗口意外保持置顶
+        if (g_isTopmost) {
+          SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        } else {
+          SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         }
         SetForegroundWindow(hwnd);
         // 延迟聚焦搜索框，确保窗口操作全部完成后再设置焦点，

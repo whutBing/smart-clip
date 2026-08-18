@@ -8,6 +8,7 @@
 #include <gdiplus.h>
 #include <algorithm>
 #include <ctime>
+#include <fstream>
 #include <set>
 #include <map>
 #include "sqlite3.h"
@@ -555,63 +556,26 @@ void LoadHistory() {
     UpdateListBox();
 }
 
-// 懒加载缩略图：仅在 imageData 为空时按需加载
-// 优先从 imageFileName（截图缩略图文件）加载，其次从 imageFilePath（图片文件原始路径）加载
+// 懒加载缩略图：仅在 imageData 为空且 imageFileName 非空时从文件加载
 // 用于绘制、复制到剪贴板、拖拽等场景，避免启动时全量加载占用内存
 // item 为 const 引用：imageData/thumbWidth/thumbHeight 声明为 mutable，允许缓存填充
 bool EnsureItemImageLoaded(const ClipboardItem& item) {
     if (!item.imageData.empty())
         return true;
+    if (item.imageFileName.empty())
+        return false;
 
-    // 1. 优先从缩略图文件加载（截图类型）
-    if (!item.imageFileName.empty()) {
-        std::wstring thumbFilePath =
-            GetThumbsPath() + L"\\" + item.imageFileName;
-        std::vector<BYTE> fileData;
-        int fileW = 0, fileH = 0;
-        if (LoadImageFile(thumbFilePath.c_str(), fileData, fileW, fileH)) {
-            item.imageData = std::move(fileData);
-            if (fileW > 0) item.thumbWidth = fileW;
-            if (fileH > 0) item.thumbHeight = fileH;
-            return true;
-        }
-    }
+    std::wstring thumbFilePath =
+        GetThumbsPath() + L"\\" + item.imageFileName;
+    std::vector<BYTE> fileData;
+    int fileW = 0, fileH = 0;
+    if (!LoadImageFile(thumbFilePath.c_str(), fileData, fileW, fileH))
+        return false;
 
-    // 2. 从原始图片文件路径加载（复制图片文件类型）
-    if (!item.imageFilePath.empty()) {
-        std::vector<BYTE> fileData;
-        int fileW = 0, fileH = 0;
-        if (LoadImageFile(item.imageFilePath.c_str(), fileData, fileW, fileH)) {
-            // 生成缩略图以节省内存
-            int thumbMaxSize = 256;
-            switch (g_imagePreviewQuality) {
-                case PREVIEW_OFF:
-                case PREVIEW_BLUR:
-                    thumbMaxSize = 64; break;
-                case PREVIEW_SD:
-                    thumbMaxSize = 128; break;
-                case PREVIEW_HD:
-                    thumbMaxSize = 256; break;
-            }
-            std::vector<BYTE> thumbData;
-            int thumbW = 0, thumbH = 0;
-            if (GenerateThumbnail(fileData, fileW, fileH, thumbData,
-                                  thumbW, thumbH, thumbMaxSize)) {
-                item.imageData = std::move(thumbData);
-                item.thumbWidth = thumbW;
-                item.thumbHeight = thumbH;
-            } else {
-                item.imageData = std::move(fileData);
-                item.thumbWidth = fileW;
-                item.thumbHeight = fileH;
-            }
-            if (item.imageWidth <= 0) item.imageWidth = fileW;
-            if (item.imageHeight <= 0) item.imageHeight = fileH;
-            return true;
-        }
-    }
-
-    return false;
+    item.imageData = std::move(fileData);
+    if (fileW > 0) item.thumbWidth = fileW;
+    if (fileH > 0) item.thumbHeight = fileH;
+    return true;
 }
 
 // 获取当前活动窗口的进程名
@@ -2626,6 +2590,72 @@ int GetTagItemCount(int tagId) {
 
 // ==================== 数据导出 ====================
 
+// Export packages are consumed by both SmartClip editions.  Keep the marker
+// deliberately small and at the archive root so it can be checked before an
+// import changes any local data.
+static const wchar_t* kExportManifestName = L"smartclip-export.json";
+static std::wstring g_lastDataImportError;
+
+std::wstring GetLastDataImportError() {
+    return g_lastDataImportError;
+}
+
+static bool WriteExportManifest(const std::wstring& dir, const char* edition) {
+    std::ofstream out(WToUtf8(dir + L"\\" + kExportManifestName),
+                      std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << "{\n"
+        << "  \"format\": \"smartclip-export\",\n"
+        << "  \"formatVersion\": 1,\n"
+        << "  \"edition\": \"" << edition << "\",\n"
+        << "  \"contents\": [\"history\", \"tags\", \"images\"]\n"
+        << "}\n";
+    return out.good();
+}
+
+static bool ReadExportEdition(const std::wstring& dir, std::string& edition,
+                              bool& hasManifest) {
+    hasManifest = false;
+    edition.clear();
+    std::ifstream in(WToUtf8(dir + L"\\" + kExportManifestName), std::ios::binary);
+    if (!in) return true; // Legacy exports did not contain a manifest.
+    hasManifest = true;
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    if (text.size() > 16 * 1024 ||
+        text.find("\"format\": \"smartclip-export\"") == std::string::npos)
+        return false;
+    const std::string key = "\"edition\": \"";
+    size_t p = text.find(key);
+    if (p == std::string::npos) return false;
+    p += key.size();
+    size_t end = text.find('"', p);
+    if (end == std::string::npos) return false;
+    edition = text.substr(p, end - p);
+    return true;
+}
+
+// A manifest is authoritative.  This fallback is only for existing Free
+// archives created before manifests were introduced; all known PRO database
+// tables make the package ineligible for the Free application.
+static bool IsLegacyFreeDatabase(const std::wstring& dbPath) {
+    sqlite3* db = NULL;
+    std::string utf8Path = WToUtf8(dbPath);
+    if (sqlite3_open(utf8Path.c_str(), &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return false;
+    }
+    const char* sql =
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+        "name IN ('password_categories','password_entries','custom_text_categories') LIMIT 1;";
+    sqlite3_stmt* stmt = NULL;
+    bool isFree = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
+                  sqlite3_step(stmt) != SQLITE_ROW;
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return isFree;
+}
+
 // 导出 SmartClip 工作目录为 ZIP 压缩包
 bool ExportData(const std::wstring& outputPath) {
     std::wstring dataDir = GetSmartClipDataDir();
@@ -2634,6 +2664,8 @@ bool ExportData(const std::wstring& outputPath) {
     SaveHistory();
     SaveTags();
     SavePasteCount();
+
+    if (!WriteExportManifest(dataDir, "free")) return false;
 
     // 使用 tar（bsdtar）创建 ZIP 文件
     // 命令: tar -a -cf "output.zip" -C "data_dir" .
@@ -2653,7 +2685,10 @@ bool ExportData(const std::wstring& outputPath) {
     std::wstring fullCmd = L"cmd.exe /C " + cmd;
     BOOL ok = CreateProcessW(NULL, &fullCmd[0], NULL, NULL, FALSE,
                              CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-    if (!ok) return false;
+    if (!ok) {
+        DeleteFileW((dataDir + L"\\" + kExportManifestName).c_str());
+        return false;
+    }
 
     WaitForSingleObject(pi.hProcess, 30000); // 最多等待30秒
     DWORD exitCode = 1;
@@ -2661,6 +2696,8 @@ bool ExportData(const std::wstring& outputPath) {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
+    // The manifest belongs to the backup, not to the live data directory.
+    DeleteFileW((dataDir + L"\\" + kExportManifestName).c_str());
     return exitCode == 0;
 }
 
@@ -2718,6 +2755,61 @@ static void CopyDirectoryFiles(const std::wstring& srcDir, const std::wstring& d
     FindClose(hFind);
 }
 
+// Image file names are generated locally and are therefore not a stable
+// identity across two backups.  During append imports a different image with
+// the same name must receive a new name and the database row must use it too.
+static std::wstring ResolveImportedImageName(
+    const std::wstring& oldName, const std::wstring& srcOriginals,
+    const std::wstring& srcThumbs, const std::wstring& dstOriginals,
+    const std::wstring& dstThumbs, std::map<std::wstring, std::wstring>& names) {
+    if (oldName.empty()) return oldName;
+    auto known = names.find(oldName);
+    if (known != names.end()) return known->second;
+
+    const bool sourceExists =
+        GetFileAttributesW((srcOriginals + L"\\" + oldName).c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW((srcThumbs + L"\\" + oldName).c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool destinationExists =
+        GetFileAttributesW((dstOriginals + L"\\" + oldName).c_str()) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW((dstThumbs + L"\\" + oldName).c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!sourceExists || !destinationExists) {
+        names[oldName] = oldName;
+        return oldName;
+    }
+
+    size_t dot = oldName.find_last_of(L'.');
+    std::wstring stem = dot == std::wstring::npos ? oldName : oldName.substr(0, dot);
+    std::wstring ext = dot == std::wstring::npos ? L"" : oldName.substr(dot);
+    static unsigned long counter = 0;
+    std::wstring candidate;
+    do {
+        candidate = stem + L"_import_" + std::to_wstring(GetTickCount()) +
+                    L"_" + std::to_wstring(++counter) + ext;
+    } while (GetFileAttributesW((dstOriginals + L"\\" + candidate).c_str()) != INVALID_FILE_ATTRIBUTES ||
+             GetFileAttributesW((dstThumbs + L"\\" + candidate).c_str()) != INVALID_FILE_ATTRIBUTES);
+    names[oldName] = candidate;
+    return candidate;
+}
+
+static bool CopyImportedImageAssets(
+    const std::wstring& srcOriginals, const std::wstring& srcThumbs,
+    const std::wstring& dstOriginals, const std::wstring& dstThumbs,
+    const std::map<std::wstring, std::wstring>& names) {
+    CreateDirectoryW(dstOriginals.c_str(), NULL);
+    CreateDirectoryW(dstThumbs.c_str(), NULL);
+    for (const auto& pair : names) {
+        const std::wstring srcOriginal = srcOriginals + L"\\" + pair.first;
+        const std::wstring srcThumb = srcThumbs + L"\\" + pair.first;
+        if (GetFileAttributesW(srcOriginal.c_str()) != INVALID_FILE_ATTRIBUTES &&
+            !CopyFileW(srcOriginal.c_str(), (dstOriginals + L"\\" + pair.second).c_str(), FALSE))
+            return false;
+        if (GetFileAttributesW(srcThumb.c_str()) != INVALID_FILE_ATTRIBUTES &&
+            !CopyFileW(srcThumb.c_str(), (dstThumbs + L"\\" + pair.second).c_str(), FALSE))
+            return false;
+    }
+    return true;
+}
+
 static sqlite3* OpenDatabaseAtPath(const std::wstring& dbPath) {
     std::string dbPathUtf8 = WToUtf8(dbPath);
     sqlite3* db = NULL;
@@ -2729,6 +2821,7 @@ static sqlite3* OpenDatabaseAtPath(const std::wstring& dbPath) {
 }
 
 bool ImportData(const std::wstring& zipPath, bool overwrite) {
+    g_lastDataImportError.clear();
     std::wstring dataDir = GetSmartClipDataDir();
 
     std::wstring tempDir = dataDir + L"\\import_temp_";
@@ -2781,6 +2874,20 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
         return false;
     }
 
+    std::string sourceEdition;
+    bool hasManifest = false;
+    // Do not allow a PRO archive to reach either overwrite or append code.
+    // Old Free archives are accepted only when their DB has no PRO-only tables.
+    if (!ReadExportEdition(tempDir, sourceEdition, hasManifest) ||
+        (hasManifest && sourceEdition != "free") ||
+        (!hasManifest && !IsLegacyFreeDatabase(tempDbPath))) {
+        g_lastDataImportError = hasManifest
+            ? L"这是 SmartClip PRO 或未知版本的导出包，免费版只能导入免费版导出。"
+            : L"无法识别旧备份的版本，免费版只能导入免费版导出。";
+        RemoveDirectoryRecursively(tempDir);
+        return false;
+    }
+
     bool success = false;
 
     if (overwrite) {
@@ -2811,6 +2918,12 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
 
         if (srcDb && dstDb) {
             sqlite3_exec(dstDb, "BEGIN TRANSACTION;", NULL, NULL, NULL);
+
+            std::wstring tempOriginalsDir = tempDir + L"\\images\\originals";
+            std::wstring tempThumbsDir = tempDir + L"\\images\\thumbs";
+            std::wstring currentOriginalsDir = GetImagesPath();
+            std::wstring currentThumbsDir = GetThumbsPath();
+            std::map<std::wstring, std::wstring> importedImageNames;
 
             std::map<std::wstring, int> tagNameMap;
             sqlite3_stmt* tagStmt = NULL;
@@ -2870,7 +2983,7 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
                 "is_favorite,image_width,image_height,thumb_width,thumb_height,"
                 "image_file_name,image_file_path,thumb_data,tags) "
                 "SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,? "
-                "WHERE NOT EXISTS (SELECT 1 FROM history WHERE content = ? AND timestamp = ?)";
+                "WHERE NOT EXISTS (SELECT 1 FROM history WHERE type = ? AND content = ? AND timestamp = ?)";
             sqlite3_stmt* insertHistStmt = NULL;
             sqlite3_prepare_v2(dstDb, insertHistSql, -1, &insertHistStmt, NULL);
 
@@ -2909,6 +3022,12 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
                     }
                 }
 
+                if (type == TYPE_IMAGE && !imageFileName.empty()) {
+                    imageFileName = ResolveImportedImageName(
+                        imageFileName, tempOriginalsDir, tempThumbsDir,
+                        currentOriginalsDir, currentThumbsDir, importedImageNames);
+                }
+
                 sqlite3_bind_int(insertHistStmt, 1, type);
                 sqlite3_bind_text(insertHistStmt, 2, WToUtf8(content).c_str(), -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(insertHistStmt, 3, WToUtf8(timestamp).c_str(), -1, SQLITE_TRANSIENT);
@@ -2927,8 +3046,9 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
                     sqlite3_bind_null(insertHistStmt, 13);
                 }
                 sqlite3_bind_text(insertHistStmt, 14, WToUtf8(newTagsStr).c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_text(insertHistStmt, 15, WToUtf8(content).c_str(), -1, SQLITE_TRANSIENT);
-                sqlite3_bind_text(insertHistStmt, 16, WToUtf8(timestamp).c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(insertHistStmt, 15, type);
+                sqlite3_bind_text(insertHistStmt, 16, WToUtf8(content).c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(insertHistStmt, 17, WToUtf8(timestamp).c_str(), -1, SQLITE_TRANSIENT);
 
                 sqlite3_step(insertHistStmt);
                 sqlite3_reset(insertHistStmt);
@@ -2936,21 +3056,14 @@ bool ImportData(const std::wstring& zipPath, bool overwrite) {
             sqlite3_finalize(srcHistStmt);
             sqlite3_finalize(insertHistStmt);
 
-            sqlite3_exec(dstDb, "COMMIT;", NULL, NULL, NULL);
-
-            std::wstring tempOriginalsDir = tempDir + L"\\images\\originals";
-            std::wstring currentOriginalsDir = GetImagesPath();
-            if (GetFileAttributesW(tempOriginalsDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                CopyDirectoryFiles(tempOriginalsDir, currentOriginalsDir, true);
+            if (CopyImportedImageAssets(tempOriginalsDir, tempThumbsDir,
+                                        currentOriginalsDir, currentThumbsDir,
+                                        importedImageNames)) {
+                sqlite3_exec(dstDb, "COMMIT;", NULL, NULL, NULL);
+                success = true;
+            } else {
+                sqlite3_exec(dstDb, "ROLLBACK;", NULL, NULL, NULL);
             }
-
-            std::wstring tempThumbsDir = tempDir + L"\\images\\thumbs";
-            std::wstring currentThumbsDir = GetThumbsPath();
-            if (GetFileAttributesW(tempThumbsDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                CopyDirectoryFiles(tempThumbsDir, currentThumbsDir, true);
-            }
-
-            success = true;
         }
 
         if (srcDb) sqlite3_close(srcDb);

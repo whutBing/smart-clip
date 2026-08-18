@@ -2647,7 +2647,10 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam,
             extern void UpdateListBox();
             UpdateListBox();
           } else {
-            MessageBoxW(hwnd, L"Import failed", T(STR_TRAY_HINT),
+            std::wstring message = L"Import failed";
+            std::wstring detail = GetLastDataImportError();
+            if (!detail.empty()) message += L"\n\n" + detail;
+            MessageBoxW(hwnd, message.c_str(), T(STR_TRAY_HINT),
                         MB_OK | MB_ICONERROR);
           }
         }

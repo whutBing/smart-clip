@@ -652,10 +652,11 @@ static LRESULT CALLBACK MachineInfoDialogProc(HWND hwnd, UINT msg,
     break;
 
   case WM_CLOSE:
-    g_machineInfoDone = true;
+    DestroyWindow(hwnd);
     return 0;
 
   case WM_DESTROY:
+    g_machineInfoDone = true;
     if (g_mInfoHeaderFont)
       DeleteObject(g_mInfoHeaderFont);
     if (g_mInfoSectionFont)
@@ -740,17 +741,33 @@ void ShowMachineInfoDialog(HWND hwndParent) {
   EnableWindow(hwndParent, FALSE);
 
   // 模态消息循环
+  // 注意：不能用 GetMessageW(hwnd=NULL)，否则主窗口消息队列中的 WM_QUIT
+  // 会使循环异常退出（g_machineInfoDone 仍为 false），导致窗口无法关闭。
+  // 用 PeekMessageW 只取对话框相关消息，WM_QUIT 被忽略不退出循环。
   MSG msg = {};
-  while (!g_machineInfoDone && GetMessageW(&msg, NULL, 0, 0)) {
-    if (!IsDialogMessageW(g_hwndMachineInfo, &msg)) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+  while (!g_machineInfoDone) {
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        // 主窗口 WM_QUIT：不退出模态循环，放回队列待主窗口处理
+        PostMessageW(NULL, WM_QUIT, msg.wParam, msg.lParam);
+        continue;
+      }
+      if (!IsDialogMessageW(g_hwndMachineInfo, &msg)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
     }
+    if (!g_machineInfoDone)
+      WaitMessage();
   }
 
   EnableWindow(hwndParent, TRUE);
   SetForegroundWindow(hwndParent);
-  DestroyWindow(g_hwndMachineInfo);
+  // WM_CLOSE → DestroyWindow → WM_DESTROY 已在对话框过程中完成
+  // 此处仅确保窗口句柄清空（避免 DestroyWindow 二次调用）
+  if (g_hwndMachineInfo && IsWindow(g_hwndMachineInfo)) {
+    DestroyWindow(g_hwndMachineInfo);
+  }
   g_hwndMachineInfo = NULL;
 
   // 恢复剪贴板监听的原始状态
