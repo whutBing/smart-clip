@@ -603,6 +603,7 @@ Gdiplus::Image *g_imgNoExistIcon = NULL; // 文件不存在图标
 Gdiplus::Image *g_imgTextIcon = NULL;    // 文本类型图标
 Gdiplus::Image *g_imgNetIcon = NULL;     // 网址类型图标
 Gdiplus::Image *g_imgMailIcon = NULL;    // 邮箱类型图标
+Gdiplus::Image *g_imgFileIcon = NULL;    // 文件图标（file.png，蒙版用）
 
 // 文件图标缓存：按扩展名缓存系统图标（与资源管理器一致），
 // 避免 WM_DRAWITEM 每次都调用 SHGetFileInfoW（该 API 较慢）。
@@ -3606,7 +3607,11 @@ static void ExitNoActivateMode(HWND hwnd) {
   }
   bool wantTopmost = g_isTopmost;
   if (wantTopmost != ((ex & WS_EX_TOPMOST) != 0)) {
-    SetWindowPos(hwnd, wantTopmost ? HWND_TOPMOST : HWND_TOP, 0, 0, 0, 0,
+    // 摘除置顶必须用 HWND_NOTOPMOST：HWND_TOP 只把窗口提到"当前所在层"
+    // 顶部，已置顶的窗口仍留在置顶层（这正是必须"置顶→取消置顶"才能
+    // 摘除悬浮残留的原因）。仍走 SetWindowPos 而非直接改样式位，避免
+    // 最大化窗口因扩展样式变化而重新布局。
+    SetWindowPos(hwnd, wantTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
   }
 }
@@ -4112,10 +4117,20 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
             LONG_PTR ex = GetWindowLongPtrW(hwndMain, GWL_EXSTYLE);
             ex |= WS_EX_NOACTIVATE;
             SetWindowLongPtrW(hwndMain, GWL_EXSTYLE, ex);
-            // 保持窗口显示且置顶，供单击到达；同时不抢焦点
-            SetWindowPos(hwndMain, HWND_TOPMOST, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
-                             SWP_SHOWWINDOW);
+            // 保持窗口显示且置顶，供单击到达；同时不抢焦点。
+            // 尊重置顶设置：仅当用户开启「置顶」或窗口未最大化时才强制置顶，
+            // 置顶关闭且窗口最大化时不置顶，避免非置顶窗口被顶到最上层。
+            // （最大化窗口 RECT 几乎覆盖全屏，鼠标离开轮询无法检测离开，
+            // 若强制 TOPMOST 会永久残留，只能靠"置顶→取消置顶"手动归位）
+            if (g_isTopmost || !IsZoomed(hwndMain)) {
+              SetWindowPos(hwndMain, HWND_TOPMOST, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                               SWP_SHOWWINDOW);
+            } else {
+              SetWindowPos(hwndMain, HWND_NOTOPMOST, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                               SWP_SHOWWINDOW);
+            }
             if (wasForeground && g_previousActiveWindow &&
                 IsWindow(g_previousActiveWindow))
               RestoreForegroundWindow(g_previousActiveWindow);
@@ -5088,8 +5103,8 @@ LRESULT CALLBACK ListBoxProc(HWND hwnd, UINT message, WPARAM wParam,
           // 文件夹/文件/网址/IP：点击文字区域时上方已 ShellExecute 打开，
           // 不重复粘贴；点击非文字区域（g_isHoveringFolder=false）走单击粘贴，
           // 与快捷键行为保持一致。
-          bool isOpenedAbove = g_isHoveringFolder &&
-                               g_hoverFolderIndex == pasteIndex;
+          bool isOpenedAbove =
+              g_isHoveringFolder && g_hoverFolderIndex == pasteIndex;
           if (!isOpenedAbove) {
             int actualIndex = g_displayIndexMap[pasteIndex];
             if (actualIndex >= 0 && actualIndex < (int)g_history.size()) {
@@ -5438,6 +5453,7 @@ void LoadButtonImages() {
   g_imgTextIcon = LoadImageFromResource(IDB_TEXT_ICON);
   g_imgNetIcon = LoadImageFromResource(IDB_NET_ICON);
   g_imgMailIcon = LoadImageFromResource(IDB_MAIL_ICON);
+  g_imgFileIcon = LoadImageFromResource(IDB_FOLDER_ICON);
 }
 
 // 释放按钮图片资源
@@ -5465,6 +5481,10 @@ void FreeButtonImages() {
   if (g_imgMailIcon) {
     delete g_imgMailIcon;
     g_imgMailIcon = NULL;
+  }
+  if (g_imgFileIcon) {
+    delete g_imgFileIcon;
+    g_imgFileIcon = NULL;
   }
 }
 
@@ -6066,6 +6086,217 @@ static bool HideInsteadOfMinimizeWhenNoTaskbar(HWND hwnd) {
   return false;
 }
 
+// ==================== Dropshelf 式拖拽呼出（文件中转站） ====================
+// 监测其他进程发起的鼠标拖拽（如资源管理器里拖动文件/文件夹）：
+// 按住左键"左右晃动两下"（水平方向反转 2 次，每段至少 30px）时呼出主窗体；
+// 且源线程的鼠标捕获窗口与被按下窗口不同根（OLE 拖放的捕获窗口是源进程
+// 的隐藏顶层窗口；框选/拖标题栏等普通操作的捕获窗口与被按下窗口同根，
+// 据此区分），用户可把拖拽中的文件放到窗体上存入历史，实现"中转站"。
+// 拖拽结束未落到窗体上则自动隐藏并还原窗体原位置。
+#define ID_DRAG_SHELF_TIMER 212  // 轮询定时器
+#define ID_DRAG_SHELF_SETTLE 213 // 松手后等待落地回调的兜底定时器
+#define DRAG_SHELF_SHAKE_PX 30   // 晃动每段幅度下限（逻辑像素）
+#define DRAG_SHELF_SHAKE_TICK 5  // 方向锁定/反转确认的回退阈值
+#define DRAG_SHELF_SHAKE_TIMES 2 // 需完成的晃动段数（左右各一下=2段）
+
+// 非静态：CDropTarget::Drop（drag_drop.cpp）落地时通过消息清除
+bool g_dragShelfSummoned = false;
+static bool g_dragShelfTracking = false; // 正在跟踪一次按住左键的拖动
+static DWORD g_dragShelfSrcThread = 0;   // 按下时窗口所属线程
+static HWND g_dragShelfSrcHwnd = NULL;   // 按下时的窗口
+static RECT g_dragShelfPrevRect = {};    // 呼出前窗体位置（取消时还原）
+static bool g_dragShelfMoved = false;    // 呼出时是否移动过窗体
+// 呼出蒙版前窗体是否已经可见：可见时不移动位置、结束时也不隐藏窗体
+static bool g_dragShelfWasVisible = false;
+
+// 水平晃动手势状态
+static int g_dragShelfShakeDir = 0; // 当前段水平方向（-1 左 / +1 右，0 未锁定）
+static int g_dragShelfShakeAnchorX = 0; // 当前段起点 X（屏幕坐标）
+static int g_dragShelfShakeSegMax = 0;  // 当前段沿方向的最大位移（正数）
+static int g_dragShelfShakeCount = 0;   // 已完成的晃动段数
+
+// 蒙版状态下隐藏的子控件（结束时恢复显示）
+static std::vector<HWND> g_dragShelfHiddenChildren;
+
+static BOOL CALLBACK DragShelfHideChildProc(HWND hChild, LPARAM lParam) {
+  (void)lParam;
+  if (IsWindowVisible(hChild)) {
+    ShowWindow(hChild, SW_HIDE);
+    g_dragShelfHiddenChildren.push_back(hChild);
+  }
+  return TRUE;
+}
+
+// 恢复蒙版状态下隐藏的子控件
+static void RestoreDragShelfChildren(HWND hwnd) {
+  for (HWND hChild : g_dragShelfHiddenChildren) {
+    if (hChild && IsWindow(hChild))
+      ShowWindow(hChild, SW_SHOW);
+  }
+  g_dragShelfHiddenChildren.clear();
+  if (hwnd && IsWindow(hwnd))
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+// 在光标附近呼出主窗体（不激活、不抢焦点，避免打断进行中的拖拽）
+// 窗体已可见时：位置保持不变，仅展示"放置文件"蒙版
+static void SummonDragShelf(HWND hwnd, const POINT &pt) {
+  g_dragShelfSummoned = true;
+  g_dragShelfMoved = false;
+  g_dragShelfWasVisible = IsWindowVisible(hwnd) != FALSE;
+  GetWindowRect(hwnd, &g_dragShelfPrevRect);
+  if (!g_dragShelfWasVisible) {
+    int x = 0, y = 0;
+    if (!IsZoomed(hwnd)) {
+      const int w = g_dragShelfPrevRect.right - g_dragShelfPrevRect.left;
+      const int h = g_dragShelfPrevRect.bottom - g_dragShelfPrevRect.top;
+      const int off = 40;
+      x = pt.x + off;
+      y = pt.y + off;
+      HMONITOR mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO mi = {};
+      mi.cbSize = sizeof(MONITORINFO);
+      GetMonitorInfoW(mon, &mi);
+      if (x + w > mi.rcWork.right)
+        x = pt.x - w - off;
+      if (x < mi.rcWork.left)
+        x = mi.rcWork.left;
+      if (y + h > mi.rcWork.bottom)
+        y = pt.y - h - off;
+      if (y < mi.rcWork.top)
+        y = mi.rcWork.top;
+      if (x != g_dragShelfPrevRect.left || y != g_dragShelfPrevRect.top)
+        g_dragShelfMoved = true;
+    }
+    // 置顶与否遵循置顶开关，避免残留 TOPMOST 状态
+    SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_TOP, x, y, 0, 0,
+                 SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW |
+                     (g_dragShelfMoved ? 0 : SWP_NOMOVE));
+  }
+  // 隐藏子控件，展示"放置文件"蒙版（WM_PAINT 绘制）
+  g_dragShelfHiddenChildren.clear();
+  EnumChildWindows(hwnd, DragShelfHideChildProc, 0);
+  InvalidateRect(hwnd, NULL, TRUE);
+}
+
+// 隐藏呼出的窗体，可选还原呼出前位置
+// 呼出前窗体已可见：仅撤下蒙版，不隐藏窗体、不还原位置
+static void DismissDragShelf(HWND hwnd, bool restorePos) {
+  g_dragShelfSummoned = false;
+  RestoreDragShelfChildren(hwnd);
+  if (!g_dragShelfWasVisible) {
+    ShowWindow(hwnd, SW_HIDE);
+    if (restorePos && g_dragShelfMoved) {
+      SetWindowPos(hwnd, NULL, g_dragShelfPrevRect.left,
+                   g_dragShelfPrevRect.top, 0, 0,
+                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+  }
+  g_dragShelfMoved = false;
+  g_dragShelfWasVisible = false;
+}
+
+// 水平晃动手势跟踪：段 = 一次方向反转到下一次反转之间的移动，
+// 每段幅度 >= DRAG_SHELF_SHAKE_PX 才计入；反转需回落 TICK 确认。
+// 完成 SHAKE_TIMES 段（左右各晃一下）即视为有呼出意图。
+static void TrackDragShelfShake(const POINT &pt) {
+  const int segMin = MScale(DRAG_SHELF_SHAKE_PX);
+  const int tick = MScale(DRAG_SHELF_SHAKE_TICK);
+
+  if (g_dragShelfShakeDir == 0) {
+    // 初始方向锁定：超过小阈值后以当前位置为段起点
+    if (pt.x <= g_dragShelfShakeAnchorX - tick) {
+      g_dragShelfShakeDir = -1;
+      g_dragShelfShakeAnchorX = pt.x;
+    } else if (pt.x >= g_dragShelfShakeAnchorX + tick) {
+      g_dragShelfShakeDir = +1;
+      g_dragShelfShakeAnchorX = pt.x;
+    }
+    return;
+  }
+
+  const int dx = pt.x - g_dragShelfShakeAnchorX;
+  const int along = dx * g_dragShelfShakeDir; // 沿当前方向的位移
+  if (along > g_dragShelfShakeSegMax)
+    g_dragShelfShakeSegMax = along;
+
+  // 反转确认：段幅度达标且已向反方向回落超过 tick
+  if (g_dragShelfShakeSegMax >= segMin &&
+      along <= g_dragShelfShakeSegMax - tick) {
+    g_dragShelfShakeCount++;
+    // 新段起点 = 上一段最远点，方向反转
+    g_dragShelfShakeAnchorX += g_dragShelfShakeDir * g_dragShelfShakeSegMax;
+    g_dragShelfShakeDir = -g_dragShelfShakeDir;
+    g_dragShelfShakeSegMax = 0;
+  }
+}
+
+static void HandleDragShelfPoll(HWND hwnd) {
+  const bool lbtnDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+  if (!lbtnDown) {
+    if (g_dragShelfTracking) {
+      g_dragShelfTracking = false;
+      g_dragShelfSrcThread = 0;
+      if (g_dragShelfSummoned) {
+        POINT pt = {};
+        GetCursorPos(&pt);
+        RECT rc = {};
+        GetWindowRect(hwnd, &rc);
+        if (PtInRect(&rc, pt)) {
+          // 松手位置在窗体上：等待 CDropTarget::Drop 落地回调；
+          // 兜底定时器处理"拖拽在窗体上被 ESC 取消"等无落地的情况
+          SetTimer(hwnd, ID_DRAG_SHELF_SETTLE, 400, NULL);
+        } else {
+          DismissDragShelf(hwnd, true);
+        }
+      }
+    }
+    return;
+  }
+
+  POINT pt = {};
+  GetCursorPos(&pt);
+  if (!g_dragShelfTracking) {
+    g_dragShelfTracking = true;
+    g_dragShelfShakeDir = 0;
+    g_dragShelfShakeAnchorX = pt.x;
+    g_dragShelfShakeSegMax = 0;
+    g_dragShelfShakeCount = 0;
+    g_dragShelfSrcHwnd = WindowFromPoint(pt);
+    g_dragShelfSrcThread = 0;
+    if (g_dragShelfSrcHwnd && IsWindow(g_dragShelfSrcHwnd)) {
+      // 忽略从本程序窗口发起的拖拽（如把记录拖出去、拖动窗体本身）
+      HWND root = GetAncestor(g_dragShelfSrcHwnd, GA_ROOT);
+      DWORD pid = 0;
+      GetWindowThreadProcessId(root, &pid);
+      if (root != hwnd && pid != GetCurrentProcessId())
+        g_dragShelfSrcThread =
+            GetWindowThreadProcessId(g_dragShelfSrcHwnd, NULL);
+    }
+    return;
+  }
+
+  // 本次拖拽已处理过则不再触发（窗体已可见时也允许呼出蒙版）
+  if (!g_dragShelfSrcThread || g_dragShelfSummoned)
+    return;
+
+  // 左右晃动两下（每段 >= 30px）才认为有呼出意图
+  TrackDragShelfShake(pt);
+  if (g_dragShelfShakeCount < DRAG_SHELF_SHAKE_TIMES)
+    return;
+
+  // 晃动达标：源线程有鼠标捕获且捕获窗口与被按下窗口不同根 →
+  // OLE 拖放进行中；框选/拖动标题栏/滚动条等普通捕获与被按下窗口同根
+  GUITHREADINFO gti = {};
+  gti.cbSize = sizeof(GUITHREADINFO);
+  if (!GetGUIThreadInfo(g_dragShelfSrcThread, &gti) || !gti.hwndCapture)
+    return;
+  if (GetAncestor(gti.hwndCapture, GA_ROOT) ==
+      GetAncestor(g_dragShelfSrcHwnd, GA_ROOT))
+    return;
+  SummonDragShelf(hwnd, pt);
+}
+
 // 窗口过程
 // 前置声明：从嵌入的 PNG 资源加载图标（MSIX 兼容），定义在
 // RegisterWindowClass 之前
@@ -6080,6 +6311,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 延迟聚焦搜索框（呼出窗口后）
     SetFocus(g_hwndSearchBox);
     SendMessageW(g_hwndSearchBox, EM_SETSEL, 0, -1);
+    return 0;
+  }
+  case WM_USER + 0x2000: {
+    // 文件中转站落地回调（CDropTarget::Drop 发出）
+    // wParam: 0=窗体本就可见时的普通拖入，1=拖拽呼出后成功落地，
+    //         2=拖拽呼出但数据未被接受（隐藏并还原位置）
+    g_dragShelfSummoned = false;
+    if (wParam == 1) {
+      // 落地成功：恢复子控件并切到文件页展示新记录
+      RestoreDragShelfChildren(hwnd);
+      if (g_currentTab != 3)
+        SwitchMainPanel(hwnd, 3, true);
+      else
+        InvalidateRect(hwnd, NULL, TRUE);
+    } else if (wParam == 2) {
+      DismissDragShelf(hwnd, true);
+    }
     return 0;
   }
   case WM_ACTIVATE: {
@@ -6341,6 +6589,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     // 注册主窗口为拖放目标（用于显示拖拽图像）
     g_pDropTarget = new CDropTarget();
     RegisterDragDrop(hwnd, g_pDropTarget);
+
+    // Dropshelf 式拖拽呼出轮询（文件中转站）
+    SetTimer(hwnd, ID_DRAG_SHELF_TIMER, 40, NULL);
 
     // 创建列表框 Tooltip（用于显示来源应用名）
     g_hwndListBoxTooltip =
@@ -7459,13 +7710,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               DeleteObject(hPen);
             }
 
-            // 展开态分组虚线框（蓝色虚线包围所有子行）
+            // 展开态分组虚线（蓝色）：仅保留左右两条竖向虚线贯穿所有子行；
+            // 头行顶边与末行底边不绘制（顶边贴近时间/来源图标文本，
+            // 底边与末行记录分隔点线近乎重叠）
             {
               HPEN hGroupPen = CreatePen(PS_DASH, 1, GetAccentColor());
               HPEN hOldGPen = (HPEN)SelectObject(hdc, hGroupPen);
               HBRUSH hOldGBrush =
                   (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-              // 左边左移 1px，底边上移 1px（与单行选中框底边对齐）
+              // 左边左移 1px（与单行选中框对齐）
               int bx = rcItem.left;
               int bx2 = rcContent.right + MScale(4);
               int yBottom = rcItem.bottom - MScale(5) - 1;
@@ -7475,16 +7728,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               LineTo(hdc, bx, yEnd);
               MoveToEx(hdc, bx2, rcItem.top, NULL);
               LineTo(hdc, bx2, yEnd);
-              // 顶边（仅头行）
-              if (subIdx == 0) {
-                MoveToEx(hdc, bx, rcItem.top + MScale(1), NULL);
-                LineTo(hdc, bx2, rcItem.top + MScale(1));
-              }
-              // 底边（仅末行）
-              if (subIdx == fileCount - 1) {
-                MoveToEx(hdc, bx, yBottom, NULL);
-                LineTo(hdc, bx2, yBottom);
-              }
               SelectObject(hdc, hOldGPen);
               SelectObject(hdc, hOldGBrush);
               DeleteObject(hGroupPen);
@@ -9340,6 +9583,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wParam == 1) {
       g_isRestoringClipboard = false;
       KillTimer(hwnd, 1);
+    } else if (wParam == ID_DRAG_SHELF_TIMER) {
+      // Dropshelf 式拖拽呼出轮询（文件中转站）
+      HandleDragShelfPoll(hwnd);
+      // 悬浮不抢焦点模式：鼠标离开主窗体后立即退出并按置顶开关归一化
+      // z-order，避免未开启置顶时窗口残留 TOPMOST 一直浮在所有窗口之上
+      if (g_isNoActivateMode) {
+        POINT ptCur = {};
+        GetCursorPos(&ptCur);
+        RECT rcMain = {};
+        GetWindowRect(hwnd, &rcMain);
+        if (!PtInRect(&rcMain, ptCur))
+          ExitNoActivateMode(hwnd);
+      }
+    } else if (wParam == ID_DRAG_SHELF_SETTLE) {
+      KillTimer(hwnd, ID_DRAG_SHELF_SETTLE);
+      // 松手后 400ms 仍未收到落地回调：拖拽在窗体上被取消，隐藏并还原
+      if (g_dragShelfSummoned)
+        DismissDragShelf(hwnd, true);
     } else if (wParam == ID_RESTORE_FOCUS_FOR_PASTE) {
       KillTimer(hwnd, ID_RESTORE_FOCUS_FOR_PASTE);
       if (g_previousActiveWindow && IsWindow(g_previousActiveWindow))
@@ -9882,6 +10143,61 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       }
     }
 
+    // 文件中转站蒙版：半透明遮罩 + 中央虚线框（file.png 图标 + 提示文字），
+    // 仅在拖拽呼出（g_dragShelfSummoned）期间显示，此时子控件已隐藏
+    if (g_dragShelfSummoned) {
+      Graphics gMask(hdc);
+      gMask.SetSmoothingMode(SmoothingModeAntiAlias);
+
+      // 半透明蒙版覆盖整个客户区
+      SolidBrush maskBrush(Color(150, 0, 0, 0));
+      gMask.FillRectangle(&maskBrush, 0, 0, clientWidth,
+                          clientRect.bottom - clientRect.top);
+
+      // 中央虚线圆角框
+      const int boxW = std::min(clientWidth - MScale(40), MScale(380));
+      const int boxH = MScale(180);
+      const int cx = clientWidth / 2;
+      const int cy = (clientRect.bottom - clientRect.top) / 2;
+      const RECT box = {cx - boxW / 2, cy - boxH / 2, cx + boxW / 2,
+                        cy + boxH / 2};
+
+      const int radius = MScale(10);
+      GraphicsPath boxPath;
+      boxPath.AddArc(box.left, box.top, radius * 2, radius * 2, 180, 90);
+      boxPath.AddArc(box.right - radius * 2, box.top, radius * 2, radius * 2,
+                     270, 90);
+      boxPath.AddArc(box.right - radius * 2, box.bottom - radius * 2,
+                     radius * 2, radius * 2, 0, 90);
+      boxPath.AddArc(box.left, box.bottom - radius * 2, radius * 2, radius * 2,
+                     90, 90);
+      boxPath.CloseFigure();
+      Pen dashPen(Color(255, 0x00, 0x90, 0xFE), (REAL)MScale(2));
+      dashPen.SetDashStyle(DashStyleDash);
+      gMask.DrawPath(&dashPen, &boxPath);
+
+      // 框内居中：file.png 图标在上，提示文字在下
+      const int iconSize = MScale(52);
+      const int textGap = MScale(14);
+      const int textH = MScale(26);
+      const int totalH = iconSize + textGap + textH;
+      const int iconY = box.top + (boxH - totalH) / 2;
+      if (g_imgFileIcon) {
+        gMask.DrawImage(g_imgFileIcon, cx - iconSize / 2, iconY, iconSize,
+                        iconSize);
+      }
+
+      Font fontMask(L"Microsoft YaHei", (REAL)MScale(14));
+      StringFormat sfMask;
+      sfMask.SetAlignment(StringAlignmentCenter);
+      sfMask.SetLineAlignment(StringAlignmentCenter);
+      SolidBrush textBrush(Color(255, 255, 255, 255));
+      gMask.DrawString(L"将文件加入到SmartClip记录当中", -1, &fontMask,
+                       RectF((REAL)box.left, (REAL)(iconY + iconSize + textGap),
+                             (REAL)boxW, (REAL)textH),
+                       &sfMask, &textBrush);
+    }
+
     // 将内存DC一次性复制到屏幕
     BitBlt(hdcScreen, ps.rcPaint.left, ps.rcPaint.top, paintW, paintH, memDC,
            ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
@@ -9909,6 +10225,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       g_pDropTarget->Release();
       g_pDropTarget = NULL;
     }
+    KillTimer(hwnd, ID_DRAG_SHELF_TIMER);
+    KillTimer(hwnd, ID_DRAG_SHELF_SETTLE);
     // 退出前提交挂起的剪贴板文本（避免丢失最后一次复制）
     if (g_clipboardTextPending) {
       KillTimer(hwnd, ID_CLIPBOARD_DEBOUNCE_TIMER);
@@ -10102,8 +10420,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 托盘点击使用正常激活模式
         ExitNoActivateMode(hwnd);
         SetMainWindowTaskbarStyle(hwnd, false);
-        // SW_SHOWNORMAL 确保从最小化状态恢复正常显示
-        ShowWindow(hwnd, SW_SHOWNORMAL);
+        // 保持隐藏前的最大化/普通状态；最小化时恢复到最小化前状态
+        if (g_startupMaximized && !IsZoomed(hwnd)) {
+          g_startupMaximized = false; // 一次性消费：恢复上次退出时的最大化
+          ShowWindow(hwnd, SW_MAXIMIZE);
+        } else {
+          ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+        }
         // 确保窗口显示在最前
         BringWindowToTop(hwnd);
         SetForegroundWindow(hwnd);
@@ -10260,8 +10583,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
         // 正常激活模式：SmartClip 获取焦点，搜索框可直接输入
         g_isNoActivateMode = false;
         SetMainWindowTaskbarStyle(hwnd, false);
-        // 显示并激活窗口
-        ShowWindow(hwnd, SW_SHOWNORMAL);
+        // 显示并激活窗口：SW_SHOW 保持隐藏前的最大化/普通状态
+        // （SW_SHOWNORMAL 会把最大化窗口还原成普通尺寸）；
+        // 最小化时用 SW_RESTORE 恢复到最小化前的状态
+        if (g_startupMaximized && !IsZoomed(hwnd)) {
+          g_startupMaximized = false; // 一次性消费：恢复上次退出时的最大化
+          ShowWindow(hwnd, SW_MAXIMIZE);
+        } else {
+          ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+        }
         // 根据置顶状态设置 z-order，避免 TOPMOST→NOTOPMOST 技巧导致
         // 最大化后窗口意外保持置顶
         if (g_isTopmost) {
@@ -10459,6 +10789,11 @@ BOOL InitApplication(HINSTANCE hInstance, int nCmdShow) {
     }
   }
   int startupShowCmd = isAutostart ? SW_HIDE : SW_SHOWNORMAL;
+  if (!isAutostart && g_startupMaximized) {
+    // 非自启场景直接按上次退出时的最大化状态显示
+    g_startupMaximized = false;
+    startupShowCmd = SW_MAXIMIZE;
+  }
   ShowWindow(g_hwndMain, startupShowCmd);
   UpdateWindow(g_hwndMain);
 
@@ -11658,8 +11993,9 @@ static bool ShowAgreementDialog(HINSTANCE hInstance) {
   wc.lpszClassName = L"SmartClipAgreementDlg";
   RegisterClassW(&wc);
 
+  // 协议窗体不置顶：置顶开关只作用于主窗体，小窗体始终为普通层级
   HWND hDlg = CreateWindowExW(
-      WS_EX_TOPMOST, L"SmartClipAgreementDlg", T(STR_AGREEMENT_DIALOG_TITLE),
+      0, L"SmartClipAgreementDlg", T(STR_AGREEMENT_DIALOG_TITLE),
       WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT,
       CW_USEDEFAULT, 720, 560, NULL, NULL, hInstance, NULL);
   if (!hDlg)

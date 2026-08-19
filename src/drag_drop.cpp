@@ -13,6 +13,17 @@ bool g_dragOccurred = false;
 int g_dropTargetIndex = -1;
 bool g_isDropTargetValid = false;
 
+// 定义在 smartclip.cpp：主窗体当前是否由"大幅拖拽呼出"（文件中转站）
+extern bool g_dragShelfSummoned;
+
+// 数据对象是否携带 CF_HDROP（文件/文件夹）
+static bool HasFilePayload(IDataObject *pDataObj) {
+    if (!pDataObj)
+        return false;
+    FORMATETC fe = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return pDataObj->QueryGetData(&fe) == S_OK;
+}
+
 // CDropSource 实现
 CDropSource::CDropSource() : m_refCount(1) {}
 
@@ -57,7 +68,7 @@ STDMETHODIMP CDropSource::GiveFeedback(DWORD dwEffect) {
 }
 
 // CDropTarget 实现（含 IDropTargetHelper，用于显示拖拽图像）
-CDropTarget::CDropTarget() : m_refCount(1), m_pDropTargetHelper(NULL) {
+CDropTarget::CDropTarget() : m_refCount(1), m_pDropTargetHelper(NULL), m_hasFile(false) {
     CoCreateInstance(CLSID_DragDropHelper, NULL, CLSCTX_INPROC_SERVER,
                      IID_IDropTargetHelper, (void **)&m_pDropTargetHelper);
 }
@@ -92,7 +103,9 @@ STDMETHODIMP_(ULONG) CDropTarget::Release() {
 
 STDMETHODIMP CDropTarget::DragEnter(IDataObject* pDataObj, DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) {
     (void)grfKeyState;
-    *pdwEffect = DROPEFFECT_COPY;
+    // 仅接受文件/文件夹（CF_HDROP），其他数据给"禁止"光标
+    m_hasFile = HasFilePayload(pDataObj);
+    *pdwEffect = m_hasFile ? DROPEFFECT_COPY : DROPEFFECT_NONE;
     if (m_pDropTargetHelper) {
         POINT point = {pt.x, pt.y};
         m_pDropTargetHelper->DragEnter(g_hwndMain, pDataObj, &point, *pdwEffect);
@@ -102,7 +115,7 @@ STDMETHODIMP CDropTarget::DragEnter(IDataObject* pDataObj, DWORD grfKeyState, PO
 
 STDMETHODIMP CDropTarget::DragOver(DWORD grfKeyState, POINTL pt, DWORD* pdwEffect) {
     (void)grfKeyState;
-    *pdwEffect = DROPEFFECT_COPY;
+    *pdwEffect = m_hasFile ? DROPEFFECT_COPY : DROPEFFECT_NONE;
     if (m_pDropTargetHelper) {
         POINT point = {pt.x, pt.y};
         m_pDropTargetHelper->DragOver(&point, *pdwEffect);
@@ -111,6 +124,7 @@ STDMETHODIMP CDropTarget::DragOver(DWORD grfKeyState, POINTL pt, DWORD* pdwEffec
 }
 
 STDMETHODIMP CDropTarget::DragLeave() {
+    m_hasFile = false;
     if (m_pDropTargetHelper) {
         m_pDropTargetHelper->DragLeave();
     }
@@ -121,9 +135,44 @@ STDMETHODIMP CDropTarget::Drop(IDataObject* pDataObj, DWORD grfKeyState, POINTL 
     (void)grfKeyState;
     if (m_pDropTargetHelper) {
         POINT point = {pt.x, pt.y};
-        m_pDropTargetHelper->Drop(pDataObj, &point, *pdwEffect);
+        m_pDropTargetHelper->Drop(pDataObj, &point, m_hasFile ? DROPEFFECT_COPY : DROPEFFECT_NONE);
     }
     *pdwEffect = DROPEFFECT_NONE;
+    m_hasFile = false;
+
+    const bool wasSummoned = g_dragShelfSummoned;
+    std::wstring joined;
+    FORMATETC fe = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM stg = {};
+    if (pDataObj && SUCCEEDED(pDataObj->GetData(&fe, &stg)) && stg.hGlobal) {
+        HDROP hDrop = (HDROP)GlobalLock(stg.hGlobal);
+        if (hDrop) {
+            UINT count = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+            wchar_t buf[MAX_PATH];
+            for (UINT i = 0; i < count; i++) {
+                if (DragQueryFileW(hDrop, i, buf, MAX_PATH) > 0) {
+                    if (!joined.empty())
+                        joined += L'\n';
+                    joined += buf;
+                }
+            }
+            GlobalUnlock(stg.hGlobal);
+        }
+        ReleaseStgMedium(&stg);
+    }
+
+    if (!joined.empty()) {
+        // 文件/文件夹落地：存入历史（文件中转站）
+        AddFilesToHistory(joined, nullptr);
+        *pdwEffect = DROPEFFECT_COPY;
+        // wParam: 1=拖拽呼出后落地（切到文件页展示），0=窗体本就可见
+        if (g_hwndMain && IsWindow(g_hwndMain))
+            PostMessageW(g_hwndMain, WM_USER + 0x2000, wasSummoned ? 1 : 0, 0);
+    } else if (wasSummoned) {
+        // 数据未被接受：隐藏呼出的窗体并还原位置
+        if (g_hwndMain && IsWindow(g_hwndMain))
+            PostMessageW(g_hwndMain, WM_USER + 0x2000, 2, 0);
+    }
     return S_OK;
 }
 

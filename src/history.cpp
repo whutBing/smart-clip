@@ -1844,6 +1844,16 @@ void AddFilesToHistory(const std::wstring& joinedFilePaths,
     if (outNewIndices)
         outNewIndices->push_back(0);
 
+    // 新增的多文件记录默认展开：既有展开键整体 +1 保持与记录对齐，
+    // 新记录（索引 0）标记为展开态
+    {
+        std::map<int, bool> remapped;
+        for (const auto& kv : g_expandedItems)
+            remapped[kv.first + 1] = kv.second;
+        g_expandedItems.swap(remapped);
+        g_expandedItems[0] = true;
+    }
+
     UpdateListBox();
 
     if (g_hwndMain != NULL && g_isNotificationEnabled) {

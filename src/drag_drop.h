@@ -62,4 +62,5 @@ public:
 private:
     LONG m_refCount;
     IDropTargetHelper *m_pDropTargetHelper;
+    bool m_hasFile; // DragEnter 时探测：数据是否携带 CF_HDROP（文件/文件夹）
 };

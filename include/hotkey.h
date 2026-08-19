@@ -22,6 +22,7 @@ extern bool g_isCustomScrollbarEnabled;
 extern int g_customScrollbarHideDelayMs;
 extern bool g_isColorDotEnabled;
 extern bool g_isTopmost;
+extern bool g_startupMaximized; // 启动时恢复的"上次退出时最大化"标记（首次唤起消费）
 
 // 主题模式枚举
 enum ThemeMode {

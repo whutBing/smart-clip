@@ -20,6 +20,9 @@ UINT g_searchHotkeyModifiers = MOD_CONTROL; // 默认Ctrl
 // 历史记录数量限制
 int g_maxHistoryCount = 100; // 默认100条
 
+// 上次退出时主窗体是否最大化（启动恢复用，首次唤起时消费）
+bool g_startupMaximized = false;
+
 // 保存快捷键设置到 SQLite
 void SaveHotkeySettings() {
   DbSetSettingInt("hotkey_enabled", g_isHotkeyEnabled ? 1 : 0);
@@ -45,6 +48,12 @@ void SaveHotkeySettings() {
   DbSetSettingInt("quick_paste_enabled", g_isQuickPasteEnabled ? 1 : 0);
   DbSetSettingInt("all_hotkeys_enabled", g_allHotkeysEnabled ? 1 : 0);
   DbSetSettingInt("window_topmost", g_isTopmost ? 1 : 0);
+  // 最大化状态持久化：退出/改设置时记录当前是否最大化（隐藏时 WS_MAXIMIZE
+  // 位仍保留，IsZoomed 可靠），下次启动首次唤起时恢复
+  DbSetSettingInt("window_maximized",
+                  (g_hwndMain && IsWindow(g_hwndMain) && IsZoomed(g_hwndMain))
+                      ? 1
+                      : 0);
   DbSetSettingInt("settings_last_tab", g_currentSettingsTab);
   DbSetSettingInt("hover_select", g_isHoverSelectEnabled ? 1 : 0);
 
@@ -526,6 +535,7 @@ void LoadHotkeySettings() {
   g_isQuickPasteEnabled = DbGetSettingInt("quick_paste_enabled", 1) != 0;
   g_allHotkeysEnabled = DbGetSettingInt("all_hotkeys_enabled", 1) != 0;
   g_isTopmost = DbGetSettingInt("window_topmost", 0) != 0;
+  g_startupMaximized = DbGetSettingInt("window_maximized", 0) != 0;
 
   int savedSettingsTab = DbGetSettingInt("settings_last_tab", 0);
   if (savedSettingsTab >= 0 && savedSettingsTab < 4)
