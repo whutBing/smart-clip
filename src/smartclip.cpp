@@ -6168,15 +6168,34 @@ static void SummonDragShelf(HWND hwnd, const POINT &pt) {
       if (x != g_dragShelfPrevRect.left || y != g_dragShelfPrevRect.top)
         g_dragShelfMoved = true;
     }
-    // 置顶与否遵循置顶开关，避免残留 TOPMOST 状态
-    SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_TOP, x, y, 0, 0,
+    // 拖拽期间临时置顶：拖拽源窗口（如资源管理器）可能全屏/前台，
+    // 其他应用（如豆包）的拖拽响应浮层也多为置顶窗口；非置顶呼出
+    // 会被压在它们下方，蒙版不可见、看似未触发。结束后按置顶开关
+    // 归一化（见 NormalizeDragShelfZOrder），不会残留置顶状态。
+    SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0,
                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW |
                      (g_dragShelfMoved ? 0 : SWP_NOMOVE));
+  } else {
+    // 窗体已可见：位置保持不变，仅临时置顶确保蒙版浮在拖拽源之上
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
   // 隐藏子控件，展示"放置文件"蒙版（WM_PAINT 绘制）
   g_dragShelfHiddenChildren.clear();
   EnumChildWindows(hwnd, DragShelfHideChildProc, 0);
   InvalidateRect(hwnd, NULL, TRUE);
+}
+
+// 中转站结束后按置顶开关归一化 z-order，摘除拖拽期间的临时置顶；
+// 与 ExitNoActivateMode 同一套逻辑：摘除置顶必须用 HWND_NOTOPMOST
+//（HWND_TOP 只提到当前层顶部，置顶层窗口仍留在置顶层）
+static void NormalizeDragShelfZOrder(HWND hwnd) {
+  LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  bool isTopmostNow = (ex & WS_EX_TOPMOST) != 0;
+  if (g_isTopmost != isTopmostNow) {
+    SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  }
 }
 
 // 隐藏呼出的窗体，可选还原呼出前位置
@@ -6192,6 +6211,8 @@ static void DismissDragShelf(HWND hwnd, bool restorePos) {
                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
   }
+  // 按置顶开关归一化 z-order（摘除拖拽期间的临时置顶）
+  NormalizeDragShelfZOrder(hwnd);
   g_dragShelfMoved = false;
   g_dragShelfWasVisible = false;
 }
@@ -6232,6 +6253,15 @@ static void TrackDragShelfShake(const POINT &pt) {
 }
 
 static void HandleDragShelfPoll(HWND hwnd) {
+  // 窗体被其他路径（关闭/快捷键/托盘）隐藏时立即撤下蒙版：
+  // 恢复子控件与 z-order，避免下次显示时控件仍处于隐藏状态
+  if (g_dragShelfSummoned && !IsWindowVisible(hwnd)) {
+    g_dragShelfTracking = false;
+    g_dragShelfSrcThread = 0;
+    DismissDragShelf(hwnd, true);
+    return;
+  }
+
   const bool lbtnDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
   if (!lbtnDown) {
     if (g_dragShelfTracking) {
@@ -6321,6 +6351,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wParam == 1) {
       // 落地成功：恢复子控件并切到文件页展示新记录
       RestoreDragShelfChildren(hwnd);
+      // 按置顶开关归一化 z-order（摘除拖拽期间的临时置顶）
+      NormalizeDragShelfZOrder(hwnd);
       if (g_currentTab != 3)
         SwitchMainPanel(hwnd, 3, true);
       else
@@ -7692,9 +7724,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                                     false); // pointingUp = true（收起）
             }
 
-            // 底部分隔线（仅末行画，作为与下一条记录的分隔；
-            // 中间行的分隔由分组虚线框承担）
-            if (!isSelected && subIdx == fileCount - 1) {
+            // 底部分隔线（每行都画：中间行之间用灰色点线分隔，
+            // 末行兼作与下一条记录的分隔）
+            if (!isSelected) {
               int separatorRight =
                   rcItem.right - MScale(10) - GetCustomScrollbarReservedWidth();
               if (separatorRight < rcItem.left + MScale(10))
@@ -7710,15 +7742,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               DeleteObject(hPen);
             }
 
-            // 展开态分组虚线（蓝色）：仅保留左右两条竖向虚线贯穿所有子行；
-            // 头行顶边与末行底边不绘制（顶边贴近时间/来源图标文本，
-            // 底边与末行记录分隔点线近乎重叠）
+            // 展开态分组虚线框（蓝色虚线包围所有子行，完整矩形）
             {
               HPEN hGroupPen = CreatePen(PS_DASH, 1, GetAccentColor());
               HPEN hOldGPen = (HPEN)SelectObject(hdc, hGroupPen);
               HBRUSH hOldGBrush =
                   (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-              // 左边左移 1px（与单行选中框对齐）
+              // 左边左移 1px，底边上移 1px（与单行选中框底边对齐）
               int bx = rcItem.left;
               int bx2 = rcContent.right + MScale(4);
               int yBottom = rcItem.bottom - MScale(5) - 1;
@@ -7728,6 +7758,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               LineTo(hdc, bx, yEnd);
               MoveToEx(hdc, bx2, rcItem.top, NULL);
               LineTo(hdc, bx2, yEnd);
+              // 顶边（仅头行）
+              if (subIdx == 0) {
+                MoveToEx(hdc, bx, rcItem.top + MScale(1), NULL);
+                LineTo(hdc, bx2, rcItem.top + MScale(1));
+              }
+              // 底边（仅末行）
+              if (subIdx == fileCount - 1) {
+                MoveToEx(hdc, bx, yBottom, NULL);
+                LineTo(hdc, bx2, yBottom);
+              }
               SelectObject(hdc, hOldGPen);
               SelectObject(hdc, hOldGBrush);
               DeleteObject(hGroupPen);
@@ -10192,7 +10232,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       sfMask.SetAlignment(StringAlignmentCenter);
       sfMask.SetLineAlignment(StringAlignmentCenter);
       SolidBrush textBrush(Color(255, 255, 255, 255));
-      gMask.DrawString(L"将文件加入到SmartClip记录当中", -1, &fontMask,
+      gMask.DrawString(T(STR_DRAG_SHELF_HINT), -1, &fontMask,
                        RectF((REAL)box.left, (REAL)(iconY + iconSize + textGap),
                              (REAL)boxW, (REAL)textH),
                        &sfMask, &textBrush);

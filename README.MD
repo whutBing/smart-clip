@@ -22,7 +22,7 @@
 8. 📂 **文件类型识别**：自动识别文件类型，支持拖拽操作和快捷打开
 9. 🔍 **文件存活检测**：自动清理原始图片文件已丢失的记录
 10. 🖥️ **高 DPI 支持**：完美支持 4K 显示器，所有界面元素正确缩放
-11. 🌍 **多语言支持**：首次运行自动匹配系统区域设置，内置英语、阿拉伯语、德语、日语、韩语、土耳其语 6 种语言，所有界面文本均可国际化
+11. 🌍 **多语言支持**：首次运行自动匹配系统区域设置，支持简体中文、英语、日语、韩语、德语、阿拉伯语、土耳其语、印地语、保加利亚语、西班牙语、泰语共 11 种语言，所有界面文本均可国际化
 12. 🎨 **主题系统**：支持亮色、暗色、跟随系统三种主题模式
 13. 🗄️ **轻量级数据库存储**：历史记录管理更高效可靠
 14. 🕐 **时间与应用筛选**：点击时间戳按日期筛选，点击应用图标按来源应用筛选
@@ -42,6 +42,7 @@
 28. 🔍 **搜索关键词高亮**：搜索框匹配到的关键词以主题色蓝色高亮显示，文本、文件、文件夹及多文件记录均支持
 29. 📎 **收藏分类药丸**：点击收藏分类后自动在搜索框添加对应分类色药丸（收藏#xx），点击删除分类时同步移除
 30. 🖱️ **文本选中复制**：鼠标拖选文本内容即高亮选中，按 Ctrl+C 复制选中片段，按 Esc 取消（含 emoji 文本暂不支持选中）
+31. 🧲 **文件中转站**：在资源管理器等应用中按住文件（夹）左右晃动两下即可呼出主窗体（带放置提示蒙版），松手放置即存入记录；未放置则窗体自动隐藏并还原位置，不打断原拖拽操作
 
 ### 📜 用户协议与免责声明
 - 本软件仅供合法用途使用，用户须妥善保管剪贴板数据
@@ -69,13 +70,12 @@
 
 ### 📋 计划功能
 1. 🎨 优化设置界面
-2. ⌨️ 快捷键冲突检测
-3. 🔐 国密支持（收藏内容默认加入密码区）
-4. 🚩 完善/重构旗帜功能
-5. 🔍 搜索框支持复杂命令
-6. 📦 优化批量操作功能
-7. ⚙️ 极限性能基准测试与优化
-8. 🔐 完善用户协议流程
+2. 🔐 国密支持（收藏内容默认加入密码区）
+3. 🚩 完善/重构旗帜功能
+4. 🔍 搜索框支持复杂命令
+5. 📦 优化批量操作功能
+6. ⚙️ 极限性能基准测试与优化
+7. 🔐 完善用户协议流程
 
 ---
 
@@ -96,7 +96,7 @@ Pull Requests and creative ideas are always welcomed!
 8. 📂 **File type detection**: Automatic file type recognition with drag-drop and quick open support
 9. 🔍 **File survival check**: Clean records with missing original image files automatically
 10. 🖥️ **High DPI support**: Perfectly supports 4K displays with correct scaling for all UI elements
-11. 🌍 **Multi-language support**: Auto-detects system locale on first run; built-in English, Arabic, German, Japanese, Korean and Turkish, all UI text is internationalized
+11. 🌍 **Multi-language support**: Auto-detects system locale on first run; supports Simplified Chinese, English, Japanese, Korean, German, Arabic, Turkish, Hindi, Bulgarian, Spanish and Thai (11 languages in total), all UI text is internationalized
 12. 🎨 **Theme system**: Supports light, dark, and follow-system theme modes
 13. 🗄️ **Lightweight database storage**: Efficient and reliable history management
 14. 🕐 **Time & app filtering**: Click timestamps to filter by date, click app icons to filter by source application
@@ -116,6 +116,7 @@ Pull Requests and creative ideas are always welcomed!
 28. 🔍 **Search highlight**: keywords matched in the search box are highlighted in the theme blue color; applies to text, files, folders and multi-file records
 29. 📎 **Favorite category pill**: clicking a favorite category adds a color-coded pill (favorite #xx) to the search box for one-click filtering; removed automatically when the category is deleted
 30. 🖱️ **Text selection & copy**: drag to select text content with highlight, press Ctrl+C to copy the selection, press Esc to cancel (text containing emoji is not selectable for now)
+31. 🧲 **File drop shelf**: While dragging file(s)/folder(s) in File Explorer, shake the mouse left-right twice to summon the main window (with a drop-hint mask); release the mouse over it to add them to records. Drop elsewhere and the window auto-hides and restores its position without interrupting the original drag
 
 ### 📜 User Agreement & Disclaimer
 - This software is for legitimate use only; users must safeguard their clipboard data
@@ -143,13 +144,12 @@ Pull Requests and creative ideas are always welcomed!
 
 ### 📋 Roadmap
 1. 🎨 Optimize settings UI
-2. ⌨️ Hotkey conflict detection
-3. 🔐 Support for national secret encryption
-4. 🚩 Improve or remove flag features
-5. 🔍 Advanced command support in search box
-6. 📦 Optimize batch operations
-7. ⚙️ Performance benchmark & extreme optimization
-8. 🔐 Improve user agreement flow
+2. 🔐 Support for national secret encryption
+3. 🚩 Improve or remove flag features
+4. 🔍 Advanced command support in search box
+5. 📦 Optimize batch operations
+6. ⚙️ Performance benchmark & extreme optimization
+7. 🔐 Improve user agreement flow
 
 ---
 📄 License: MIT

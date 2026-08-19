@@ -306,6 +306,9 @@ static const wchar_t *kStringsZh[STR_COUNT] = {
     L"处理器",
     L"内存",
     L"系统盘序列号",
+
+    // 文件中转站（拖拽呼出蒙版）
+    L"将文件加入到SmartClip记录当中",
 };
 
 static const wchar_t *kStringsEn[STR_COUNT] = {
@@ -623,6 +626,9 @@ static const wchar_t *kStringsEn[STR_COUNT] = {
     L"Processor",
     L"Memory",
     L"System Disk Serial",
+
+    // Drag shelf (summon mask)
+    L"Drop files to add them to SmartClip records",
 };
 
 // StringId 名称到枚举值的映射（用于解析 ini 文件）
@@ -859,6 +865,7 @@ static const StringIdEntry kStringIdMap[] = {
     {"STR_MACHINE_INFO_CPU", STR_MACHINE_INFO_CPU},
     {"STR_MACHINE_INFO_RAM", STR_MACHINE_INFO_RAM},
     {"STR_MACHINE_INFO_DISK", STR_MACHINE_INFO_DISK},
+    {"STR_DRAG_SHELF_HINT", STR_DRAG_SHELF_HINT},
     {NULL, STR_COUNT},
 };
 
