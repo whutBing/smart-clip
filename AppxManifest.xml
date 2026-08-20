@@ -11,7 +11,7 @@
 <Identity
   Name="whutBing.SmartClipFree"
   Publisher="CN=EC2F4F24-9E8C-4CA8-A9F0-C5BF1424B17A"
-  Version="0.1.16.0" />
+  Version="0.1.18.0" />
 <Properties>
   <DisplayName>SmartClip Free</DisplayName>
   <PublisherDisplayName>whutBing</PublisherDisplayName>

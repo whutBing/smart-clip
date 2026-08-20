@@ -34,8 +34,6 @@
 #include <shellapi.h> // 用于 ShellExecuteW
 #include <shlobj.h>   // 用于拖放
 #include <shlwapi.h>
-#include <stdarg.h> // va_list (debug trace)
-#include <stdio.h>  // debug log
 #include <windows.h>
 #include <windowsx.h> // 用于 GET_X_LPARAM, GET_Y_LPARAM
 
@@ -3589,6 +3587,11 @@ static void DrawMultiFileTriangle(HDC hdc, const RECT &rcTri, COLORREF color,
   DeleteObject(hPen);
 }
 
+// 前置声明：拖拽蒙版呼出标志（定义在中转站段落）。拖拽蒙版呼出期间
+// 禁止 ExitNoActivateMode 调整 z-order，否则蒙版被拖拽源窗口压住，
+// 表现为"关闭置顶时拖拽呼出看似未触发"
+extern bool g_dragShelfSummoned;
+
 // 退出"不抢焦点(悬浮置顶)"模式：
 // 1) 清除 WS_EX_NOACTIVATE，恢复窗口可被激活；
 // 2) 按置顶开关（g_isTopmost）归一化 z-order，清除悬浮置顶残留的
@@ -3599,6 +3602,18 @@ static void DrawMultiFileTriangle(HDC hdc, const RECT &rcTri, COLORREF color,
 static void ExitNoActivateMode(HWND hwnd) {
   if (!hwnd || !IsWindow(hwnd))
     hwnd = g_hwndMain;
+  // 拖拽蒙版呼出期间：只清标志与样式位，绝不动 z-order——窗口必须
+  // 保持 TOPMOST 浮在拖拽源之上（拖拽结束后由 NormalizeDragShelfZOrder
+  // 按置顶开关归一化）
+  if (g_dragShelfSummoned) {
+    g_isNoActivateMode = false;
+    LONG_PTR exN = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (exN & WS_EX_NOACTIVATE) {
+      exN &= ~WS_EX_NOACTIVATE;
+      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exN);
+    }
+    return;
+  }
   g_isNoActivateMode = false;
   LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
   if (ex & WS_EX_NOACTIVATE) {
@@ -6108,6 +6123,10 @@ static RECT g_dragShelfPrevRect = {};    // 呼出前窗体位置（取消时还
 static bool g_dragShelfMoved = false;    // 呼出时是否移动过窗体
 // 呼出蒙版前窗体是否已经可见：可见时不移动位置、结束时也不隐藏窗体
 static bool g_dragShelfWasVisible = false;
+// 呼出前窗体处于最小化：IsWindowVisible 对最小化窗口仍返回 TRUE，
+// 需单独记录，结束时回到最小化并还原呼出前的位置
+static bool g_dragShelfWasIconic = false;
+static WINDOWPLACEMENT g_dragShelfPrevPlacement = {};
 
 // 水平晃动手势状态
 static int g_dragShelfShakeDir = 0; // 当前段水平方向（-1 左 / +1 右，0 未锁定）
@@ -6138,13 +6157,60 @@ static void RestoreDragShelfChildren(HWND hwnd) {
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
+// 拖拽期间强制窗口进入置顶层。后台进程对"已可见窗口"的纯 z-order
+// 变更会被系统静默忽略（SetWindowPos 返回成功但 WS_EX_TOPMOST 未置位），
+// 必须多级强化：
+//   1) 常规 SetWindowPos(HWND_TOPMOST)；
+//   2) AttachThreadInput 挂接前台（拖拽源）线程，借用其 z-order 权限；
+//   3) 隐藏→以 TOPMOST 重新显示——显示隐藏窗口时允许同时指定 z-order
+//      不受后台限制；同一条消息内连续调用，合成器不会呈现中间隐藏
+//      状态，无闪烁。
+static bool ForceWindowTopmost(HWND hwnd) {
+  // 1) 常规调用
+  SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
+    return true;
+  // 2) 挂接前台线程再试
+  HWND fg = GetForegroundWindow();
+  DWORD fgTid = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+  DWORD myTid = GetCurrentThreadId();
+  bool attached = (fgTid != 0 && fgTid != myTid &&
+                   AttachThreadInput(myTid, fgTid, TRUE)) != false;
+  SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  if (attached)
+    AttachThreadInput(myTid, fgTid, FALSE);
+  if (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
+    return true;
+  // 3) 隐藏→以 TOPMOST 重新显示
+  SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
+  SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  return (GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+}
+
 // 在光标附近呼出主窗体（不激活、不抢焦点，避免打断进行中的拖拽）
 // 窗体已可见时：位置保持不变，仅展示"放置文件"蒙版
 static void SummonDragShelf(HWND hwnd, const POINT &pt) {
   g_dragShelfSummoned = true;
   g_dragShelfMoved = false;
-  g_dragShelfWasVisible = IsWindowVisible(hwnd) != FALSE;
+  // 最小化(IsIconic)的窗口 IsWindowVisible 仍为 TRUE 但视觉不可见：
+  // 按未可见处理，走呼出路径（恢复显示 + 展示蒙版）
+  g_dragShelfWasVisible = (IsWindowVisible(hwnd) && !IsIconic(hwnd)) != FALSE;
+  g_dragShelfWasIconic = false;
   GetWindowRect(hwnd, &g_dragShelfPrevRect);
+  if (IsIconic(hwnd)) {
+    g_dragShelfWasIconic = true;
+    g_dragShelfPrevPlacement.length = sizeof(WINDOWPLACEMENT);
+    GetWindowPlacement(hwnd, &g_dragShelfPrevPlacement);
+    // 恢复显示但不激活（激活会取消进行中的 OLE 拖拽）；
+    // 最大化后最小化的窗口会恢复为最大化（后续 IsZoomed 判断准确）
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    // 重取真实尺寸（最小化时 GetWindowRect 返回 -32000 哨兵位置）
+    GetWindowRect(hwnd, &g_dragShelfPrevRect);
+  }
   if (!g_dragShelfWasVisible) {
     int x = 0, y = 0;
     if (!IsZoomed(hwnd)) {
@@ -6168,15 +6234,35 @@ static void SummonDragShelf(HWND hwnd, const POINT &pt) {
       if (x != g_dragShelfPrevRect.left || y != g_dragShelfPrevRect.top)
         g_dragShelfMoved = true;
     }
-    // 置顶与否遵循置顶开关，避免残留 TOPMOST 状态
-    SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_TOP, x, y, 0, 0,
+    // 拖拽期间临时置顶：拖拽源窗口（如资源管理器）可能全屏/前台，
+    // 其他应用（如豆包）的拖拽响应浮层也多为置顶窗口；非置顶呼出
+    // 会被压在它们下方，蒙版不可见、看似未触发。结束后按置顶开关
+    // 归一化（见 NormalizeDragShelfZOrder），不会残留置顶状态。
+    SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0,
                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW |
                      (g_dragShelfMoved ? 0 : SWP_NOMOVE));
+  } else {
+    // 窗体已可见：位置保持不变，仅临时置顶确保蒙版浮在拖拽源之上。
+    // 已可见窗口的 z-order 变更受后台限制（见 ForceWindowTopmost 注释），
+    // 必须走多级强化而不是裸 SetWindowPos
+    ForceWindowTopmost(hwnd);
   }
   // 隐藏子控件，展示"放置文件"蒙版（WM_PAINT 绘制）
   g_dragShelfHiddenChildren.clear();
   EnumChildWindows(hwnd, DragShelfHideChildProc, 0);
   InvalidateRect(hwnd, NULL, TRUE);
+}
+
+// 中转站结束后按置顶开关归一化 z-order，摘除拖拽期间的临时置顶；
+// 与 ExitNoActivateMode 同一套逻辑：摘除置顶必须用 HWND_NOTOPMOST
+// （HWND_TOP 只提到当前层顶部，置顶层窗口仍留在置顶层）
+static void NormalizeDragShelfZOrder(HWND hwnd) {
+  LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  bool isTopmostNow = (ex & WS_EX_TOPMOST) != 0;
+  if (g_isTopmost != isTopmostNow) {
+    SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  }
 }
 
 // 隐藏呼出的窗体，可选还原呼出前位置
@@ -6185,15 +6271,24 @@ static void DismissDragShelf(HWND hwnd, bool restorePos) {
   g_dragShelfSummoned = false;
   RestoreDragShelfChildren(hwnd);
   if (!g_dragShelfWasVisible) {
-    ShowWindow(hwnd, SW_HIDE);
-    if (restorePos && g_dragShelfMoved) {
-      SetWindowPos(hwnd, NULL, g_dragShelfPrevRect.left,
-                   g_dragShelfPrevRect.top, 0, 0,
-                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (g_dragShelfWasIconic) {
+      // 呼出前是最小化：回到最小化（不激活），还原呼出前的位置
+      g_dragShelfPrevPlacement.showCmd = SW_SHOWMINNOACTIVE;
+      SetWindowPlacement(hwnd, &g_dragShelfPrevPlacement);
+    } else {
+      ShowWindow(hwnd, SW_HIDE);
+      if (restorePos && g_dragShelfMoved) {
+        SetWindowPos(hwnd, NULL, g_dragShelfPrevRect.left,
+                     g_dragShelfPrevRect.top, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      }
     }
   }
+  // 按置顶开关归一化 z-order（摘除拖拽期间的临时置顶）
+  NormalizeDragShelfZOrder(hwnd);
   g_dragShelfMoved = false;
   g_dragShelfWasVisible = false;
+  g_dragShelfWasIconic = false;
 }
 
 // 水平晃动手势跟踪：段 = 一次方向反转到下一次反转之间的移动，
@@ -6233,6 +6328,36 @@ static void TrackDragShelfShake(const POINT &pt) {
 
 static void HandleDragShelfPoll(HWND hwnd) {
   const bool lbtnDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
+  // 自愈看门狗：呼出蒙版期间（左键仍按住=拖拽进行中），若窗口被
+  // 其他代码路径拉出置顶层或隐藏/最小化，立即拉回，保证蒙版始终
+  // 浮在拖拽源之上。此时本进程仍是后台，直接 SetWindowPos 会被静默
+  // 忽略，必须走 ForceWindowTopmost 多级强化
+  if (g_dragShelfSummoned && lbtnDown) {
+    LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (!(ex & WS_EX_TOPMOST)) {
+      ForceWindowTopmost(hwnd);
+    }
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+      if (IsIconic(hwnd))
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+      SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      if (!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST))
+        ForceWindowTopmost(hwnd);
+    }
+  }
+
+  // 窗体被其他路径（关闭/快捷键/托盘）隐藏时立即撤下蒙版：
+  // 恢复子控件与 z-order，避免下次显示时控件仍处于隐藏状态
+  // （仅在左键已松开时判定——按住期间由上面的看门狗负责拉回）
+  if (g_dragShelfSummoned && !lbtnDown && !IsWindowVisible(hwnd)) {
+    g_dragShelfTracking = false;
+    g_dragShelfSrcThread = 0;
+    DismissDragShelf(hwnd, true);
+    return;
+  }
+
   if (!lbtnDown) {
     if (g_dragShelfTracking) {
       g_dragShelfTracking = false;
@@ -6242,7 +6367,8 @@ static void HandleDragShelfPoll(HWND hwnd) {
         GetCursorPos(&pt);
         RECT rc = {};
         GetWindowRect(hwnd, &rc);
-        if (PtInRect(&rc, pt)) {
+        bool inWin = PtInRect(&rc, pt) != FALSE;
+        if (inWin) {
           // 松手位置在窗体上：等待 CDropTarget::Drop 落地回调；
           // 兜底定时器处理"拖拽在窗体上被 ESC 取消"等无落地的情况
           SetTimer(hwnd, ID_DRAG_SHELF_SETTLE, 400, NULL);
@@ -6321,6 +6447,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
     if (wParam == 1) {
       // 落地成功：恢复子控件并切到文件页展示新记录
       RestoreDragShelfChildren(hwnd);
+      // 按置顶开关归一化 z-order（摘除拖拽期间的临时置顶）
+      NormalizeDragShelfZOrder(hwnd);
       if (g_currentTab != 3)
         SwitchMainPanel(hwnd, 3, true);
       else
@@ -7692,9 +7820,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
                                     false); // pointingUp = true（收起）
             }
 
-            // 底部分隔线（仅末行画，作为与下一条记录的分隔；
-            // 中间行的分隔由分组虚线框承担）
-            if (!isSelected && subIdx == fileCount - 1) {
+            // 底部分隔线（每行都画：中间行之间用灰色点线分隔，
+            // 末行兼作与下一条记录的分隔）
+            if (!isSelected) {
               int separatorRight =
                   rcItem.right - MScale(10) - GetCustomScrollbarReservedWidth();
               if (separatorRight < rcItem.left + MScale(10))
@@ -7710,15 +7838,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               DeleteObject(hPen);
             }
 
-            // 展开态分组虚线（蓝色）：仅保留左右两条竖向虚线贯穿所有子行；
-            // 头行顶边与末行底边不绘制（顶边贴近时间/来源图标文本，
-            // 底边与末行记录分隔点线近乎重叠）
+            // 展开态分组虚线框（蓝色虚线包围所有子行，完整矩形）
             {
               HPEN hGroupPen = CreatePen(PS_DASH, 1, GetAccentColor());
               HPEN hOldGPen = (HPEN)SelectObject(hdc, hGroupPen);
               HBRUSH hOldGBrush =
                   (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-              // 左边左移 1px（与单行选中框对齐）
+              // 左边左移 1px，底边上移 1px（与单行选中框底边对齐）
               int bx = rcItem.left;
               int bx2 = rcContent.right + MScale(4);
               int yBottom = rcItem.bottom - MScale(5) - 1;
@@ -7728,6 +7854,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
               LineTo(hdc, bx, yEnd);
               MoveToEx(hdc, bx2, rcItem.top, NULL);
               LineTo(hdc, bx2, yEnd);
+              // 顶边（仅头行）
+              if (subIdx == 0) {
+                MoveToEx(hdc, bx, rcItem.top + MScale(1), NULL);
+                LineTo(hdc, bx2, rcItem.top + MScale(1));
+              }
+              // 底边（仅末行）
+              if (subIdx == fileCount - 1) {
+                MoveToEx(hdc, bx, yBottom, NULL);
+                LineTo(hdc, bx2, yBottom);
+              }
               SelectObject(hdc, hOldGPen);
               SelectObject(hdc, hOldGBrush);
               DeleteObject(hGroupPen);
@@ -9588,7 +9724,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       HandleDragShelfPoll(hwnd);
       // 悬浮不抢焦点模式：鼠标离开主窗体后立即退出并按置顶开关归一化
       // z-order，避免未开启置顶时窗口残留 TOPMOST 一直浮在所有窗口之上
-      if (g_isNoActivateMode) {
+      // （拖拽蒙版呼出期间不判定——鼠标此刻必然在窗外拖拽，退出会立即
+      // 把蒙版降级压到拖拽源下方，表现为蒙版一闪即逝）
+      if (g_isNoActivateMode && !g_dragShelfSummoned) {
         POINT ptCur = {};
         GetCursorPos(&ptCur);
         RECT rcMain = {};
@@ -10176,25 +10314,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam,
       dashPen.SetDashStyle(DashStyleDash);
       gMask.DrawPath(&dashPen, &boxPath);
 
-      // 框内居中：file.png 图标在上，提示文字在下
+      // 框内居中：file.png 图标在上，提示文字在下。
+      // 提示文字按当前语言实测高度：中文单行；外文较长时在框宽内
+      // 自动换行（GDI+ DrawString 依 RectF 自动 wrap），整体仍垂直居中
       const int iconSize = MScale(52);
       const int textGap = MScale(14);
-      const int textH = MScale(26);
-      const int totalH = iconSize + textGap + textH;
+      Font fontMask(L"Microsoft YaHei", (REAL)MScale(14));
+      StringFormat sfMask;
+      sfMask.SetAlignment(StringAlignmentCenter);
+      sfMask.SetLineAlignment(StringAlignmentCenter);
+      RectF layoutAll((REAL)box.left, (REAL)box.top, (REAL)boxW, (REAL)boxH);
+      RectF measured = {};
+      gMask.MeasureString(T(STR_DRAG_SHELF_HINT), -1, &fontMask, layoutAll,
+                          &sfMask, &measured);
+      // 文字高度上限：框高扣除图标与间距，防止极端长文本溢出
+      REAL textH = measured.Height + (REAL)MScale(4);
+      const REAL maxTextH = (REAL)(boxH - iconSize - textGap - MScale(12));
+      if (textH > maxTextH)
+        textH = maxTextH;
+      const int totalH = iconSize + textGap + (int)textH;
       const int iconY = box.top + (boxH - totalH) / 2;
       if (g_imgFileIcon) {
         gMask.DrawImage(g_imgFileIcon, cx - iconSize / 2, iconY, iconSize,
                         iconSize);
       }
 
-      Font fontMask(L"Microsoft YaHei", (REAL)MScale(14));
-      StringFormat sfMask;
-      sfMask.SetAlignment(StringAlignmentCenter);
-      sfMask.SetLineAlignment(StringAlignmentCenter);
       SolidBrush textBrush(Color(255, 255, 255, 255));
-      gMask.DrawString(L"将文件加入到SmartClip记录当中", -1, &fontMask,
+      gMask.DrawString(T(STR_DRAG_SHELF_HINT), -1, &fontMask,
                        RectF((REAL)box.left, (REAL)(iconY + iconSize + textGap),
-                             (REAL)boxW, (REAL)textH),
+                             (REAL)boxW, textH),
                        &sfMask, &textBrush);
     }
 

@@ -276,6 +276,9 @@ enum StringId {
   STR_MACHINE_INFO_RAM,
   STR_MACHINE_INFO_DISK,
 
+  // 文件中转站（拖拽呼出蒙版）
+  STR_DRAG_SHELF_HINT,
+
   STR_COUNT
 };
 
